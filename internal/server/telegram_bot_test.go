@@ -1,11 +1,14 @@
 package server
 
 import (
+	"context"
 	"strings"
 	"testing"
 	"time"
 
+	"vocat/internal/device"
 	"vocat/internal/modem"
+	"vocat/internal/store"
 )
 
 func TestTelegramAPIURLSupportsBaseAndTemplate(t *testing.T) {
@@ -103,5 +106,68 @@ func TestFormatTelegramATIncludesFinalResult(t *testing.T) {
 	}
 	if got := formatTelegramAT(modem.Response{Lines: []string{"+CLCC: 1"}, Final: "OK"}); got != "+CLCC: 1\nOK" {
 		t.Fatalf("formatTelegramAT(lines) = %q", got)
+	}
+}
+
+func TestTelegramExecutesGuardedATForConfiguredDevice(t *testing.T) {
+	database, err := store.Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = database.Close() })
+	if err := database.UpsertDevice(context.Background(), store.Device{ID: "EC20", Name: "EC20"}); err != nil {
+		t.Fatal(err)
+	}
+	bot := &telegramBot{server: &Server{
+		store: database,
+		devices: fakeDeviceController{
+			entry:      device.Device{ID: "EC20", Discovered: true},
+			atResponse: modem.Response{Lines: []string{"+CSQ: 18,99"}, Final: "OK"},
+		},
+	}}
+	result, err := bot.executeATCommand(context.Background(), "EC20", "AT+CSQ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, expected := range []string{"设备：EC20", "> AT+CSQ", "+CSQ: 18,99", "OK"} {
+		if !strings.Contains(result, expected) {
+			t.Fatalf("AT result %q does not contain %q", result, expected)
+		}
+	}
+	if _, err := bot.executeATCommand(context.Background(), "EC20", "AT+CFUN=0"); err == nil {
+		t.Fatal("guarded AT command unexpectedly succeeded")
+	}
+}
+
+func TestTelegramExecutesInteractiveUSSDForConfiguredDevice(t *testing.T) {
+	database, err := store.Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = database.Close() })
+	if err := database.UpsertDevice(context.Background(), store.Device{ID: "EC20", Name: "EC20"}); err != nil {
+		t.Fatal(err)
+	}
+	bot := &telegramBot{server: &Server{
+		store: database,
+		devices: fakeDeviceController{
+			entry: device.Device{ID: "EC20", Discovered: true},
+			ussdResult: device.USSDResult{
+				Code: "*100#", Text: "1. Balance\n2. Bundles", Status: "awaiting_input",
+				SessionID: "0123456789abcdef", Continueable: true,
+			},
+		},
+	}}
+	result, err := bot.executeUSSDCommand(context.Background(), "EC20", "*100#")
+	if err != nil {
+		t.Fatal(err)
+	}
+	formatted := formatTelegramUSSD("EC20", result)
+	for _, expected := range []string{
+		"设备：EC20", "状态：awaiting_input", "1. Balance", "/ussd_reply 0123456789abcdef", "/ussd_cancel 0123456789abcdef",
+	} {
+		if !strings.Contains(formatted, expected) {
+			t.Fatalf("USSD result %q does not contain %q", formatted, expected)
+		}
 	}
 }

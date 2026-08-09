@@ -21,6 +21,8 @@ import (
 // USSD, and USB-net results are configurable for the feature endpoint tests.
 type fakeDeviceController struct {
 	entry      device.Device
+	atResponse modem.Response
+	atErr      error
 	scanResult device.OperatorScanResult
 	scanErr    error
 	ussdResult device.USSDResult
@@ -43,11 +45,11 @@ func (f fakeDeviceController) Refresh(context.Context, string) (device.Snapshot,
 	return device.Snapshot{}, nil
 }
 func (f fakeDeviceController) ExecuteAT(context.Context, string, string) (modem.Response, error) {
-	return modem.Response{}, nil
+	return f.atResponse, f.atErr
 }
 func (f fakeDeviceController) Reboot(context.Context, string) error { return nil }
 func (f fakeDeviceController) USSD(context.Context, string, string) (device.USSDResult, error) {
-	return device.USSDResult{}, nil
+	return f.ussdResult, f.ussdErr
 }
 func (f fakeDeviceController) ContinueUSSD(context.Context, string, string) (device.USSDResult, error) {
 	return f.ussdResult, f.ussdErr

@@ -186,6 +186,10 @@ func (bot *telegramBot) bootstrap(ctx context.Context, config telegramRuntimeCon
 		{"command": "call", "description": "限时拨号并自动挂断（需要确认）"},
 		{"command": "calls", "description": "查看当前通话"},
 		{"command": "hangup", "description": "挂断通话"},
+		{"command": "at", "description": "向指定设备发送安全 AT 指令"},
+		{"command": "ussd", "description": "向指定设备发送 USSD 指令"},
+		{"command": "ussd_reply", "description": "回复交互式 USSD 会话"},
+		{"command": "ussd_cancel", "description": "取消交互式 USSD 会话"},
 		{"command": "help", "description": "查看命令帮助"},
 	}
 	_ = bot.call(requestContext, config, "setMyCommands", map[string]any{"commands": commands}, nil)
@@ -274,6 +278,34 @@ func (bot *telegramBot) handleUpdate(ctx context.Context, config telegramRuntime
 		bot.executeSimpleCallAction(ctx, config, message.Chat.ID, message.From.ID, strings.TrimSpace(remainder), "hangup")
 	case "calls":
 		bot.executeSimpleCallAction(ctx, config, message.Chat.ID, message.From.ID, strings.TrimSpace(remainder), "status")
+	case "at":
+		parts := splitTelegramArguments(remainder, 2)
+		if len(parts) != 2 {
+			bot.sendText(ctx, config, message.Chat.ID, "用法：/at <设备ID> <AT指令>\n示例：/at EC20 AT+CSQ", nil)
+			return
+		}
+		bot.handleATCommand(ctx, config, message.Chat.ID, message.From.ID, parts[0], parts[1])
+	case "ussd":
+		parts := strings.Fields(remainder)
+		if len(parts) != 2 {
+			bot.sendText(ctx, config, message.Chat.ID, "用法：/ussd <设备ID> <USSD代码>\n示例：/ussd EC20 *100#", nil)
+			return
+		}
+		bot.handleUSSDCommand(ctx, config, message.Chat.ID, message.From.ID, parts[0], parts[1])
+	case "ussd_reply":
+		parts := splitTelegramArguments(remainder, 2)
+		if len(parts) != 2 {
+			bot.sendText(ctx, config, message.Chat.ID, "用法：/ussd_reply <会话ID> <回复内容>", nil)
+			return
+		}
+		bot.handleUSSDReply(ctx, config, message.Chat.ID, message.From.ID, parts[0], parts[1])
+	case "ussd_cancel":
+		sessionID := strings.TrimSpace(remainder)
+		if sessionID == "" || strings.ContainsAny(sessionID, " \t\r\n") {
+			bot.sendText(ctx, config, message.Chat.ID, "用法：/ussd_cancel <会话ID>", nil)
+			return
+		}
+		bot.handleUSSDCancel(ctx, config, message.Chat.ID, message.From.ID, sessionID)
 	default:
 		bot.sendText(ctx, config, message.Chat.ID, "未知命令。发送 /help 查看可用操作。", nil)
 	}
@@ -329,6 +361,10 @@ func (bot *telegramBot) sendHelp(ctx context.Context, config telegramRuntimeConf
 		"/calls <设备ID> — 查看模块当前通话",
 		"/answer <设备ID> — 接听蜂窝来电",
 		"/hangup <设备ID> — 立即挂断",
+		"/at <设备ID> <AT指令> — 执行经过安全校验的单行 AT 指令",
+		"/ussd <设备ID> <代码> — 发送 USSD 指令",
+		"/ussd_reply <会话ID> <内容> — 回复交互式 USSD 菜单",
+		"/ussd_cancel <会话ID> — 取消交互式 USSD 会话",
 		"",
 		"Bot 不提供 eSIM 下载、删除或改名，也不采集或转发通话音频。控制命令只接受设置中的 Admin ID。",
 	}, "\n")
@@ -651,6 +687,112 @@ func (bot *telegramBot) executeSimpleCallAction(ctx context.Context, config tele
 		bot.sendText(ctx, config, chatID, text, nil)
 	}
 	bot.server.recordAudit(ctx, fmt.Sprintf("telegram:%d", adminID), "telegram.call."+action, "device", deviceID, outcome, "telegram")
+}
+
+func (bot *telegramBot) handleATCommand(ctx context.Context, config telegramRuntimeConfig, chatID, adminID int64, deviceID, command string) {
+	result, err := bot.executeATCommand(ctx, deviceID, command)
+	outcome := "success"
+	if err != nil {
+		outcome = "failure"
+		bot.sendText(ctx, config, chatID, "AT 指令执行失败："+err.Error(), nil)
+	} else {
+		bot.sendText(ctx, config, chatID, result, nil)
+	}
+	bot.server.recordAudit(ctx, fmt.Sprintf("telegram:%d", adminID), "telegram.at.execute", "device", deviceID, outcome, "telegram")
+}
+
+func (bot *telegramBot) executeATCommand(ctx context.Context, deviceID, command string) (string, error) {
+	command = strings.TrimSpace(command)
+	if err := validateATCommand(command); err != nil {
+		return "", err
+	}
+	_, _, physicalID, err := bot.device(deviceID)
+	if err != nil {
+		return "", err
+	}
+	operationContext, cancel := context.WithTimeout(ctx, 60*time.Second)
+	defer cancel()
+	response, err := bot.server.devices.ExecuteAT(operationContext, physicalID, command)
+	if err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("设备：%s\n> %s\n\n%s", deviceID, command, formatTelegramAT(response)), nil
+}
+
+func (bot *telegramBot) handleUSSDCommand(ctx context.Context, config telegramRuntimeConfig, chatID, adminID int64, deviceID, code string) {
+	result, err := bot.executeUSSDCommand(ctx, deviceID, code)
+	outcome := "success"
+	if err != nil {
+		outcome = "failure"
+		bot.sendText(ctx, config, chatID, "USSD 指令执行失败："+err.Error(), nil)
+	} else {
+		bot.sendText(ctx, config, chatID, formatTelegramUSSD(deviceID, result), nil)
+	}
+	bot.server.recordAudit(ctx, fmt.Sprintf("telegram:%d", adminID), "telegram.ussd.start", "device", deviceID, outcome, "telegram")
+}
+
+func (bot *telegramBot) executeUSSDCommand(ctx context.Context, deviceID, code string) (device.USSDResult, error) {
+	_, _, physicalID, err := bot.device(deviceID)
+	if err != nil {
+		return device.USSDResult{}, err
+	}
+	operationContext, cancel := context.WithTimeout(ctx, 90*time.Second)
+	defer cancel()
+	return bot.server.devices.USSD(operationContext, physicalID, strings.TrimSpace(code))
+}
+
+func (bot *telegramBot) handleUSSDReply(ctx context.Context, config telegramRuntimeConfig, chatID, adminID int64, sessionID, input string) {
+	operationContext, cancel := context.WithTimeout(ctx, 90*time.Second)
+	result, err := bot.server.devices.ContinueUSSD(operationContext, strings.TrimSpace(sessionID), strings.TrimSpace(input))
+	cancel()
+	outcome := "success"
+	if err != nil {
+		outcome = "failure"
+		bot.sendText(ctx, config, chatID, "USSD 回复失败："+err.Error(), nil)
+	} else {
+		bot.sendText(ctx, config, chatID, formatTelegramUSSD("", result), nil)
+	}
+	bot.server.recordAudit(ctx, fmt.Sprintf("telegram:%d", adminID), "telegram.ussd.reply", "ussd_session", "interactive", outcome, "telegram")
+}
+
+func (bot *telegramBot) handleUSSDCancel(ctx context.Context, config telegramRuntimeConfig, chatID, adminID int64, sessionID string) {
+	operationContext, cancel := context.WithTimeout(ctx, 30*time.Second)
+	err := bot.server.devices.CancelUSSD(operationContext, strings.TrimSpace(sessionID))
+	cancel()
+	outcome := "success"
+	if err != nil {
+		outcome = "failure"
+		bot.sendText(ctx, config, chatID, "取消 USSD 会话失败："+err.Error(), nil)
+	} else {
+		bot.sendText(ctx, config, chatID, "USSD 会话已取消。", nil)
+	}
+	bot.server.recordAudit(ctx, fmt.Sprintf("telegram:%d", adminID), "telegram.ussd.cancel", "ussd_session", "interactive", outcome, "telegram")
+}
+
+func formatTelegramUSSD(deviceID string, result device.USSDResult) string {
+	lines := make([]string, 0, 7)
+	if strings.TrimSpace(deviceID) != "" {
+		lines = append(lines, "设备："+strings.TrimSpace(deviceID))
+	}
+	if strings.TrimSpace(result.Code) != "" {
+		lines = append(lines, "USSD："+strings.TrimSpace(result.Code))
+	}
+	lines = append(lines, "状态："+firstNonEmpty(strings.TrimSpace(result.Status), "final"))
+	if strings.TrimSpace(result.Text) != "" {
+		lines = append(lines, "\n"+strings.TrimSpace(result.Text))
+	} else if strings.TrimSpace(result.Raw) != "" {
+		lines = append(lines, "\n"+strings.TrimSpace(result.Raw))
+	} else {
+		lines = append(lines, "\n网络未返回文本内容。")
+	}
+	if result.Continueable && strings.TrimSpace(result.SessionID) != "" {
+		lines = append(lines,
+			"\n网络正在等待输入。",
+			"回复：/ussd_reply "+result.SessionID+" <内容>",
+			"取消：/ussd_cancel "+result.SessionID,
+		)
+	}
+	return strings.Join(lines, "\n")
 }
 
 func (bot *telegramBot) handleVoWiFi(ctx context.Context, config telegramRuntimeConfig, chatID, adminID int64, deviceID, operation string) {
