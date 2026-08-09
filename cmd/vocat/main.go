@@ -248,6 +248,10 @@ func run(logger *slog.Logger, logs *loghub.Hub) error {
 	case <-signalContext.Done():
 		logger.Info("shutdown signal received")
 	}
+	// Long-lived SSE and polling handlers use this context. Stop them before
+	// http.Server.Shutdown so they do not consume the entire graceful-shutdown
+	// deadline while waiting for a stream that is intentionally still active.
+	cancelPolling()
 
 	shutdownContext, cancelShutdown := context.WithTimeout(
 		context.Background(),

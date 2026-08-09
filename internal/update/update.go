@@ -232,7 +232,10 @@ func RestartService(logger *slog.Logger) error {
 	if _, err := exec.LookPath("systemctl"); err != nil {
 		return fmt.Errorf("systemctl not found in PATH")
 	}
-	cmd := exec.Command("systemctl", "restart", "vocat")
+	// Queue the restart and let systemctl exit before systemd stops this unit.
+	// A blocking restart command becomes part of vocat.service's own cgroup and
+	// waits for that same cgroup to terminate, creating a stop-timeout cycle.
+	cmd := exec.Command("systemctl", "restart", "--no-block", "vocat")
 	if out, err := cmd.CombinedOutput(); err != nil {
 		logger.Warn("systemctl restart failed", "error", err, "output", string(out))
 		return fmt.Errorf("systemctl restart vocat: %w", err)

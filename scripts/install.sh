@@ -216,7 +216,9 @@ ExecStart=${BINARY_PATH}
 Restart=on-failure
 RestartSec=3s
 TimeoutStartSec=30s
-TimeoutStopSec=20s
+# HTTP, VoWiFi, and modem cleanup have bounded shutdown contexts totalling up
+# to 30 seconds. Leave a small margin before systemd resorts to SIGKILL.
+TimeoutStopSec=40s
 
 AmbientCapabilities=CAP_NET_ADMIN CAP_NET_RAW
 CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_RAW
