@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -169,5 +170,14 @@ func TestTelegramExecutesInteractiveUSSDForConfiguredDevice(t *testing.T) {
 		if !strings.Contains(formatted, expected) {
 			t.Fatalf("USSD result %q does not contain %q", formatted, expected)
 		}
+	}
+}
+
+func TestTelegramErrorsRedactBotTokens(t *testing.T) {
+	token := "1234567890:abcdefghijklmnopqrstuvwxyzABCDE"
+	err := errors.New(`Post "https://api.telegram.org/bot` + token + `/getUpdates": context canceled`)
+	redacted := redactTelegramError(err, token)
+	if strings.Contains(redacted.Error(), token) || !strings.Contains(redacted.Error(), "bot[REDACTED]") {
+		t.Fatalf("redacted error = %q", redacted)
 	}
 }

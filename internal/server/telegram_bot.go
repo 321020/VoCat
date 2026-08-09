@@ -11,6 +11,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -29,6 +30,8 @@ const (
 	telegramConfirmationTTL    = 2 * time.Minute
 	telegramMaxDialDuration    = 10 * time.Minute
 )
+
+var telegramTokenInURLPattern = regexp.MustCompile(`bot[0-9]{5,20}:[A-Za-z0-9_-]{20,128}`)
 
 type telegramRuntimeConfig struct {
 	Token   string
@@ -146,6 +149,9 @@ func (bot *telegramBot) poll(ctx context.Context) {
 		updates, pollErr := bot.getUpdates(pollContext, config, offset, 5)
 		cancel()
 		if pollErr != nil {
+			if ctx.Err() != nil {
+				return
+			}
 			bot.warn("poll Telegram updates", pollErr)
 			if !waitTelegram(ctx, telegramPollInterval) {
 				return
@@ -970,7 +976,7 @@ func (bot *telegramBot) loadConfig(ctx context.Context) (telegramRuntimeConfig, 
 func (bot *telegramBot) call(ctx context.Context, config telegramRuntimeConfig, method string, payload any, result any) error {
 	base, err := validateTelegramAPIURL(ctx, config.BaseURL, config.Token, method)
 	if err != nil {
-		return err
+		return redactTelegramError(err, config.Token)
 	}
 	body, err := json.Marshal(payload)
 	if err != nil {
@@ -982,13 +988,13 @@ func (bot *telegramBot) call(ctx context.Context, config telegramRuntimeConfig, 
 	}
 	request, err := http.NewRequestWithContext(ctx, http.MethodPost, base.String(), bytes.NewReader(body))
 	if err != nil {
-		return err
+		return redactTelegramError(err, config.Token)
 	}
 	request.Header.Set("Content-Type", "application/json")
 	request.Header.Set("User-Agent", "vocat-telegram-bot/1")
 	response, err := client.Do(request)
 	if err != nil {
-		return err
+		return redactTelegramError(err, config.Token)
 	}
 	defer response.Body.Close()
 	responseBody, err := io.ReadAll(io.LimitReader(response.Body, 2<<20))
@@ -1042,7 +1048,7 @@ func (bot *telegramBot) warn(message string, err error) {
 		return
 	}
 	now := time.Now()
-	text := err.Error()
+	text := redactTelegramText(err.Error(), "")
 	bot.logMu.Lock()
 	if text == bot.lastLogText && now.Sub(bot.lastLogTime) < time.Minute {
 		bot.logMu.Unlock()
@@ -1050,7 +1056,21 @@ func (bot *telegramBot) warn(message string, err error) {
 	}
 	bot.lastLogText, bot.lastLogTime = text, now
 	bot.logMu.Unlock()
-	bot.server.logger.Warn(message, "error", err)
+	bot.server.logger.Warn(message, "error", text)
+}
+
+func redactTelegramError(err error, token string) error {
+	if err == nil {
+		return nil
+	}
+	return errors.New(redactTelegramText(err.Error(), token))
+}
+
+func redactTelegramText(value, token string) string {
+	if strings.TrimSpace(token) != "" {
+		value = strings.ReplaceAll(value, token, "[REDACTED]")
+	}
+	return telegramTokenInURLPattern.ReplaceAllString(value, "bot[REDACTED]")
 }
 
 func parseTelegramCommand(text string) (string, string) {
