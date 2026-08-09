@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"vocat/internal/modem"
+	"vocat/internal/vowifi"
 )
 
 func TestParseCLCC(t *testing.T) {
@@ -26,5 +27,17 @@ func TestValidDialNumber(t *testing.T) {
 		if validDialNumber(value) {
 			t.Errorf("validDialNumber(%q) = true", value)
 		}
+	}
+}
+
+func TestCallTransportRequiresIMSReady(t *testing.T) {
+	controller := &fakeVoWiFiController{state: vowifi.State{Enabled: true}}
+	server := &Server{vowifi: controller}
+	if got := server.callTransport("ec20"); got != "cellular" {
+		t.Fatalf("callTransport before IMS registration = %q, want cellular", got)
+	}
+	controller.state.IMSReady = true
+	if got := server.callTransport("ec20"); got != "vowifi" {
+		t.Fatalf("callTransport with IMS ready = %q, want vowifi", got)
 	}
 }

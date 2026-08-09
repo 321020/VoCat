@@ -203,7 +203,11 @@ func (s *Server) hangupVoWiFiAfter(deviceID, callID string, duration time.Durati
 
 func (s *Server) callTransport(deviceID string) string {
 	if s.vowifi != nil {
-		if state, err := s.vowifi.State(deviceID); err == nil && state.Enabled {
+		// Enabled is only the desired card policy. Calls can use IMS only after
+		// registration has actually completed; otherwise keep using the modem's
+		// circuit-switched call path instead of routing into an unavailable IMS
+		// session.
+		if state, err := s.vowifi.State(deviceID); err == nil && state.IMSReady {
 			return "vowifi"
 		}
 	}
