@@ -1,20 +1,25 @@
 # syntax=docker/dockerfile:1.7
 
-# ---- Stage 1: build the web frontend ----
-FROM node:20-alpine AS web-builder
+# Build toolchains run natively on the BuildKit host. Without BUILDPLATFORM,
+# the arm64 branch executes npm and the Go compiler through QEMU, which is much
+# slower and makes npm ci appear to hang despite producing no progress output.
+# ---- Stage 1: build the web frontend once on the native builder ----
+FROM --platform=$BUILDPLATFORM node:20-alpine AS web-builder
 WORKDIR /web
 COPY web/package.json web/package-lock.json* ./
 RUN npm ci
 COPY web/ ./
 RUN npm run build
 
-# ---- Stage 2: build the Go binary ----
-FROM golang:1.25-alpine AS go-builder
+# ---- Stage 2: cross-compile the Go binary on the native builder ----
+FROM --platform=$BUILDPLATFORM golang:1.25-alpine AS go-builder
 RUN apk add --no-cache git
 WORKDIR /src
 
 ARG VERSION=0.1.0-dev
 ARG BUILD_TIME=""
+ARG TARGETOS
+ARG TARGETARCH
 
 COPY go.mod go.sum ./
 RUN go mod download
@@ -23,7 +28,7 @@ COPY . .
 # Overlay the freshly built frontend so go:embed web/dist picks it up.
 COPY --from=web-builder /web/dist ./web/dist
 
-RUN CGO_ENABLED=0 GOOS=linux go build \
+RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} go build \
     -trimpath \
     -ldflags "-s -w -X vocat/internal/buildinfo.Version=${VERSION} -X vocat/internal/buildinfo.BuildTime=${BUILD_TIME}" \
     -o /out/vocat \
