@@ -29,8 +29,9 @@ func TestSessionReceivesAndAcknowledgesSMSOverIMS(t *testing.T) {
 
 	received := make(chan ReceivedSMS, 1)
 	serverDone := make(chan error, 1)
+	readyForClose := make(chan struct{})
 	nonce := base64.StdEncoding.EncodeToString(make([]byte, 32))
-	go func() { serverDone <- serveInboundSMS(listener, nonce) }()
+	go func() { serverDone <- serveInboundSMS(listener, nonce, readyForClose) }()
 	provider, err := NewProvider(
 		smsTestAKA{&recordingAKA{result: vowifi.AKAResult{RES: []byte{1, 2, 3, 4}}}},
 		Config{
@@ -64,6 +65,11 @@ func TestSessionReceivesAndAcknowledgesSMSOverIMS(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("timed out waiting for inbound SMS")
+	}
+	select {
+	case <-readyForClose:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for the inbound RP-ACK exchange")
 	}
 	if err := session.Close(context.Background()); err != nil {
 		t.Fatal(err)
@@ -102,9 +108,10 @@ func TestSessionSendsSMSOverIMS(t *testing.T) {
 	defer listener.Close()
 	_ = listener.SetDeadline(time.Now().Add(10 * time.Second))
 	serverDone := make(chan error, 1)
+	readyForClose := make(chan struct{})
 	statusReceived := make(chan ReceivedSMSStatus, 1)
 	nonce := base64.StdEncoding.EncodeToString(make([]byte, 32))
-	go func() { serverDone <- serveOutboundSMS(listener, nonce) }()
+	go func() { serverDone <- serveOutboundSMS(listener, nonce, readyForClose) }()
 	provider, err := NewProvider(
 		smsTestAKA{&recordingAKA{result: vowifi.AKAResult{RES: []byte{1, 2, 3, 4}}}},
 		Config{
@@ -145,6 +152,11 @@ func TestSessionSendsSMSOverIMS(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("timed out waiting for SMS delivery status")
 	}
+	select {
+	case <-readyForClose:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for the status-report RP-ACK exchange")
+	}
 	if err := session.Close(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -153,7 +165,7 @@ func TestSessionSendsSMSOverIMS(t *testing.T) {
 	}
 }
 
-func serveInboundSMS(listener *net.UDPConn, nonce string) error {
+func serveInboundSMS(listener *net.UDPConn, nonce string, readyForClose chan<- struct{}) error {
 	packet := make([]byte, 65535)
 	count, remote, err := listener.ReadFromUDP(packet)
 	if err != nil {
@@ -229,6 +241,7 @@ func serveInboundSMS(listener *net.UDPConn, nonce string) error {
 	if _, err = listener.WriteToUDP(testResponse(200, "OK", report.Request.value("Call-ID"), report.Request.value("CSeq"), nil), remote); err != nil {
 		return err
 	}
+	close(readyForClose)
 
 	count, remote, err = listener.ReadFromUDP(packet)
 	if err != nil {
@@ -245,7 +258,7 @@ func serveInboundSMS(listener *net.UDPConn, nonce string) error {
 	return err
 }
 
-func serveOutboundSMS(listener *net.UDPConn, nonce string) error {
+func serveOutboundSMS(listener *net.UDPConn, nonce string, readyForClose chan<- struct{}) error {
 	packet := make([]byte, 65535)
 	count, remote, err := listener.ReadFromUDP(packet)
 	if err != nil {
@@ -355,6 +368,7 @@ func serveOutboundSMS(listener *net.UDPConn, nonce string) error {
 	if _, err = listener.WriteToUDP(testResponse(200, "OK", statusACK.Request.value("Call-ID"), statusACK.Request.value("CSeq"), nil), remote); err != nil {
 		return err
 	}
+	close(readyForClose)
 
 	count, remote, err = listener.ReadFromUDP(packet)
 	if err != nil {
