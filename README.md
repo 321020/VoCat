@@ -295,6 +295,11 @@ go test ./...
 cd web && npm run build
 ```
 
+## Thanks
+- [Nodeseek.com](https://www.nodeseek.com) — A community dedicated to servers
+- [Linux.do](https://linux.do) — An inspiring tech community
+- [iniwex5](https://github.com/iniwex5) - Style and Functionality Guidelines
+
 ## License
 
 See [LICENSE](LICENSE).
