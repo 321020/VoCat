@@ -295,6 +295,10 @@ go test ./...
 cd web && npm run build
 ```
 
+# Group / Channel
+Group : [https://t.me/+kzQb1Gk9XRkzZWRk](https://t.me/+kzQb1Gk9XRkzZWRk)
+Channel：[https://t.me/vocat_channel](https://t.me/vocat_channel)
+
 ## Thanks
 - [Nodeseek.com](https://www.nodeseek.com) — A community dedicated to servers
 - [Linux.do](https://linux.do) — An inspiring tech community
