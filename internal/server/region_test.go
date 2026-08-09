@@ -23,6 +23,7 @@ type fakeDeviceController struct {
 	entry      device.Device
 	atResponse modem.Response
 	atErr      error
+	atHandler  func(string) (modem.Response, error)
 	scanResult device.OperatorScanResult
 	scanErr    error
 	ussdResult device.USSDResult
@@ -44,7 +45,11 @@ func (f fakeDeviceController) Get(id string) (device.Device, error) {
 func (f fakeDeviceController) Refresh(context.Context, string) (device.Snapshot, error) {
 	return device.Snapshot{}, nil
 }
-func (f fakeDeviceController) ExecuteAT(context.Context, string, string) (modem.Response, error) {
+
+func (f fakeDeviceController) ExecuteAT(_ context.Context, _ string, command string) (modem.Response, error) {
+	if f.atHandler != nil {
+		return f.atHandler(command)
+	}
 	return f.atResponse, f.atErr
 }
 func (f fakeDeviceController) Reboot(context.Context, string) error { return nil }

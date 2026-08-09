@@ -156,6 +156,10 @@ func (session *Session) watchOutgoingCall(call *imsCall, key sipTransactionKey) 
 		case <-session.refreshContext.Done():
 			return
 		case <-timer.C:
+			if session.callWasTerminated(call.callID) {
+				session.finishCall(call.callID, "ended", 0, "")
+				return
+			}
 			session.finishCall(call.callID, "failed", 0, "SIP INVITE transaction timed out")
 			return
 		case response := <-call.responses:
@@ -193,6 +197,11 @@ func (session *Session) watchOutgoingCall(call *imsCall, key sipTransactionKey) 
 				}
 				session.setCallMediaReady(call.callID)
 				session.setCallState(call.callID, "active")
+			} else if session.callWasTerminated(call.callID) {
+				// CANCEL normally causes the pending INVITE transaction to finish
+				// with 487 Request Terminated.  It is the expected response to our
+				// local hang-up, not a new network rejection.
+				session.finishCall(call.callID, "ended", response.StatusCode, response.Reason)
 			} else {
 				session.finishCall(call.callID, "failed", response.StatusCode, response.Reason)
 			}
@@ -241,6 +250,7 @@ func (session *Session) HangupCall(ctx context.Context, id string) error {
 	state := call.public.State
 	direction := call.public.Direction
 	request, respond := call.invite, call.respond
+	call.terminated = true
 	session.callMu.Unlock()
 	if direction == "incoming" && state == "ringing" && request != nil && respond != nil {
 		response, err := buildSIPResponseWithBody(request, 486, session.fromTag, nil)
@@ -262,6 +272,13 @@ func (session *Session) HangupCall(ctx context.Context, id string) error {
 	// 481. The local call must still leave the active list after a hang-up.
 	session.finishCall(id, "ended", 0, "")
 	return err
+}
+
+func (session *Session) callWasTerminated(id string) bool {
+	session.callMu.Lock()
+	defer session.callMu.Unlock()
+	call := session.calls[id]
+	return call != nil && call.terminated
 }
 
 func (session *Session) handleCallRequest(request *sipRequest, respond func([]byte) error) bool {

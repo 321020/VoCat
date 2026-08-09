@@ -10,6 +10,7 @@ import (
 	"vocat/internal/device"
 	"vocat/internal/modem"
 	"vocat/internal/store"
+	"vocat/internal/vowifi"
 )
 
 func TestTelegramAPIURLSupportsBaseAndTemplate(t *testing.T) {
@@ -180,4 +181,146 @@ func TestTelegramErrorsRedactBotTokens(t *testing.T) {
 	if strings.Contains(redacted.Error(), token) || !strings.Contains(redacted.Error(), "bot[REDACTED]") {
 		t.Fatalf("redacted error = %q", redacted)
 	}
+}
+
+func TestTelegramCallTransportFollowsConfiguredCardMode(t *testing.T) {
+	controller := &telegramTestCallController{state: vowifi.State{IMSReady: true, Phase: vowifi.PhaseIMSReady}}
+	bot := &telegramBot{server: &Server{vowifi: controller}}
+
+	transport, gotController, err := bot.telegramCallTransport(
+		store.Device{ID: "EC20", VoWiFiEnabled: true},
+		device.Device{Snapshot: &device.Snapshot{FlightMode: true}},
+	)
+	if err != nil || transport != "vowifi" || gotController == nil {
+		t.Fatalf("VoWiFi route = %q, %#v, %v", transport, gotController, err)
+	}
+
+	transport, gotController, err = bot.telegramCallTransport(
+		store.Device{ID: "EC20", VoWiFiEnabled: false},
+		device.Device{Snapshot: &device.Snapshot{FlightMode: false}},
+	)
+	if err != nil || transport != "cellular" || gotController != nil {
+		t.Fatalf("cellular route = %q, %#v, %v", transport, gotController, err)
+	}
+}
+
+func TestTelegramCallTransportDoesNotFallBackFromUnreadyVoWiFi(t *testing.T) {
+	controller := &telegramTestCallController{state: vowifi.State{
+		Phase: vowifi.PhaseFailed, LastError: "SIP registration was rejected: SIP 403",
+	}}
+	bot := &telegramBot{server: &Server{vowifi: controller}}
+	_, _, err := bot.telegramCallTransport(
+		store.Device{ID: "EC20", VoWiFiEnabled: true},
+		device.Device{Snapshot: &device.Snapshot{FlightMode: true}},
+	)
+	if err == nil || !strings.Contains(err.Error(), "SIP 403") {
+		t.Fatalf("unready VoWiFi route error = %v", err)
+	}
+}
+
+func TestTelegramTimedVoWiFiCallUsesIMSAndHangsUpByCallID(t *testing.T) {
+	controller := &telegramTestCallController{state: vowifi.State{IMSReady: true}}
+	controller.dialResult = vowifi.Call{ID: "ims-call-1", Number: "+447700900123", Direction: "outgoing", State: "dialing"}
+	controller.calls = []vowifi.Call{{ID: "ims-call-1", Number: "+447700900123", Direction: "outgoing", State: "active"}}
+	bot := &telegramBot{server: &Server{vowifi: controller}}
+	result, err := bot.executeTimedVoWiFiCall(context.Background(), telegramRuntimeConfig{}, telegramPendingAction{
+		DeviceID: "EC20", Argument: "+447700900123", Duration: 20 * time.Millisecond,
+	}, controller)
+	if err != nil || !strings.Contains(result, "已接通") {
+		t.Fatalf("timed VoWiFi result = %q, %v", result, err)
+	}
+	if controller.dialed != "+447700900123" || len(controller.hungUp) != 1 || controller.hungUp[0] != "ims-call-1" {
+		t.Fatalf("IMS actions dial=%q hangup=%#v", controller.dialed, controller.hungUp)
+	}
+}
+
+func TestTelegramTimedCellularCallUsesATDCLCCAndATH(t *testing.T) {
+	commands := make([]string, 0, 3)
+	devices := fakeDeviceController{atHandler: func(command string) (modem.Response, error) {
+		commands = append(commands, command)
+		switch {
+		case strings.HasPrefix(command, "ATD"):
+			return modem.Response{Final: "OK"}, nil
+		case command == "AT+CLCC":
+			return modem.Response{Lines: []string{`+CLCC: 1,0,2,0,0,"+447700900123",145`}, Final: "OK"}, nil
+		case command == "ATH":
+			return modem.Response{Final: "OK"}, nil
+		default:
+			return modem.Response{}, errors.New("unexpected command")
+		}
+	}}
+	bot := &telegramBot{server: &Server{devices: devices}}
+	result, err := bot.executeTimedCellularCall(context.Background(), telegramRuntimeConfig{}, telegramPendingAction{
+		DeviceID: "EC20", Argument: "+447700900123", Duration: 20 * time.Millisecond,
+	}, "physical")
+	if err != nil || !strings.Contains(result, "正在拨号") {
+		t.Fatalf("timed cellular result = %q, %v", result, err)
+	}
+	joined := strings.Join(commands, ",")
+	for _, expected := range []string{"ATD+447700900123;", "AT+CLCC", "ATH"} {
+		if !strings.Contains(joined, expected) {
+			t.Fatalf("commands %q omit %q", joined, expected)
+		}
+	}
+}
+
+func TestTelegramVoWiFiFailureIncludesSIPDiagnostic(t *testing.T) {
+	err := telegramVoWiFiCallFailure(vowifi.Call{State: "failed", SIPCode: 403, Reason: "Forbidden"})
+	if !strings.Contains(err.Error(), "SIP 403") || !strings.Contains(err.Error(), "Forbidden") {
+		t.Fatalf("VoWiFi diagnostic = %q", err)
+	}
+}
+
+func TestTelegramVoWiFi487IsReportedAsCancelledOutcome(t *testing.T) {
+	result, err := telegramVoWiFiCallOutcome("888", vowifi.Call{
+		State: "failed", SIPCode: 487, Reason: "Request Terminated",
+	})
+	if err != nil || !strings.Contains(result, "取消或终止") || !strings.Contains(result, "SIP 487") {
+		t.Fatalf("487 outcome = %q, %v", result, err)
+	}
+}
+
+type telegramTestCallController struct {
+	state      vowifi.State
+	calls      []vowifi.Call
+	dialResult vowifi.Call
+	dialErr    error
+	dialed     string
+	hungUp     []string
+}
+
+func (controller *telegramTestCallController) State(string) (vowifi.State, error) {
+	return controller.state, nil
+}
+
+func (controller *telegramTestCallController) RequestEnabled(string, bool) (vowifi.State, error) {
+	return controller.state, nil
+}
+
+func (controller *telegramTestCallController) RequestReconnect(string) (vowifi.State, error) {
+	return controller.state, nil
+}
+
+func (controller *telegramTestCallController) Calls(string) ([]vowifi.Call, error) {
+	return append([]vowifi.Call(nil), controller.calls...), nil
+}
+
+func (controller *telegramTestCallController) DialCall(_ context.Context, _ string, number string) (vowifi.Call, error) {
+	controller.dialed = number
+	return controller.dialResult, controller.dialErr
+}
+
+func (controller *telegramTestCallController) AnswerCall(_ context.Context, _ string, id string) (vowifi.Call, error) {
+	for _, call := range controller.calls {
+		if call.ID == id {
+			call.State = "active"
+			return call, nil
+		}
+	}
+	return vowifi.Call{}, errors.New("call not found")
+}
+
+func (controller *telegramTestCallController) HangupCall(_ context.Context, _ string, id string) error {
+	controller.hungUp = append(controller.hungUp, id)
+	return nil
 }

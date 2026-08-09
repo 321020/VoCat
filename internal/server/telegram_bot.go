@@ -50,6 +50,9 @@ type telegramBot struct {
 	logMu       sync.Mutex
 	lastLogTime time.Time
 	lastLogText string
+
+	callMu      sync.Mutex
+	activeDials map[string]struct{}
 }
 
 type telegramPendingAction struct {
@@ -107,8 +110,9 @@ func (s *Server) StartTelegramBot(ctx context.Context) {
 		ctx = context.Background()
 	}
 	bot := &telegramBot{
-		server:  s,
-		pending: make(map[string]telegramPendingAction),
+		server:      s,
+		pending:     make(map[string]telegramPendingAction),
+		activeDials: make(map[string]struct{}),
 	}
 	go bot.poll(ctx)
 	go bot.notifyInboundSMS(ctx)
@@ -191,6 +195,7 @@ func (bot *telegramBot) bootstrap(ctx context.Context, config telegramRuntimeCon
 		{"command": "sms", "description": "发送短信（需要确认）"},
 		{"command": "call", "description": "限时拨号并自动挂断（需要确认）"},
 		{"command": "calls", "description": "查看当前通话"},
+		{"command": "answer", "description": "接听当前来电"},
 		{"command": "hangup", "description": "挂断通话"},
 		{"command": "at", "description": "向指定设备发送安全 AT 指令"},
 		{"command": "ussd", "description": "向指定设备发送 USSD 指令"},
@@ -365,7 +370,7 @@ func (bot *telegramBot) sendHelp(ctx context.Context, config telegramRuntimeConf
 		"/sms <设备ID> <号码> <内容> — 发送短信（需确认）",
 		"/call <设备ID> <号码> <秒数> — 拨号并在 1–600 秒后自动挂断（需确认）",
 		"/calls <设备ID> — 查看模块当前通话",
-		"/answer <设备ID> — 接听蜂窝来电",
+		"/answer <设备ID> — 按当前通道接听来电",
 		"/hangup <设备ID> — 立即挂断",
 		"/at <设备ID> <AT指令> — 执行经过安全校验的单行 AT 指令",
 		"/ussd <设备ID> <代码> — 发送 USSD 指令",
@@ -533,18 +538,21 @@ func (bot *telegramBot) confirmCall(ctx context.Context, config telegramRuntimeC
 		bot.sendText(ctx, config, chatID, "拨号号码无效，只允许一个可选的前导 + 和 3–20 位数字。", nil)
 		return
 	}
-	if _, entry, _, err := bot.device(deviceID); err != nil {
+	stored, entry, _, err := bot.device(deviceID)
+	if err != nil {
 		bot.sendText(ctx, config, chatID, "无法拨号："+err.Error(), nil)
 		return
-	} else if entry.Snapshot != nil && entry.Snapshot.FlightMode {
-		bot.sendText(ctx, config, chatID, "设备处于飞行模式，蜂窝语音拨号不可用。当前 Bot 不实现 IMS 语音或音频处理。", nil)
+	}
+	transport, _, err := bot.telegramCallTransport(stored, entry)
+	if err != nil {
+		bot.sendText(ctx, config, chatID, "无法拨号："+err.Error(), nil)
 		return
 	}
 	action := telegramPendingAction{
 		Kind: "call", DeviceID: deviceID, Argument: number, Duration: duration,
 		ChatID: chatID, AdminID: adminID, CreatedAt: time.Now(),
 	}
-	bot.askConfirmation(ctx, config, action, fmt.Sprintf("确认通过设备 %s 拨打 %s？\n持续：%d 秒，然后自动挂断。\n不会采集或处理通话音频。", deviceID, number, int(duration/time.Second)))
+	bot.askConfirmation(ctx, config, action, fmt.Sprintf("确认通过设备 %s 拨打 %s？\n通道：%s\n持续：%d 秒，然后自动挂断。\n不会采集或处理通话音频。", deviceID, number, telegramCallTransportLabel(transport), int(duration/time.Second)))
 }
 
 func (bot *telegramBot) askConfirmation(ctx context.Context, config telegramRuntimeConfig, action telegramPendingAction, text string) {
@@ -631,40 +639,23 @@ func (bot *telegramBot) executeESIMSwitch(ctx context.Context, action telegramPe
 }
 
 func (bot *telegramBot) executeTimedCall(ctx context.Context, config telegramRuntimeConfig, action telegramPendingAction) (string, error) {
-	_, entry, physicalID, err := bot.device(action.DeviceID)
+	stored, entry, physicalID, err := bot.device(action.DeviceID)
 	if err != nil {
 		return "", err
 	}
-	if entry.Snapshot != nil && entry.Snapshot.FlightMode {
-		return "", errors.New("device is in airplane mode")
-	}
-	dialContext, cancelDial := context.WithTimeout(ctx, 20*time.Second)
-	response, err := bot.server.devices.ExecuteAT(dialContext, physicalID, "ATD"+action.Argument+";")
-	cancelDial()
+	transport, controller, err := bot.telegramCallTransport(stored, entry)
 	if err != nil {
-		return "", fmt.Errorf("拨号失败: %w", err)
+		return "", err
 	}
-	if !strings.EqualFold(strings.TrimSpace(response.Final), "OK") {
-		return "", fmt.Errorf("拨号未被模块接受: %s", formatTelegramAT(response))
+	if !bot.beginTelegramDial(action.DeviceID) {
+		return "", errors.New("该设备已有一个由 Telegram 发起的限时拨号任务")
 	}
-	bot.sendText(ctx, config, action.ChatID, fmt.Sprintf("📞 已开始拨打 %s，将在 %d 秒后自动挂断。", action.Argument, int(action.Duration/time.Second)), nil)
-	timer := time.NewTimer(action.Duration)
-	defer timer.Stop()
-	select {
-	case <-ctx.Done():
-		return "", ctx.Err()
-	case <-timer.C:
+	defer bot.endTelegramDial(action.DeviceID)
+
+	if transport == "vowifi" {
+		return bot.executeTimedVoWiFiCall(ctx, config, action, controller)
 	}
-	hangContext, cancelHang := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancelHang()
-	hangResponse, hangErr := bot.server.devices.ExecuteAT(hangContext, physicalID, "ATH")
-	if hangErr != nil {
-		return "", fmt.Errorf("拨号已执行，但自动挂断失败: %w", hangErr)
-	}
-	if !strings.EqualFold(strings.TrimSpace(hangResponse.Final), "OK") {
-		return "", fmt.Errorf("拨号已执行，但模块未确认自动挂断: %s", formatTelegramAT(hangResponse))
-	}
-	return fmt.Sprintf("拨号动作完成：%s，持续 %d 秒后已自动挂断。", action.Argument, int(action.Duration/time.Second)), nil
+	return bot.executeTimedCellularCall(ctx, config, action, physicalID)
 }
 
 func (bot *telegramBot) executeSimpleCallAction(ctx context.Context, config telegramRuntimeConfig, chatID, adminID int64, deviceID, action string) {
@@ -672,27 +663,543 @@ func (bot *telegramBot) executeSimpleCallAction(ctx context.Context, config tele
 		bot.sendText(ctx, config, chatID, fmt.Sprintf("用法：/%s <设备ID>", map[string]string{"status": "calls", "answer": "answer", "hangup": "hangup"}[action]), nil)
 		return
 	}
-	_, _, physicalID, err := bot.device(deviceID)
+	stored, entry, physicalID, err := bot.device(deviceID)
 	if err != nil {
 		bot.sendText(ctx, config, chatID, "通话操作失败："+err.Error(), nil)
 		return
 	}
-	command := map[string]string{"status": "AT+CLCC", "answer": "ATA", "hangup": "ATH"}[action]
-	operationContext, cancel := context.WithTimeout(ctx, 20*time.Second)
-	response, err := bot.server.devices.ExecuteAT(operationContext, physicalID, command)
-	cancel()
+	transport, controller, err := bot.telegramCallTransport(stored, entry)
+	result := ""
+	if err == nil {
+		if transport == "vowifi" {
+			result, err = bot.executeSimpleVoWiFiCallAction(ctx, deviceID, action, controller)
+		} else {
+			result, err = bot.executeSimpleCellularCallAction(ctx, physicalID, action)
+		}
+	}
 	outcome := "success"
 	if err != nil {
 		outcome = "failure"
 		bot.sendText(ctx, config, chatID, "通话操作失败："+err.Error(), nil)
 	} else {
-		text := formatTelegramAT(response)
-		if action == "status" && strings.TrimSpace(response.Text()) == "" {
-			text = "当前没有活动通话。"
-		}
-		bot.sendText(ctx, config, chatID, text, nil)
+		bot.sendText(ctx, config, chatID, result, nil)
 	}
-	bot.server.recordAudit(ctx, fmt.Sprintf("telegram:%d", adminID), "telegram.call."+action, "device", deviceID, outcome, "telegram")
+	bot.server.recordAudit(ctx, fmt.Sprintf("telegram:%d", adminID), "telegram.call."+action, "device", deviceID, outcome, firstNonEmpty(transport, "unknown"))
+}
+
+func (bot *telegramBot) telegramCallTransport(stored store.Device, entry device.Device) (string, VoWiFiCallController, error) {
+	if stored.VoWiFiEnabled {
+		if bot.server.vowifi == nil {
+			return "", nil, errors.New("设备卡片处于 VoWiFi 模式，但 VoWiFi 运行时不可用")
+		}
+		state, err := bot.server.vowifi.State(stored.ID)
+		if err != nil {
+			return "", nil, fmt.Errorf("读取 VoWiFi 通话状态失败: %w", err)
+		}
+		if !state.IMSReady {
+			detail := firstNonEmpty(state.LastError, state.LastReason, "IMS 尚未注册")
+			return "", nil, fmt.Errorf("设备卡片处于 VoWiFi 模式，但 IMS 未就绪（%s）：%s", firstNonEmpty(string(state.Phase), "idle"), detail)
+		}
+		controller, ok := bot.server.vowifi.(VoWiFiCallController)
+		if !ok {
+			return "", nil, errors.New("当前 VoWiFi 运行时不支持 IMS 通话信令")
+		}
+		return "vowifi", controller, nil
+	}
+	if entry.Snapshot != nil && entry.Snapshot.FlightMode {
+		return "", nil, errors.New("设备处于飞行模式且 VoWiFi 未启用，无法通过基站拨号")
+	}
+	return "cellular", nil, nil
+}
+
+func telegramCallTransportLabel(transport string) string {
+	if transport == "vowifi" {
+		return "VoWiFi IMS"
+	}
+	return "基站直连"
+}
+
+func (bot *telegramBot) beginTelegramDial(deviceID string) bool {
+	bot.callMu.Lock()
+	defer bot.callMu.Unlock()
+	if bot.activeDials == nil {
+		bot.activeDials = make(map[string]struct{})
+	}
+	if _, exists := bot.activeDials[deviceID]; exists {
+		return false
+	}
+	bot.activeDials[deviceID] = struct{}{}
+	return true
+}
+
+func (bot *telegramBot) endTelegramDial(deviceID string) {
+	bot.callMu.Lock()
+	delete(bot.activeDials, deviceID)
+	bot.callMu.Unlock()
+}
+
+func (bot *telegramBot) executeTimedVoWiFiCall(
+	ctx context.Context,
+	config telegramRuntimeConfig,
+	action telegramPendingAction,
+	controller VoWiFiCallController,
+) (string, error) {
+	dialContext, cancelDial := context.WithTimeout(ctx, 20*time.Second)
+	call, err := controller.DialCall(dialContext, action.DeviceID, action.Argument)
+	cancelDial()
+	if err != nil {
+		return "", fmt.Errorf("VoWiFi IMS 拨号失败: %w", err)
+	}
+	hangupAt := time.Now().Add(action.Duration)
+	_ = bot.sendText(ctx, config, action.ChatID, fmt.Sprintf(
+		"📞 已通过 VoWiFi IMS 提交 %s，Call-ID：%s\n将在 %d 秒后自动挂断，并持续检查 SIP 结果。",
+		action.Argument, call.ID, int(action.Duration/time.Second),
+	), nil)
+
+	timer := time.NewTimer(time.Until(hangupAt))
+	defer timer.Stop()
+	ticker := time.NewTicker(500 * time.Millisecond)
+	defer ticker.Stop()
+	seenNetwork := false
+	lastState := call.State
+	for {
+		select {
+		case <-ctx.Done():
+			bot.bestEffortVoWiFiHangup(controller, action.DeviceID, call.ID)
+			return "", ctx.Err()
+		case <-timer.C:
+			current, found, listErr := telegramFindVoWiFiCall(controller, action.DeviceID, call.ID)
+			if listErr != nil {
+				bot.bestEffortVoWiFiHangup(controller, action.DeviceID, call.ID)
+				return "", fmt.Errorf("读取 IMS 通话状态失败: %w", listErr)
+			}
+			if found && current.State == "failed" {
+				return telegramVoWiFiCallOutcome(action.Argument, current)
+			}
+			if found {
+				lastState = current.State
+				if current.State == "ringing" || current.State == "active" {
+					seenNetwork = true
+				}
+			}
+			if found && current.State != "ended" {
+				hangContext, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+				err = controller.HangupCall(hangContext, action.DeviceID, call.ID)
+				cancel()
+				if err != nil {
+					return "", fmt.Errorf("VoWiFi 拨号已执行，但自动挂断失败: %w", err)
+				}
+			}
+			if seenNetwork {
+				return fmt.Sprintf("VoWiFi 拨号完成：%s；已确认 %s，%d 秒后自动挂断。", action.Argument, telegramIMSStateLabel(lastState), int(action.Duration/time.Second)), nil
+			}
+			return fmt.Sprintf("VoWiFi INVITE 已发送并在 %d 秒后取消；运营商未返回振铃或接通确认。", int(action.Duration/time.Second)), nil
+		case <-ticker.C:
+			current, found, listErr := telegramFindVoWiFiCall(controller, action.DeviceID, call.ID)
+			if listErr != nil {
+				bot.bestEffortVoWiFiHangup(controller, action.DeviceID, call.ID)
+				return "", fmt.Errorf("读取 IMS 通话状态失败: %w", listErr)
+			}
+			if !found {
+				bot.bestEffortVoWiFiHangup(controller, action.DeviceID, call.ID)
+				return "", errors.New("IMS 通话记录在拨号过程中消失")
+			}
+			lastState = current.State
+			switch current.State {
+			case "ringing", "active":
+				seenNetwork = true
+			case "failed":
+				return telegramVoWiFiCallOutcome(action.Argument, current)
+			case "ended":
+				if seenNetwork {
+					return fmt.Sprintf("VoWiFi 通话 %s 已由网络或对端提前结束（最后状态：%s）。", action.Argument, telegramIMSStateLabel(lastState)), nil
+				}
+				return fmt.Sprintf("📴 VoWiFi 呼叫 %s 在振铃前结束%s。", action.Argument, telegramSIPDiagnostic(current)), nil
+			}
+		}
+	}
+}
+
+func telegramFindVoWiFiCall(controller VoWiFiCallController, deviceID, callID string) (vowifi.Call, bool, error) {
+	calls, err := controller.Calls(deviceID)
+	if err != nil {
+		return vowifi.Call{}, false, err
+	}
+	for _, call := range calls {
+		if call.ID == callID {
+			return call, true, nil
+		}
+	}
+	return vowifi.Call{}, false, nil
+}
+
+func telegramVoWiFiCallFailure(call vowifi.Call) error {
+	return fmt.Errorf("VoWiFi 呼叫被拒绝或失败%s", telegramSIPDiagnostic(call))
+}
+
+func telegramVoWiFiCallOutcome(number string, call vowifi.Call) (string, error) {
+	diagnostic := telegramSIPDiagnostic(call)
+	switch call.SIPCode {
+	case 408:
+		return fmt.Sprintf("📵 VoWiFi 呼叫 %s 等待响应超时%s，未接通。", number, diagnostic), nil
+	case 480:
+		return fmt.Sprintf("📵 VoWiFi 呼叫 %s 暂时无人接听或对端不可用%s。", number, diagnostic), nil
+	case 486, 600:
+		return fmt.Sprintf("📵 VoWiFi 呼叫 %s 对方忙线%s。", number, diagnostic), nil
+	case 487:
+		return fmt.Sprintf("📴 VoWiFi 呼叫 %s 已在接通前取消或终止%s；这不是 IMS 注册失败。", number, diagnostic), nil
+	case 603:
+		return fmt.Sprintf("📵 VoWiFi 呼叫 %s 被对端拒接%s。", number, diagnostic), nil
+	default:
+		return "", telegramVoWiFiCallFailure(call)
+	}
+}
+
+func telegramSIPDiagnostic(call vowifi.Call) string {
+	parts := make([]string, 0, 2)
+	if call.SIPCode != 0 {
+		parts = append(parts, fmt.Sprintf("SIP %d", call.SIPCode))
+	}
+	if reason := strings.TrimSpace(call.Reason); reason != "" {
+		parts = append(parts, reason)
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return "（" + strings.Join(parts, " · ") + "）"
+}
+
+func telegramIMSStateLabel(state string) string {
+	switch state {
+	case "dialing":
+		return "正在拨号"
+	case "ringing":
+		return "对端振铃"
+	case "active":
+		return "已接通"
+	case "ended":
+		return "已结束"
+	case "failed":
+		return "失败"
+	default:
+		return firstNonEmpty(state, "未知状态")
+	}
+}
+
+func (bot *telegramBot) bestEffortVoWiFiHangup(controller VoWiFiCallController, deviceID, callID string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_ = controller.HangupCall(ctx, deviceID, callID)
+}
+
+func (bot *telegramBot) executeTimedCellularCall(
+	ctx context.Context,
+	config telegramRuntimeConfig,
+	action telegramPendingAction,
+	physicalID string,
+) (string, error) {
+	dialContext, cancelDial := context.WithTimeout(ctx, 20*time.Second)
+	response, err := bot.server.devices.ExecuteAT(dialContext, physicalID, "ATD"+action.Argument+";")
+	cancelDial()
+	if err != nil {
+		return "", fmt.Errorf("基站拨号失败: %w", err)
+	}
+	if !response.OK() {
+		return "", fmt.Errorf("基站未接受拨号: %s", formatTelegramAT(response))
+	}
+	hangupAt := time.Now().Add(action.Duration)
+	_ = bot.sendText(ctx, config, action.ChatID, fmt.Sprintf(
+		"📞 已通过基站提交 %s，将在 %d 秒后自动挂断，并持续检查 CLCC 状态。",
+		action.Argument, int(action.Duration/time.Second),
+	), nil)
+
+	timer := time.NewTimer(time.Until(hangupAt))
+	defer timer.Stop()
+	ticker := time.NewTicker(750 * time.Millisecond)
+	defer ticker.Stop()
+	startedAt := time.Now()
+	seenCall := false
+	confirmed := false
+	lastState := -1
+	for {
+		calls, queryErr := bot.telegramCellularCalls(ctx, physicalID)
+		if queryErr != nil {
+			if final, ok := telegramCallFinalError(queryErr); ok {
+				if confirmed && final == "NO CARRIER" {
+					return fmt.Sprintf("基站通话 %s 已由网络或对端提前结束。", action.Argument), nil
+				}
+				return "", fmt.Errorf("基站呼叫失败: %s", telegramCallFinalLabel(final))
+			}
+			bot.bestEffortCellularHangup(physicalID)
+			return "", fmt.Errorf("查询基站通话状态失败: %w", queryErr)
+		}
+		current, found := telegramFindOutgoingCellularCall(calls, action.Argument)
+		if found {
+			seenCall = true
+			lastState = telegramCellularCallInt(current, "state")
+			if lastState == 0 || lastState == 1 || lastState == 3 {
+				confirmed = true
+			}
+		} else if seenCall {
+			if confirmed {
+				return fmt.Sprintf("基站通话 %s 已由网络或对端提前结束（最后状态：%s）。", action.Argument, telegramCLCCStateLabel(lastState)), nil
+			}
+			return "", fmt.Errorf("基站呼叫在振铃前结束（最后状态：%s）", telegramCLCCStateLabel(lastState))
+		} else if time.Since(startedAt) >= 5*time.Second {
+			bot.bestEffortCellularHangup(physicalID)
+			return "", errors.New("模块接受了 ATD，但 5 秒内没有建立任何 CLCC 呼叫记录")
+		}
+
+		select {
+		case <-ctx.Done():
+			bot.bestEffortCellularHangup(physicalID)
+			return "", ctx.Err()
+		case <-timer.C:
+			if err := bot.hangupCellularCall(physicalID); err != nil {
+				return "", fmt.Errorf("基站拨号已执行，但自动挂断失败: %w", err)
+			}
+			if !seenCall {
+				return fmt.Sprintf("基站已接受拨号并在 %d 秒后自动挂断；持续时间过短，未取得 CLCC 状态。", int(action.Duration/time.Second)), nil
+			}
+			return fmt.Sprintf("基站拨号完成：%s；模块确认%s，%d 秒后自动挂断。", action.Argument, telegramCLCCStateLabel(lastState), int(action.Duration/time.Second)), nil
+		case <-ticker.C:
+		}
+	}
+}
+
+func (bot *telegramBot) telegramCellularCalls(ctx context.Context, physicalID string) ([]map[string]any, error) {
+	queryContext, cancel := context.WithTimeout(ctx, 8*time.Second)
+	defer cancel()
+	response, err := bot.server.devices.ExecuteAT(queryContext, physicalID, "AT+CLCC")
+	if err != nil {
+		return nil, err
+	}
+	return parseCLCC(response), nil
+}
+
+func telegramFindOutgoingCellularCall(calls []map[string]any, number string) (map[string]any, bool) {
+	cleanNumber := strings.TrimPrefix(strings.TrimSpace(number), "+")
+	var fallback map[string]any
+	for _, call := range calls {
+		if telegramCellularCallInt(call, "direction") != 0 {
+			continue
+		}
+		if fallback == nil {
+			fallback = call
+		}
+		candidate := strings.TrimPrefix(strings.TrimSpace(fmt.Sprint(call["number"])), "+")
+		if candidate == "<nil>" || candidate == "" || candidate == cleanNumber {
+			return call, true
+		}
+	}
+	return fallback, fallback != nil
+}
+
+func telegramCellularCallInt(call map[string]any, key string) int {
+	value, _ := call[key].(int)
+	return value
+}
+
+func telegramCLCCStateLabel(state int) string {
+	switch state {
+	case 0:
+		return "已接通"
+	case 1:
+		return "保持中"
+	case 2:
+		return "正在拨号"
+	case 3:
+		return "对端振铃"
+	case 4:
+		return "来电振铃"
+	case 5:
+		return "来电等待"
+	default:
+		return fmt.Sprintf("未知状态(%d)", state)
+	}
+}
+
+func telegramCallFinalError(err error) (string, bool) {
+	var commandErr *modem.CommandError
+	if !errors.As(err, &commandErr) {
+		return "", false
+	}
+	final := strings.ToUpper(strings.TrimSpace(commandErr.Final))
+	switch final {
+	case "NO CARRIER", "BUSY", "NO ANSWER":
+		return final, true
+	default:
+		return "", false
+	}
+}
+
+func telegramCallFinalLabel(final string) string {
+	switch final {
+	case "BUSY":
+		return "对方忙线（BUSY）"
+	case "NO ANSWER":
+		return "无人接听（NO ANSWER）"
+	case "NO CARRIER":
+		return "网络或对端已结束呼叫（NO CARRIER）"
+	default:
+		return final
+	}
+}
+
+func (bot *telegramBot) hangupCellularCall(physicalID string) error {
+	hangContext, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	response, err := bot.server.devices.ExecuteAT(hangContext, physicalID, "ATH")
+	if err != nil {
+		if final, ok := telegramCallFinalError(err); ok && final == "NO CARRIER" {
+			return nil
+		}
+		return err
+	}
+	if !response.OK() {
+		return fmt.Errorf("模块未确认 ATH: %s", formatTelegramAT(response))
+	}
+	return nil
+}
+
+func (bot *telegramBot) bestEffortCellularHangup(physicalID string) {
+	_ = bot.hangupCellularCall(physicalID)
+}
+
+func (bot *telegramBot) executeSimpleVoWiFiCallAction(ctx context.Context, deviceID, action string, controller VoWiFiCallController) (string, error) {
+	calls, err := controller.Calls(deviceID)
+	if err != nil {
+		return "", err
+	}
+	operationContext, cancel := context.WithTimeout(ctx, 20*time.Second)
+	defer cancel()
+	switch action {
+	case "status":
+		return formatTelegramIMSCalls(calls), nil
+	case "answer":
+		callID, err := resolveVoWiFiCallID(controller, deviceID, "", "ringing")
+		if err != nil {
+			return "", err
+		}
+		call, err := controller.AnswerCall(operationContext, deviceID, callID)
+		if err != nil {
+			return "", err
+		}
+		return fmt.Sprintf("📞 已通过 VoWiFi IMS 接听 %s（%s）。", firstNonEmpty(call.Number, "未知号码"), call.ID), nil
+	case "hangup":
+		count := 0
+		var failures []string
+		for _, call := range calls {
+			if call.State == "ended" || call.State == "failed" {
+				continue
+			}
+			if err := controller.HangupCall(operationContext, deviceID, call.ID); err != nil {
+				failures = append(failures, err.Error())
+				continue
+			}
+			count++
+		}
+		if len(failures) > 0 {
+			return "", errors.New(strings.Join(failures, "; "))
+		}
+		if count == 0 {
+			return "", errors.New("当前没有可挂断的 VoWiFi 通话")
+		}
+		return fmt.Sprintf("已通过 VoWiFi IMS 挂断 %d 路通话。", count), nil
+	default:
+		return "", errors.New("未知通话操作")
+	}
+}
+
+func formatTelegramIMSCalls(calls []vowifi.Call) string {
+	if len(calls) == 0 {
+		return "VoWiFi IMS：当前没有通话。"
+	}
+	lines := []string{"VoWiFi IMS 通话："}
+	for _, call := range calls {
+		direction := map[bool]string{true: "来电", false: "去电"}[call.Direction == "incoming"]
+		lines = append(lines, fmt.Sprintf("• %s · %s · %s · %s%s", firstNonEmpty(call.Number, "未知号码"), direction, telegramIMSStateLabel(call.State), call.ID, telegramSIPDiagnostic(call)))
+	}
+	return strings.Join(lines, "\n")
+}
+
+func (bot *telegramBot) executeSimpleCellularCallAction(ctx context.Context, physicalID, action string) (string, error) {
+	switch action {
+	case "status":
+		calls, err := bot.telegramCellularCalls(ctx, physicalID)
+		if err != nil {
+			if final, ok := telegramCallFinalError(err); ok && final == "NO CARRIER" {
+				return "基站直连：当前没有活动通话。", nil
+			}
+			return "", err
+		}
+		return formatTelegramCellularCalls(calls), nil
+	case "answer":
+		operationContext, cancel := context.WithTimeout(ctx, 20*time.Second)
+		response, err := bot.server.devices.ExecuteAT(operationContext, physicalID, "ATA")
+		cancel()
+		if err != nil {
+			return "", err
+		}
+		if !response.OK() {
+			return "", fmt.Errorf("模块未确认 ATA: %s", formatTelegramAT(response))
+		}
+		deadline := time.Now().Add(8 * time.Second)
+		for time.Now().Before(deadline) {
+			calls, queryErr := bot.telegramCellularCalls(ctx, physicalID)
+			if queryErr != nil {
+				return "", queryErr
+			}
+			for _, call := range calls {
+				if telegramCellularCallInt(call, "direction") == 1 && telegramCellularCallInt(call, "state") == 0 {
+					return "📞 基站来电已接通。", nil
+				}
+			}
+			if !waitTelegram(ctx, 500*time.Millisecond) {
+				return "", ctx.Err()
+			}
+		}
+		return "", errors.New("模块接受了 ATA，但 8 秒内未确认来电已接通")
+	case "hangup":
+		if err := bot.hangupCellularCall(physicalID); err != nil {
+			return "", err
+		}
+		deadline := time.Now().Add(4 * time.Second)
+		for time.Now().Before(deadline) {
+			calls, queryErr := bot.telegramCellularCalls(ctx, physicalID)
+			if queryErr != nil {
+				if final, ok := telegramCallFinalError(queryErr); ok && final == "NO CARRIER" {
+					return "已通过基站发送 ATH，并确认通话结束。", nil
+				}
+				return "", queryErr
+			}
+			if len(calls) == 0 {
+				return "已通过基站发送 ATH，并确认没有活动通话。", nil
+			}
+			if !waitTelegram(ctx, 400*time.Millisecond) {
+				return "", ctx.Err()
+			}
+		}
+		return "", errors.New("模块接受了 ATH，但 4 秒后仍报告活动通话")
+	default:
+		return "", errors.New("未知通话操作")
+	}
+}
+
+func formatTelegramCellularCalls(calls []map[string]any) string {
+	if len(calls) == 0 {
+		return "基站直连：当前没有活动通话。"
+	}
+	lines := []string{"基站直连通话："}
+	for _, call := range calls {
+		direction := map[bool]string{true: "来电", false: "去电"}[telegramCellularCallInt(call, "direction") == 1]
+		number := strings.TrimSpace(fmt.Sprint(call["number"]))
+		if number == "" || number == "<nil>" {
+			number = "未知号码"
+		}
+		lines = append(lines, fmt.Sprintf("• #%d · %s · %s · %s", telegramCellularCallInt(call, "index"), number, direction, telegramCLCCStateLabel(telegramCellularCallInt(call, "state"))))
+	}
+	return strings.Join(lines, "\n")
 }
 
 func (bot *telegramBot) handleATCommand(ctx context.Context, config telegramRuntimeConfig, chatID, adminID int64, deviceID, command string) {

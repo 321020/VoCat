@@ -4,6 +4,7 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"time"
 
 	"vocat/internal/vowifi"
 )
@@ -78,6 +79,36 @@ func TestRejectedOutgoingCallRetainsSIPReason(t *testing.T) {
 		calls[0].Reason != "Address Incomplete ignored" || calls[0].EndedAt == nil {
 		t.Fatalf("rejected call = %#v", calls)
 	}
+}
+
+func TestCancelledOutgoingInviteDoesNotBecomeFailedOn487(t *testing.T) {
+	call := &imsCall{
+		public:     vowifi.Call{ID: "cancelled", State: "dialing"},
+		callID:     "cancelled",
+		responses:  make(chan *sipResponse, 1),
+		terminated: true,
+	}
+	session := &Session{
+		calls:          map[string]*imsCall{call.callID: call},
+		transactions:   make(map[sipTransactionKey]chan *sipResponse),
+		refreshContext: context.Background(),
+	}
+	key := sipTransactionKey{callID: call.callID, cseq: 1, method: "INVITE"}
+	go session.watchOutgoingCall(call, key)
+	call.responses <- &sipResponse{StatusCode: 487, Reason: "Request Terminated"}
+
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		calls := session.Calls()
+		if len(calls) == 1 && calls[0].EndedAt != nil {
+			if calls[0].State != "ended" || calls[0].SIPCode != 487 {
+				t.Fatalf("cancelled INVITE = %#v", calls[0])
+			}
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatal("cancelled INVITE did not reach a terminal state")
 }
 
 func TestValidCallNumber(t *testing.T) {
