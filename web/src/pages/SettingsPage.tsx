@@ -271,9 +271,12 @@ export default function SettingsPage() {
     if (!confirmed) return;
     setApplyingUpdate(true);
     try {
-      const data = await api<{ message?: string }>("/system/update/apply", { method: "POST", body: {} });
+      const data = await api<{ message?: string; reauthenticationRequired?: boolean }>("/system/update/apply", { method: "POST", body: {} });
       message.success(data?.message || t("正在更新..."));
-      window.setTimeout(() => window.location.reload(), 5000);
+      window.setTimeout(() => {
+        if (data?.reauthenticationRequired) window.location.replace("/login");
+        else window.location.reload();
+      }, 1500);
     } catch (e) {
       message.error(e instanceof Error ? e.message : t("应用更新失败"));
     } finally {

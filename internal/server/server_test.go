@@ -241,6 +241,30 @@ func TestUnifiedAPIErrors(t *testing.T) {
 	}
 }
 
+func TestUnauthenticatedBrowserNavigationRedirectsToLogin(t *testing.T) {
+	app := newTestApplication(t)
+	client := *app.client
+	client.CheckRedirect = func(_ *http.Request, _ []*http.Request) error {
+		return http.ErrUseLastResponse
+	}
+	request, err := http.NewRequest(http.MethodGet, app.server.URL+"/api/devices", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Header.Set("Accept", "text/html,application/xhtml+xml")
+	response, err := client.Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusSeeOther {
+		t.Fatalf("navigation status = %d", response.StatusCode)
+	}
+	if location := response.Header.Get("Location"); location != "/login" {
+		t.Fatalf("navigation location = %q", location)
+	}
+}
+
 func TestNewRequiresIndex(t *testing.T) {
 	database, err := store.Open(context.Background(), ":memory:")
 	if err != nil {

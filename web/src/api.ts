@@ -9,6 +9,18 @@ import { tl } from "./lib/i18n";
 
 const CSRF_KEY = "vocat.csrf";
 
+// Authenticated pages and same-origin plugin frames share this signal. Clear
+// the mutation token immediately so a revoked session cannot leave stale auth
+// state behind in the browser.
+export function notifyUnauthorized() {
+  try {
+    sessionStorage.removeItem(CSRF_KEY);
+  } catch {
+    /* ignore unavailable storage */
+  }
+  window.dispatchEvent(new Event("vocat:unauthorized"));
+}
+
 function isMutation(method: string) {
   return !["GET", "HEAD", "OPTIONS"].includes(method.toUpperCase());
 }
@@ -94,14 +106,17 @@ export async function api<T>(path: string, options: RequestOptions = {}): Promis
         : JSON.stringify(snakeize(options.body)),
   });
 
-  if (options.raw) return response as T;
+  if (options.raw) {
+    if (response.status === 401) notifyUnauthorized();
+    return response as T;
+  }
   const contentType = response.headers.get("content-type") || "";
   const payload = contentType.includes("application/json")
     ? await response.json()
     : { message: await response.text() };
   const normalized = camelize<Record<string, unknown>>(payload);
   if (!response.ok) {
-    if (response.status === 401) window.dispatchEvent(new Event("vocat:unauthorized"));
+    if (response.status === 401) notifyUnauthorized();
     const nested = normalized.error;
     const detail = nested && typeof nested === "object"
       ? {

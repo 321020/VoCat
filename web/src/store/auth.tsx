@@ -63,6 +63,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, []);
 
   useEffect(() => {
+    const unauthorized = () => {
+      setUser(null);
+      setReady(true);
+    };
+    window.addEventListener("vocat:unauthorized", unauthorized);
+    return () => window.removeEventListener("vocat:unauthorized", unauthorized);
+  }, []);
+
+  useEffect(() => {
     void refresh();
   }, [refresh]);
 

@@ -45,7 +45,8 @@ function RequireAuth({ children }: { children: ReactElement }) {
   const location = useLocation();
   if (!ready) return <LoadingScreen />;
   if (!isAuthenticated) {
-    return <Navigate to={`/login?redirect=${encodeURIComponent(location.pathname)}`} replace />;
+    const redirect = `${location.pathname}${location.search}${location.hash}`;
+    return <Navigate to={`/login?redirect=${encodeURIComponent(redirect)}`} replace />;
   }
   return children;
 }

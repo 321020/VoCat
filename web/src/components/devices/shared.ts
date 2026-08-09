@@ -3,6 +3,7 @@ import { message } from "../ui";
 import type { DeviceDetail, DeviceModem, ModemPnn } from "./types";
 import { tl } from "../../lib/i18n";
 import { lookupCarrier } from "../../lib/carrier";
+import { notifyUnauthorized } from "../../api";
 
 /* ---------------------------------------------------------------------------
  * Lifecycle / status helpers (ported from the VoHive reference).
@@ -283,6 +284,7 @@ export async function readEventStream(
     credentials: "include",
     signal: handlers.signal,
   });
+  if (response.status === 401) notifyUnauthorized();
   if (!response.ok) throw new Error((await response.text()) || `HTTP ${response.status}`);
   if (!response.body) throw new Error("No stream body");
 

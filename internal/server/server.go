@@ -260,8 +260,7 @@ func (s *Server) handleSession(w http.ResponseWriter, r *http.Request) {
 	}
 	session, csrfToken, err := s.auth.CSRFToken(r.Context(), sessionToken, existingCSRF)
 	if errors.Is(err, auth.ErrUnauthorized) {
-		s.clearAuthCookies(w)
-		writeError(w, http.StatusUnauthorized, "unauthorized", "authentication is required")
+		s.authenticationRequired(w, r)
 		return
 	}
 	if err != nil {
@@ -296,8 +295,7 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 	if _, err := s.auth.ValidateCSRF(r.Context(), sessionToken, csrfToken); err != nil {
 		switch {
 		case errors.Is(err, auth.ErrUnauthorized):
-			s.clearAuthCookies(w)
-			writeError(w, http.StatusUnauthorized, "unauthorized", "authentication is required")
+			s.authenticationRequired(w, r)
 		case errors.Is(err, auth.ErrInvalidCSRF):
 			writeError(w, http.StatusForbidden, "invalid_csrf", "CSRF validation failed")
 		default:
@@ -346,8 +344,7 @@ func (s *Server) handleAPI(w http.ResponseWriter, r *http.Request) {
 		if _, err := s.auth.ValidateCSRF(r.Context(), sessionToken, csrfToken); err != nil {
 			switch {
 			case errors.Is(err, auth.ErrUnauthorized):
-				s.clearAuthCookies(w)
-				writeError(w, http.StatusUnauthorized, "unauthorized", "authentication is required")
+				s.authenticationRequired(w, r)
 			case errors.Is(err, auth.ErrInvalidCSRF):
 				writeError(w, http.StatusForbidden, "invalid_csrf", "CSRF validation failed")
 			default:
@@ -419,7 +416,7 @@ func (s *Server) decodeJSON(w http.ResponseWriter, r *http.Request, destination 
 func (s *Server) sessionToken(w http.ResponseWriter, r *http.Request) (string, bool) {
 	cookie, err := r.Cookie(sessionCookieName)
 	if err != nil || cookie.Value == "" {
-		writeError(w, http.StatusUnauthorized, "unauthorized", "authentication is required")
+		s.authenticationRequired(w, r)
 		return "", false
 	}
 	return cookie.Value, true
@@ -432,8 +429,7 @@ func (s *Server) requireAuthenticated(w http.ResponseWriter, r *http.Request) bo
 	}
 	if _, err := s.auth.Authenticate(r.Context(), sessionToken); err != nil {
 		if errors.Is(err, auth.ErrUnauthorized) {
-			s.clearAuthCookies(w)
-			writeError(w, http.StatusUnauthorized, "unauthorized", "authentication is required")
+			s.authenticationRequired(w, r)
 		} else {
 			s.logger.Error("request authentication failed", "error", err)
 			writeError(w, http.StatusInternalServerError, "internal_error", "an internal error occurred")
@@ -441,6 +437,21 @@ func (s *Server) requireAuthenticated(w http.ResponseWriter, r *http.Request) bo
 		return false
 	}
 	return true
+}
+
+// authenticationRequired preserves JSON semantics for API clients while
+// making a direct browser navigation land on the login screen instead of a
+// raw {"error":...} document. Frontend fetches explicitly request JSON and
+// are handled by the shared vocat:unauthorized event.
+func (s *Server) authenticationRequired(w http.ResponseWriter, r *http.Request) {
+	s.clearAuthCookies(w)
+	w.Header().Set("Cache-Control", "no-store")
+	if (r.Method == http.MethodGet || r.Method == http.MethodHead) &&
+		strings.Contains(strings.ToLower(r.Header.Get("Accept")), "text/html") {
+		http.Redirect(w, r, "/login", http.StatusSeeOther)
+		return
+	}
+	writeError(w, http.StatusUnauthorized, "unauthorized", "authentication is required")
 }
 
 func (s *Server) validateDoubleSubmitCSRF(w http.ResponseWriter, r *http.Request) (string, bool) {
