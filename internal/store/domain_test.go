@@ -70,6 +70,41 @@ func TestMigrationFromAuthenticationSchema(t *testing.T) {
 	}
 }
 
+func TestMigration7BackfillsSMSModemIMEI(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "sms-imei.db")
+	raw, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for version := 1; version <= 6; version++ {
+		for _, statement := range migrationStatements(version) {
+			if _, err := raw.ExecContext(ctx, statement); err != nil {
+				t.Fatalf("create v%d schema: %v", version, err)
+			}
+		}
+	}
+	if _, err := raw.ExecContext(ctx, `
+		INSERT INTO devices (id, name, modem_imei, created_at, updated_at)
+		VALUES ('ec20_1', 'EC20', '867394042309830', 100, 100);
+		INSERT INTO sms_messages (
+			message_id, device_id, peer, direction, message_time, created_at, updated_at
+		) VALUES ('legacy-message', 'ec20_1', 'VOXI', 'inbound', 100, 100, 100);
+		PRAGMA user_version = 6;
+	`); err != nil {
+		t.Fatal(err)
+	}
+	if err := raw.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	database := openTestStore(t, path)
+	messages, err := database.ListSMSMessages(ctx, SMSFilter{ModemIMEI: "867394042309830"})
+	if err != nil || len(messages) != 1 || messages[0].DeviceID != "ec20_1" {
+		t.Fatalf("migrated SMS = %#v, %v", messages, err)
+	}
+}
+
 func TestMigration4PreservesIMSRedeliveryAndUsesReceiptTime(t *testing.T) {
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "ims-redelivery.db")
@@ -288,6 +323,68 @@ func TestSMSPersistenceAndDerivedThreads(t *testing.T) {
 	deleted, err := database.DeleteSMSThread(ctx, "ec20-1", "46000", "10086")
 	if err != nil || deleted != 2 {
 		t.Fatalf("DeleteSMSThread() = %d, %v", deleted, err)
+	}
+}
+
+func TestSMSHistoryFollowsModemIMEIAfterDeviceIDRename(t *testing.T) {
+	ctx := context.Background()
+	database := openTestStore(t, ":memory:")
+	const imei = "867394042309830"
+	if err := database.UpsertDevice(ctx, Device{
+		ID: "ec20_1", Name: "EC20 old", ModemIMEI: imei,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.SaveSMSMessage(ctx, SMSMessage{
+		MessageID: "network-old", DeviceID: "ec20_1",
+		IMSI: "23415", Peer: "VOXI", Direction: "inbound", Body: "before rename",
+		Timestamp: time.Unix(1_700_000_000, 0).UTC(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.DeleteDevice(ctx, "ec20_1"); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.UpsertDevice(ctx, Device{
+		ID: "ec20_2", Name: "EC20 renamed", ModemIMEI: imei,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.SaveSMSMessage(ctx, SMSMessage{
+		MessageID: "network-new", DeviceID: "ec20_2", ModemIMEI: imei,
+		IMSI: "23415", Peer: "VOXI", Direction: "inbound", Body: "after rename",
+		Timestamp: time.Unix(1_700_000_060, 0).UTC(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	contacts, err := database.ListSMSContacts(ctx, SMSFilter{ModemIMEI: imei})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(contacts) != 1 || contacts[0].DeviceID != "ec20_2" ||
+		contacts[0].ModemIMEI != imei || contacts[0].MessageCount != 2 {
+		t.Fatalf("renamed hardware contact = %#v", contacts)
+	}
+	messages, err := database.ListSMSMessages(ctx, SMSFilter{
+		ModemIMEI: imei, IMSI: "23415", Peer: "VOXI",
+	})
+	if err != nil || len(messages) != 2 {
+		t.Fatalf("renamed hardware messages = %#v, %v", messages, err)
+	}
+
+	// A retry that arrives after the rename updates the same hardware message,
+	// rather than duplicating it under the new configured ID.
+	if _, err := database.SaveSMSMessage(ctx, SMSMessage{
+		MessageID: "network-old", DeviceID: "ec20_2", ModemIMEI: imei,
+		IMSI: "23415", Peer: "VOXI", Direction: "inbound", Body: "retry",
+		Timestamp: time.Unix(1_700_000_000, 0).UTC(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	messages, err = database.ListSMSMessages(ctx, SMSFilter{ModemIMEI: imei})
+	if err != nil || len(messages) != 2 {
+		t.Fatalf("retry after rename messages = %#v, %v", messages, err)
 	}
 }
 

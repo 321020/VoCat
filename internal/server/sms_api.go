@@ -46,10 +46,9 @@ func (s *Server) handleSMSContacts(w http.ResponseWriter, r *http.Request) {
 	}
 	deviceID := normalizeSMSDeviceFilter(r.URL.Query().Get("device_id"))
 	s.syncModemSMS(r.Context(), deviceID)
-	contacts, err := s.store.ListSMSContacts(r.Context(), store.SMSFilter{
-		DeviceID: deviceID,
-		Limit:    queryLimit(r, 100),
-	})
+	filter := s.smsStoreFilter(r.Context(), deviceID, "")
+	filter.Limit = queryLimit(r, 100)
+	contacts, err := s.store.ListSMSContacts(r.Context(), filter)
 	if err != nil {
 		s.writeStoreError(w, err)
 		return
@@ -59,6 +58,7 @@ func (s *Server) handleSMSContacts(w http.ResponseWriter, r *http.Request) {
 		result = append(result, map[string]any{
 			"device_id":      contact.DeviceID,
 			"device_name":    contact.DeviceName,
+			"modem_imei":     contact.ModemIMEI,
 			"imsi":           contact.IMSI,
 			"local_phone":    contact.LocalPhone,
 			"peer":           contact.Peer,
@@ -78,6 +78,7 @@ func (s *Server) handleSMSContacts(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleSMSThread(w http.ResponseWriter, r *http.Request) {
 	deviceID := normalizeSMSDeviceFilter(r.URL.Query().Get("device_id"))
+	modemIMEI := strings.TrimSpace(r.URL.Query().Get("modem_imei"))
 	imsi := strings.TrimSpace(r.URL.Query().Get("imsi"))
 	peer := strings.TrimSpace(r.URL.Query().Get("peer"))
 	if peer == "" {
@@ -87,12 +88,14 @@ func (s *Server) handleSMSThread(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
 		s.syncModemSMS(r.Context(), deviceID)
-		messages, err := s.store.ListSMSMessages(r.Context(), store.SMSFilter{
-			DeviceID: deviceID,
-			IMSI:     imsi,
-			Peer:     peer,
-			Limit:    queryLimit(r, 100),
-		})
+		filter := s.smsStoreFilter(r.Context(), deviceID, modemIMEI)
+		filter.IMSI = imsi
+		filter.Peer = peer
+		filter.Limit = queryLimit(r, 100)
+		if beforeID, parseErr := strconv.ParseInt(strings.TrimSpace(r.URL.Query().Get("before_id")), 10, 64); parseErr == nil && beforeID > 0 {
+			filter.BeforeID = beforeID
+		}
+		messages, err := s.store.ListSMSMessages(r.Context(), filter)
 		if err != nil {
 			s.writeStoreError(w, err)
 			return
@@ -110,12 +113,11 @@ func (s *Server) handleSMSThread(w http.ResponseWriter, r *http.Request) {
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"data": result})
 	case http.MethodDelete:
-		messages, err := s.store.ListSMSMessages(r.Context(), store.SMSFilter{
-			DeviceID: deviceID,
-			IMSI:     imsi,
-			Peer:     peer,
-			Limit:    1000,
-		})
+		filter := s.smsStoreFilter(r.Context(), deviceID, modemIMEI)
+		filter.IMSI = imsi
+		filter.Peer = peer
+		filter.Limit = 1000
+		messages, err := s.store.ListSMSMessages(r.Context(), filter)
 		if err != nil {
 			s.writeStoreError(w, err)
 			return
@@ -145,6 +147,35 @@ func normalizeSMSDeviceFilter(value string) string {
 		return ""
 	}
 	return value
+}
+
+// smsStoreFilter resolves a mutable configured device ID to the modem's stable
+// IMEI. The ID is still used to address the live modem, but persisted history
+// remains attached to the same hardware after the user renames that ID.
+func (s *Server) smsStoreFilter(ctx context.Context, deviceID, requestedIMEI string) store.SMSFilter {
+	filter := store.SMSFilter{ModemIMEI: strings.TrimSpace(requestedIMEI)}
+	deviceID = strings.TrimSpace(deviceID)
+	if deviceID == "" {
+		return filter
+	}
+	filter.ModemIMEI = ""
+	filter.DeviceID = deviceID
+	config, err := s.store.Device(ctx, deviceID)
+	if err != nil {
+		return filter
+	}
+	imei := strings.TrimSpace(config.ModemIMEI)
+	if entry, _, present := s.physicalForConfig(config); present {
+		imei = firstNonEmpty(
+			snapshotString(entry.Snapshot, func(snapshot *device.Snapshot) string { return snapshot.IMEI }),
+			imei,
+		)
+	}
+	if imei != "" {
+		filter.DeviceID = ""
+		filter.ModemIMEI = imei
+	}
+	return filter
 }
 
 // blockedSMSDestination reports whether the recipient is in a barred country.
@@ -227,6 +258,10 @@ func (s *Server) handleSMSSend(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	imsi := snapshotString(entry.Snapshot, func(snapshot *device.Snapshot) string { return snapshot.IMSI })
+	modemIMEI := firstNonEmpty(
+		snapshotString(entry.Snapshot, func(snapshot *device.Snapshot) string { return snapshot.IMEI }),
+		config.ModemIMEI,
+	)
 	extra, _ := json.Marshal(map[string]any{
 		"encoding":             result.Encoding,
 		"message_reference":    result.MessageReference,
@@ -245,13 +280,14 @@ func (s *Server) handleSMSSend(w http.ResponseWriter, r *http.Request) {
 	})
 	messageID := fmt.Sprintf(
 		"at-submit:%s:%d:%d",
-		request.DeviceID,
+		firstNonEmpty(modemIMEI, request.DeviceID),
 		result.MessageReference,
 		result.SubmittedAt.UnixNano(),
 	)
 	saved, err := s.store.SaveSMSMessage(r.Context(), store.SMSMessage{
 		MessageID:     messageID,
 		DeviceID:      request.DeviceID,
+		ModemIMEI:     modemIMEI,
 		IMSI:          imsi,
 		Peer:          result.To,
 		Direction:     "outbound",
@@ -354,9 +390,14 @@ func (s *Server) writeIMSSMSSendResult(
 		"submission_status":  result.SubmissionStatus,
 	})
 	imsi := snapshotString(entry.Snapshot, func(snapshot *device.Snapshot) string { return snapshot.IMSI })
+	modemIMEI := snapshotString(entry.Snapshot, func(snapshot *device.Snapshot) string { return snapshot.IMEI })
+	if config, configErr := s.store.Device(r.Context(), deviceID); configErr == nil {
+		modemIMEI = firstNonEmpty(modemIMEI, config.ModemIMEI)
+	}
 	saved, err := s.store.SaveSMSMessage(r.Context(), store.SMSMessage{
-		MessageID:     fmt.Sprintf("ims-submit:%s:%d", deviceID, result.SubmittedAt.UnixNano()),
+		MessageID:     fmt.Sprintf("ims-submit:%s:%d", firstNonEmpty(modemIMEI, deviceID), result.SubmittedAt.UnixNano()),
 		DeviceID:      deviceID,
+		ModemIMEI:     modemIMEI,
 		IMSI:          imsi,
 		Peer:          result.To,
 		Direction:     "outbound",
@@ -494,11 +535,16 @@ func (s *Server) syncModemSMS(ctx context.Context, onlyDevice string) {
 			continue
 		}
 		imsi := snapshotString(entry.Snapshot, func(snapshot *device.Snapshot) string { return snapshot.IMSI })
+		modemIMEI := firstNonEmpty(
+			snapshotString(entry.Snapshot, func(snapshot *device.Snapshot) string { return snapshot.IMEI }),
+			config.ModemIMEI,
+		)
 		for _, message := range messages {
 			if message.Direction == device.SMSDirectionStatusReport &&
 				message.MessageReference != nil && message.StatusCode != nil {
 				_, applyErr := s.store.ApplySMSDeliveryReport(ctx, store.SMSDeliveryReport{
 					DeviceID:          config.ID,
+					ModemIMEI:         modemIMEI,
 					IMSI:              imsi,
 					Peer:              message.To,
 					Source:            "cellular_at",
@@ -550,6 +596,7 @@ func (s *Server) syncModemSMS(ctx context.Context, onlyDevice string) {
 			_, saveErr := s.store.SaveSMSMessage(ctx, store.SMSMessage{
 				MessageID:     messageID,
 				DeviceID:      config.ID,
+				ModemIMEI:     modemIMEI,
 				IMSI:          imsi,
 				Peer:          peer,
 				Direction:     direction,
@@ -605,6 +652,7 @@ func storedSMSResponse(message store.SMSMessage) map[string]any {
 		"id":             message.ID,
 		"message_id":     message.MessageID,
 		"device_id":      message.DeviceID,
+		"modem_imei":     message.ModemIMEI,
 		"imsi":           message.IMSI,
 		"peer":           message.Peer,
 		"direction":      message.Direction,

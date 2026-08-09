@@ -18,8 +18,10 @@ import (
 	"time"
 
 	"vocat/internal/auth"
+	"vocat/internal/extensions"
 	"vocat/internal/loghub"
 	"vocat/internal/store"
+	"vocat/internal/update"
 	"vocat/internal/vowifi"
 )
 
@@ -39,6 +41,10 @@ type Options struct {
 	Logger              *slog.Logger
 	SecureCookies       bool
 	MaxRequestBodyBytes int64
+	Extensions          *extensions.Manager
+	DeveloperEnabled    bool
+	UpdateRepository    string
+	UpdateToken         string
 }
 
 // Server is the single HTTP handler for the JSON API and embedded SPA.
@@ -60,6 +66,15 @@ type Server struct {
 	accessMu            sync.RWMutex
 	access              parsedAccessConfig
 	loginLimiter        *loginRateLimiter
+	extensions          *extensions.Manager
+	developerEnabled    bool
+	updateRepository    string
+	updateToken         string
+	updateCheck         func(context.Context, string, string, string) (update.CheckResult, error)
+	updateApply         func(context.Context, *slog.Logger, update.Options, bool) (update.CheckResult, error)
+	updateRestart       func(*slog.Logger) error
+	updateMu            sync.Mutex
+	updateApplying      bool
 }
 
 func New(options Options) (*Server, error) {
@@ -82,6 +97,9 @@ func New(options Options) (*Server, error) {
 	if options.MaxRequestBodyBytes <= 0 {
 		options.MaxRequestBodyBytes = 1 << 20
 	}
+	if strings.TrimSpace(options.UpdateRepository) == "" {
+		options.UpdateRepository = update.DefaultRepository
+	}
 
 	server := &Server{
 		store:               options.Store,
@@ -98,6 +116,13 @@ func New(options Options) (*Server, error) {
 		startedAt:           time.Now().UTC(),
 		websheets:           newWebsheetManager(),
 		loginLimiter:        newLoginRateLimiter(),
+		extensions:          options.Extensions,
+		developerEnabled:    options.DeveloperEnabled,
+		updateRepository:    strings.TrimSpace(options.UpdateRepository),
+		updateToken:         strings.TrimSpace(options.UpdateToken),
+		updateCheck:         update.CheckLatest,
+		updateApply:         update.ApplyLatest,
+		updateRestart:       update.RestartService,
 	}
 	server.loadAccessConfig(context.Background())
 	server.loadUILanguage(context.Background())
@@ -110,6 +135,7 @@ func New(options Options) (*Server, error) {
 	mux.HandleFunc("/api", server.handleAPI)
 	mux.HandleFunc("/api/", server.handleAPI)
 	mux.HandleFunc("/websheets/", server.handleWebsheet)
+	mux.HandleFunc("/plugin-assets/", server.handlePluginAsset)
 	mux.HandleFunc("/", server.handleSPA)
 
 	server.handler = server.recoverPanics(
@@ -125,6 +151,13 @@ type VoWiFiController interface {
 	State(string) (vowifi.State, error)
 	RequestEnabled(string, bool) (vowifi.State, error)
 	RequestReconnect(string) (vowifi.State, error)
+}
+
+type VoWiFiCallController interface {
+	Calls(string) ([]vowifi.Call, error)
+	DialCall(context.Context, string, string) (vowifi.Call, error)
+	AnswerCall(context.Context, string, string) (vowifi.Call, error)
+	HangupCall(context.Context, string, string) error
 }
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -528,7 +561,7 @@ func (s *Server) securityHeaders(next http.Handler) http.Handler {
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		w.Header().Set("Referrer-Policy", "same-origin")
 		w.Header().Set("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
-		if strings.HasPrefix(r.URL.Path, "/websheets/") {
+		if strings.HasPrefix(r.URL.Path, "/websheets/") || strings.HasPrefix(r.URL.Path, "/plugin-assets/") {
 			// The self-hosted E911 websheet is embedded in an iframe by the SPA, so
 			// it must be frameable same-origin. Every other route stays DENY.
 			w.Header().Set("X-Frame-Options", "SAMEORIGIN")

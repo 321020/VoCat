@@ -5,6 +5,30 @@
  * 富文本片段（嵌套链接/代码块的说明框）不走字典，在组件里按语言分支渲染。
  */
 export const EN_DICT: Record<string, string> = {
+  // External extensions.
+  "插件": "Plugins",
+  "通过 URL 或本地插件包扩展 VoCat 功能": "Extend VoCat with a URL or a local plugin package",
+  "插件列表加载失败": "Failed to load plugins",
+  "请输入插件包 URL": "Enter a plugin package URL",
+  "插件页面以当前管理员权限运行，插件后端还可以运行外部代码。仅安装你完全信任的插件。":
+    "Plugin pages run with the current administrator's privileges, and plugin backends can execute external code. Install only plugins you fully trust.",
+  "安装外部插件？": "Install external plugin?",
+  "安装上传的插件？": "Install uploaded plugin?",
+  "插件已安装并启用": "Plugin installed and enabled",
+  "插件安装失败": "Plugin installation failed",
+  "插件状态更新失败": "Failed to update plugin state",
+  "插件代码和插件数据将从本机删除。": "The plugin code and its data will be removed from this host.",
+  "卸载插件？": "Uninstall plugin?",
+  "卸载": "Uninstall",
+  "插件已卸载": "Plugin uninstalled",
+  "插件卸载失败": "Plugin uninstall failed",
+  "从 URL 安装": "Install from URL",
+  "上传插件包": "Upload plugin package",
+  "SHA-256（可选，推荐）": "SHA-256 (optional, recommended)",
+  "尚未安装插件": "No plugins installed",
+  "插件加载失败": "Failed to load plugin",
+  "插件不可用": "Plugin unavailable",
+  "插件可能已被禁用、卸载或没有注册此页面。": "The plugin may be disabled, uninstalled, or may not register this page.",
   // Device-bound VoWiFi upstream routing.
   "设备绑定": "Device Bindings",
   "绑定后，该设备的 VoWiFi 建链和通信都会使用此 SOCKS5 代理；解绑后恢复直连。配置变更会立即尝试重连 VoWiFi。":
@@ -565,6 +589,8 @@ export const EN_DICT: Record<string, string> = {
   "数据平面": "Data Plane",
   "方向": "Direction",
   "无法读取 IMEI（控制口可能挂死），暂不可添加。": "Cannot read the IMEI (the control port may be stuck); cannot add for now.",
+  "未找到可用的 AT 端口（串口可能仍在枚举），系统会自动重试；也可点击重新扫描。":
+    "No usable AT port was found (serial interfaces may still be enumerating). The system retries automatically; you can also rescan now.",
   "无法读取该设备 IMEI（可能控制口挂死），请执行 AT!RESET 或切换组态后重试": "Cannot read the device IMEI (the control port may be stuck); run AT!RESET or switch the USB composition and retry",
   "是": "Yes",
   "显示名称（可选）": "Display Name (optional)",

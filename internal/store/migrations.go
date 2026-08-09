@@ -81,6 +81,31 @@ func migrationStatements(version int) []string {
 			`CREATE INDEX IF NOT EXISTS device_proxy_bindings_proxy_idx
 				ON device_proxy_bindings(upstream_proxy_id)`,
 		}
+	case 7:
+		return []string{
+			`ALTER TABLE sms_messages
+				ADD COLUMN modem_imei TEXT NOT NULL DEFAULT ''`,
+			`UPDATE sms_messages
+			SET modem_imei = COALESCE((
+				SELECT NULLIF(d.modem_imei, '')
+				FROM devices d
+				WHERE d.id = sms_messages.device_id
+			), '')
+			WHERE modem_imei = ''`,
+			`DELETE FROM sms_messages
+			WHERE modem_imei <> '' AND message_id <> ''
+				AND id NOT IN (
+					SELECT MIN(id)
+					FROM sms_messages
+					WHERE modem_imei <> '' AND message_id <> ''
+					GROUP BY modem_imei, message_id
+				)`,
+			`CREATE UNIQUE INDEX IF NOT EXISTS sms_messages_hardware_external_id_idx
+				ON sms_messages(modem_imei, message_id)
+				WHERE modem_imei <> '' AND message_id <> ''`,
+			`CREATE INDEX IF NOT EXISTS sms_messages_hardware_thread_idx
+				ON sms_messages(modem_imei, imsi, peer, message_time DESC, id DESC)`,
+		}
 	default:
 		return nil
 	}

@@ -1,11 +1,56 @@
 package server
 
 import (
+	"strings"
 	"testing"
 	"time"
 
 	"vocat/internal/modem"
 )
+
+func TestTelegramAPIURLSupportsBaseAndTemplate(t *testing.T) {
+	tests := []struct {
+		name    string
+		baseURL string
+		want    string
+	}{
+		{
+			name:    "base URL",
+			baseURL: "https://api.telegram.org",
+			want:    "https://api.telegram.org/bot123456:test-token/sendMessage",
+		},
+		{
+			name:    "reverse proxy template",
+			baseURL: "https://telegram.example.com/bot%s/%s",
+			want:    "https://telegram.example.com/bot123456:test-token/sendMessage",
+		},
+	}
+	for _, item := range tests {
+		t.Run(item.name, func(t *testing.T) {
+			got, err := telegramAPIURL(item.baseURL, "123456:test-token", "sendMessage")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got.String() != item.want {
+				t.Fatalf("telegramAPIURL() = %q, want %q", got, item.want)
+			}
+		})
+	}
+}
+
+func TestTelegramAPIURLRejectsMalformedTemplates(t *testing.T) {
+	for _, value := range []string{
+		"https://telegram.example.com/bot%s/sendMessage",
+		"https://%s.example.com/bot/token/%s",
+		"http://telegram.example.com/bot%s/%s",
+	} {
+		if _, err := telegramAPIURL(value, "123456:test-token", "sendMessage"); err == nil {
+			t.Errorf("telegramAPIURL(%q) unexpectedly succeeded", value)
+		} else if strings.TrimSpace(err.Error()) == "" {
+			t.Errorf("telegramAPIURL(%q) returned an empty error", value)
+		}
+	}
+}
 
 func TestParseTelegramCommand(t *testing.T) {
 	command, remainder := parseTelegramCommand("  /sms@vocat_bot EC20 +447700900123 hello world  ")

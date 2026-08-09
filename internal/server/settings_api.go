@@ -255,8 +255,8 @@ func validateNotificationField(
 			return fmt.Errorf("%s is too long or contains invalid characters", field)
 		}
 		if name == "base_url" && value != "" {
-			if _, err := parseOutboundURL(value, true); err != nil {
-				return fmt.Errorf("%s must be an absolute HTTPS URL", field)
+			if _, err := telegramAPIURL(value, "123456:validation-token", "sendMessage"); err != nil {
+				return fmt.Errorf("%s must be an absolute HTTPS URL or a URL template with two %%s placeholders", field)
 			}
 		}
 		if name == "proxy" && value != "" {
@@ -551,8 +551,8 @@ func validateNotificationTestConfig(channel string, config map[string]any) error
 			return errors.New("telegram.chat_id is required")
 		}
 		if baseURL := configString(config, "base_url"); baseURL != "" {
-			if _, err := parseOutboundURL(baseURL, true); err != nil {
-				return errors.New("telegram.base_url must be an absolute HTTPS URL")
+			if _, err := telegramAPIURL(baseURL, token, "sendMessage"); err != nil {
+				return errors.New("telegram.base_url must be an absolute HTTPS URL or a URL template with two %s placeholders")
 			}
 		}
 	case "email":
@@ -660,19 +660,11 @@ func sendBarkNotificationTest(ctx context.Context, config map[string]any) error 
 }
 
 func sendTelegramNotificationTest(ctx context.Context, config map[string]any) error {
-	baseURL := configString(config, "base_url")
-	if baseURL == "" {
-		baseURL = "https://api.telegram.org"
-	}
-	parsed, err := validateOutboundURL(ctx, baseURL, true)
+	token := configString(config, "bot_token")
+	parsed, err := validateTelegramAPIURL(ctx, configString(config, "base_url"), token, "sendMessage")
 	if err != nil {
 		return err
 	}
-	token := configString(config, "bot_token")
-	parsed.Path = strings.TrimRight(parsed.Path, "/") + "/bot" + token + "/sendMessage"
-	parsed.RawPath = ""
-	parsed.RawQuery = ""
-	parsed.Fragment = ""
 	client, err := restrictedHTTPClient(ctx, 6*time.Second, configString(config, "proxy"))
 	if err != nil {
 		return err

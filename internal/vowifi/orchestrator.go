@@ -512,6 +512,65 @@ func (orchestrator *Orchestrator) SendSMS(
 	return sender.SendSMS(ctx, request)
 }
 
+func (orchestrator *Orchestrator) Calls() ([]Call, error) {
+	orchestrator.mu.Lock()
+	resources := orchestrator.resources
+	ready := orchestrator.state.IMSReady
+	orchestrator.mu.Unlock()
+	if resources == nil || resources.ims == nil || !ready {
+		return nil, ErrNotRunning
+	}
+	controller, ok := resources.ims.(CallController)
+	if !ok {
+		return nil, ErrNotRunning
+	}
+	return controller.Calls(), nil
+}
+
+func (orchestrator *Orchestrator) DialCall(ctx context.Context, number string) (Call, error) {
+	return orchestrator.callAction(ctx, func(controller CallController) (Call, error) {
+		return controller.DialCall(ctx, number)
+	})
+}
+
+func (orchestrator *Orchestrator) AnswerCall(ctx context.Context, id string) (Call, error) {
+	return orchestrator.callAction(ctx, func(controller CallController) (Call, error) {
+		return controller.AnswerCall(ctx, id)
+	})
+}
+
+func (orchestrator *Orchestrator) HangupCall(ctx context.Context, id string) error {
+	_, err := orchestrator.callAction(ctx, func(controller CallController) (Call, error) {
+		return Call{}, controller.HangupCall(ctx, id)
+	})
+	return err
+}
+
+func (orchestrator *Orchestrator) callAction(
+	ctx context.Context,
+	action func(CallController) (Call, error),
+) (Call, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := orchestrator.lockOperation(ctx); err != nil {
+		return Call{}, err
+	}
+	defer orchestrator.unlockOperation()
+	orchestrator.mu.Lock()
+	resources := orchestrator.resources
+	ready := orchestrator.state.IMSReady
+	orchestrator.mu.Unlock()
+	if resources == nil || resources.ims == nil || !ready {
+		return Call{}, ErrNotRunning
+	}
+	controller, ok := resources.ims.(CallController)
+	if !ok {
+		return Call{}, ErrNotRunning
+	}
+	return action(controller)
+}
+
 func (orchestrator *Orchestrator) Close(ctx context.Context) error {
 	_, err := orchestrator.Disable(ctx)
 	return err

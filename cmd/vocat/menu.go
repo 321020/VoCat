@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -16,18 +17,62 @@ import (
 	"vocat/internal/auth"
 	"vocat/internal/config"
 	"vocat/internal/store"
+	"vocat/internal/update"
 )
 
-//envFilePath is the systemd EnvironmentFile that carries VOCAT_ADMIN_PASSWORD.
+// envFilePath is the systemd EnvironmentFile that carries VOCAT_ADMIN_PASSWORD.
 // EnsureAdmin reseeds the DB from it on every start, so change-password must
 // rewrite it or the next restart reverts the password.
 const envFilePath = "/etc/vocat/env"
 
 const systemdUnitPath = "/etc/systemd/system/vocat.service"
 
-// runMenu is the interactive lifecycle menu: change password, restart the
-// systemd unit, or fully uninstall vocat. It must run as root on the host
-// (needs systemctl + the 0600 env file). Docker deployments do not use it.
+// defaultDatabasePath is the install-default SQLite location written into the
+// systemd unit by scripts/install.sh. Used only when VOCAT_DATABASE_PATH is not
+// already set in the operator's environment.
+const defaultDatabasePath = "/opt/vocat/data/vocat.db"
+
+// uiPreferencesSettingKey is the same app_settings key the Web UI's
+// /api/settings/preferences handler reads and writes (see general_api.go). The
+// menu toggles language through it so a single preference is shared with the
+// SPA and the backend i18n layer.
+const uiPreferencesSettingKey = "ui.preferences"
+
+// loadMenuEnv ensures the menu reaches the production config that systemd
+// would otherwise inject. When an operator runs `sudo vocat` on the host, the
+// shell has not sourced /etc/vocat/env (a systemd EnvironmentFile, not a shell
+// rc) and VOCAT_DATABASE_PATH is unset, so config.Load() would resolve a
+// CWD-relative ./data/vocat.db — a different, empty database than
+// /opt/vocat/data/vocat.db the service uses. This loads the installed env file
+// for VOCAT_ADMIN_PASSWORD and pins VOCAT_DATABASE_PATH to the install default,
+// without overriding any value the operator already exported.
+func loadMenuEnv() {
+	if _, ok := os.LookupEnv("VOCAT_DATABASE_PATH"); !ok {
+		_ = os.Setenv("VOCAT_DATABASE_PATH", defaultDatabasePath)
+	}
+	if data, err := os.ReadFile(envFilePath); err == nil {
+		for _, line := range strings.Split(string(data), "\n") {
+			line = strings.TrimSpace(line)
+			if line == "" || strings.HasPrefix(line, "#") {
+				continue
+			}
+			eq := strings.IndexByte(line, '=')
+			if eq < 0 {
+				continue
+			}
+			key := strings.TrimSpace(line[:eq])
+			val := strings.TrimSpace(line[eq+1:])
+			if _, ok := os.LookupEnv(key); !ok {
+				_ = os.Setenv(key, val)
+			}
+		}
+	}
+}
+
+// runMenu is the interactive lifecycle menu: toggle language, change password,
+// restart the systemd unit, self-update, or fully uninstall vocat. It must run
+// as root on the host (needs systemctl + the 0600 env file). Docker deployments
+// do not use it.
 func runMenu(logger *slog.Logger) error {
 	if os.Geteuid() != 0 {
 		return errors.New("vocat menu must run as root (needs systemctl and /etc/vocat/env)")
@@ -37,8 +82,13 @@ func runMenu(logger *slog.Logger) error {
 		return errors.New("vocat menu requires an interactive terminal")
 	}
 
-	lang := promptLanguage()
+	loadMenuEnv()
+
+	lang, langErr := loadMenuLanguage()
 	menu := newMenu(lang)
+	if langErr != nil {
+		logger.Warn("menu: load language preference failed; defaulting to English", "error", langErr)
+	}
 	reader := bufio.NewReader(os.Stdin)
 
 	for {
@@ -55,44 +105,69 @@ func runMenu(logger *slog.Logger) error {
 		choice := strings.TrimSpace(line)
 		switch choice {
 		case "1":
-			if err := menuChangePassword(reader, menu, logger); err != nil {
+			if err := menuToggleLanguage(menu, logger); err != nil {
 				fmt.Println(menu.errorPrefix(err))
 			}
 		case "2":
-			if err := menuRestart(menu); err != nil {
+			if err := menuChangePassword(reader, menu, logger); err != nil {
 				fmt.Println(menu.errorPrefix(err))
 			}
 		case "3":
-			if err := menuUninstall(reader, menu); err != nil {
+			if err := menuRestart(menu); err != nil {
 				fmt.Println(menu.errorPrefix(err))
 			}
-		case "0", "":
-			fmt.Println(menu.bye())
-			return nil
+		case "4":
+			if err := menuUpdate(menu, logger); err != nil {
+				fmt.Println(menu.errorPrefix(err))
+			}
+		case "0":
+			if err := menuUninstall(reader, menu); err != nil {
+				fmt.Println(menu.errorPrefix(err))
+			} else {
+				return nil
+			}
 		default:
 			fmt.Println(menu.invalid())
 		}
 	}
 }
 
-// promptLanguage asks for 中文 (1) or English (2) once per invocation. The
-// user chose to re-ask every run rather than persist a language preference.
-func promptLanguage() string {
-	reader := bufio.NewReader(os.Stdin)
-	for {
-		fmt.Println("选择语言 / Select language:  1) 中文   2) English")
-		fmt.Print("> ")
-		line, err := reader.ReadString('\n')
-		if err != nil {
-			return "zh"
-		}
-		switch strings.TrimSpace(line) {
-		case "1", "":
-			return "zh"
-		case "2":
-			return "en"
-		}
+// loadMenuLanguage reads the persisted UI preference (the same ui.preferences
+// app_setting the Web UI writes) and returns "zh" or "en". When no record
+// exists yet it returns "en", matching the Web default in writeUIPreferences.
+// Any failure is surfaced to the caller, which logs a warning and keeps the
+// default rather than blocking the menu.
+func loadMenuLanguage() (string, error) {
+	cfg, err := config.Load()
+	if err != nil {
+		return "en", fmt.Errorf("%w: %v", errMenuConfig, err)
 	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	database, err := store.Open(ctx, cfg.DatabasePath)
+	if err != nil {
+		return "en", fmt.Errorf("%w: %v", errMenuStore, err)
+	}
+	defer database.Close()
+
+	setting, err := database.AppSetting(ctx, uiPreferencesSettingKey)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			return "en", nil
+		}
+		return "en", fmt.Errorf("%w: %v", errMenuStore, err)
+	}
+	var prefs struct {
+		Language string `json:"language"`
+	}
+	if err := json.Unmarshal(setting.Value, &prefs); err != nil {
+		return "en", nil
+	}
+	if prefs.Language == "zh" {
+		return "zh", nil
+	}
+	return "en", nil
 }
 
 func menuChangePassword(reader *bufio.Reader, m *menu, logger *slog.Logger) error {
@@ -212,6 +287,45 @@ func rewriteEnvPassword(newPassword string) error {
 	return os.Rename(tmpName, envFilePath)
 }
 
+// menuToggleLanguage flips the persisted language preference between "zh" and
+// "en" by writing the same ui.preferences app_setting the Web UI uses, then
+// switches the menu's own language so the next prompt renders in the new
+// language. The Web SPA picks up the change on its next preferences fetch; the
+// menu never needs to call i18n.Set itself since it carries its own lang copy.
+func menuToggleLanguage(m *menu, logger *slog.Logger) error {
+	cfg, err := config.Load()
+	if err != nil {
+		return fmt.Errorf("%w: %v", errMenuConfig, err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	database, err := store.Open(ctx, cfg.DatabasePath)
+	if err != nil {
+		return fmt.Errorf("%w: %v", errMenuStore, err)
+	}
+	defer database.Close()
+
+	current := m.lang
+	next := "zh"
+	if current == "zh" {
+		next = "en"
+	}
+	payload, err := json.Marshal(map[string]string{"language": next})
+	if err != nil {
+		return fmt.Errorf("%w: %v", errMenuStore, err)
+	}
+	if err := database.UpsertAppSetting(ctx, store.AppSetting{
+		Key:   uiPreferencesSettingKey,
+		Value: payload,
+	}); err != nil {
+		return fmt.Errorf("%w: %v", errMenuStore, err)
+	}
+	m.lang = next
+	fmt.Println(m.languageSwitched())
+	return nil
+}
+
 func menuRestart(m *menu) error {
 	if _, err := exec.LookPath("systemctl"); err != nil {
 		return errNoSystemctl
@@ -221,6 +335,23 @@ func menuRestart(m *menu) error {
 		return fmt.Errorf("%w: %s", errRestartFailed, strings.TrimSpace(string(out)))
 	}
 	fmt.Println(m.restarted())
+	return nil
+}
+
+// menuUpdate delegates to the self-updater in internal/update. It resolves the
+// repo the same way update.Run itself does ($VOCAT_REPO or the default) and lets
+// that package handle the check/download/verify/replace/restart flow. The
+// running menu process keeps the old binary until the operator exits; only the
+// systemd service runs the new build after restartService.
+func menuUpdate(m *menu, logger *slog.Logger) error {
+	repo := strings.TrimSpace(os.Getenv("VOCAT_REPO"))
+	if repo == "" {
+		repo = update.DefaultRepository
+	}
+	fmt.Println(m.updateChecking())
+	if err := update.Run(logger, []string{"--repo", repo}); err != nil {
+		return fmt.Errorf("%w: %v", errUpdateFailed, err)
+	}
 	return nil
 }
 
@@ -261,6 +392,7 @@ var (
 	errPasswordsDiffer = errors.New("menu: passwords do not match")
 	errNoSystemctl     = errors.New("menu: systemctl not found")
 	errRestartFailed   = errors.New("menu: restart failed")
+	errUpdateFailed    = errors.New("menu: update failed")
 	errMenuConfig      = errors.New("menu: load configuration")
 	errMenuStore       = errors.New("menu: open database")
 	errMenuAuth        = errors.New("menu: auth service")
@@ -277,19 +409,24 @@ func newMenu(lang string) *menu { return &menu{lang: lang} }
 func (m *menu) msg(key string) string {
 	const zh, en = 0, 1
 	table := map[string][2]string{
-		"title":      {"vocat 管理菜单", "vocat management menu"},
-		"opt_change": {"1) 修改密码", "1) Change password"},
-		"opt_restart": {"2) 重启服务", "2) Restart service"},
-		"opt_uninstall": {"3) 卸载程序", "3) Uninstall"},
-		"opt_exit":   {"0) 退出", "0) Exit"},
-		"prompt":     {"请选择: ", "Select: "},
-		"invalid":    {"无效选项，请重试。", "Invalid choice, try again."},
-		"bye":        {"再见。", "Bye."},
-		"cur_pw":     {"当前密码: ", "Current password: "},
-		"new_pw":     {"新密码 (至少 12 位): ", "New password (min 12 chars): "},
-		"confirm_pw": {"确认新密码: ", "Confirm new password: "},
-		"pw_changed": {"密码已修改。重启后仍然有效。", "Password changed. Survives restart."},
-		"restarted":  {"服务已重启。", "Service restarted."},
+		"title":        {"vocat 管理菜单", "vocat management menu"},
+		"opt_lang":     {"1) 切换中英文", "1) Toggle language"},
+		"opt_change":   {"2) 修改账号密码", "2) Change admin password"},
+		"opt_restart":  {"3) 重启软件", "3) Restart software"},
+		"opt_update":   {"4) 更新软件", "4) Update software"},
+		"opt_uninstall": {"0) 卸载软件", "0) Uninstall software"},
+		"prompt":       {"请选择: ", "Select: "},
+		"invalid":      {"无效选项，请重试。按 Ctrl+C 退出。", "Invalid choice, try again. Press Ctrl+C to exit."},
+		"cur_pw":       {"当前密码: ", "Current password: "},
+		"new_pw":       {"新密码 (至少 12 位): ", "New password (min 12 chars): "},
+		"confirm_pw":   {"确认新密码: ", "Confirm new password: "},
+		"pw_changed":   {"密码已修改。重启后仍然有效。", "Password changed. Survives restart."},
+		"lang_switched": {
+			"语言已切换。Web 界面下次刷新后同步。",
+			"Language switched. The web UI syncs on next refresh.",
+		},
+		"upd_checking": {"正在检查更新…", "Checking for updates…"},
+		"restarted":    {"软件已重启。", "Software restarted."},
 		"uninstall_warn": {
 			"警告: 将删除程序、数据与配置,且不可恢复!",
 			"WARNING: removes the program, data and config. Irreversible!",
@@ -311,11 +448,12 @@ func (m *menu) msg(key string) string {
 func (m *menu) title() string      { return m.msg("title") }
 func (m *menu) prompt() string     { return m.msg("prompt") }
 func (m *menu) invalid() string    { return m.msg("invalid") }
-func (m *menu) bye() string        { return m.msg("bye") }
 func (m *menu) currentPassword() string  { return m.msg("cur_pw") }
 func (m *menu) newPassword() string      { return m.msg("new_pw") }
 func (m *menu) confirmPassword() string  { return m.msg("confirm_pw") }
 func (m *menu) passwordChanged() string  { return m.msg("pw_changed") }
+func (m *menu) languageSwitched() string { return m.msg("lang_switched") }
+func (m *menu) updateChecking() string   { return m.msg("upd_checking") }
 func (m *menu) restarted() string        { return m.msg("restarted") }
 func (m *menu) uninstallWarn() string    { return m.msg("uninstall_warn") }
 func (m *menu) uninstallConfirm() string { return m.msg("uninstall_confirm") }
@@ -323,7 +461,13 @@ func (m *menu) uninstallCancelled() string { return m.msg("uninstall_cancelled")
 func (m *menu) uninstalled() string      { return m.msg("uninstalled") }
 
 func (m *menu) options() []string {
-	return []string{m.msg("opt_change"), m.msg("opt_restart"), m.msg("opt_uninstall"), m.msg("opt_exit")}
+	return []string{
+		m.msg("opt_lang"),
+		m.msg("opt_change"),
+		m.msg("opt_restart"),
+		m.msg("opt_update"),
+		m.msg("opt_uninstall"),
+	}
 }
 
 func (m *menu) errorPrefix(err error) string {
@@ -348,6 +492,11 @@ func (m *menu) errorPrefix(err error) string {
 			return "Restart failed."
 		}
 		return "重启失败。"
+	case errors.Is(err, errUpdateFailed):
+		if m.lang == "en" {
+			return "Update failed."
+		}
+		return "更新失败。"
 	case errors.Is(err, errMenuConfig):
 		if m.lang == "en" {
 			return "Failed to load configuration."

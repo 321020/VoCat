@@ -206,11 +206,52 @@ func (s *Store) ListDevices(ctx context.Context) ([]Device, error) {
 }
 
 func (s *Store) DeleteDevice(ctx context.Context, id string) error {
-	result, err := s.db.ExecContext(ctx, `DELETE FROM devices WHERE id = ?`, id)
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin delete device %q: %w", id, err)
+	}
+	defer tx.Rollback()
+	var modemIMEI string
+	if err := tx.QueryRowContext(ctx, `SELECT modem_imei FROM devices WHERE id = ?`, id).Scan(&modemIMEI); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrNotFound
+		}
+		return fmt.Errorf("read device %q before deletion: %w", id, err)
+	}
+	// SMS history must outlive a mutable configured device ID. Anchor any
+	// legacy ID-owned rows to the physical modem before the device row and its
+	// runtime records are removed.
+	if strings.TrimSpace(modemIMEI) != "" {
+		if _, err := tx.ExecContext(ctx, `
+			DELETE FROM sms_messages AS legacy
+			WHERE legacy.device_id = ? AND legacy.modem_imei = '' AND legacy.message_id <> ''
+				AND EXISTS (
+					SELECT 1 FROM sms_messages current
+					WHERE current.modem_imei = ?
+						AND current.message_id = legacy.message_id
+				)
+		`, id, strings.TrimSpace(modemIMEI)); err != nil {
+			return fmt.Errorf("deduplicate SMS history for device %q: %w", id, err)
+		}
+		if _, err := tx.ExecContext(ctx, `
+			UPDATE sms_messages
+			SET modem_imei = ?, updated_at = ?
+			WHERE device_id = ? AND modem_imei = ''
+		`, strings.TrimSpace(modemIMEI), time.Now().UTC().Unix(), id); err != nil {
+			return fmt.Errorf("anchor SMS history for device %q: %w", id, err)
+		}
+	}
+	result, err := tx.ExecContext(ctx, `DELETE FROM devices WHERE id = ?`, id)
 	if err != nil {
 		return fmt.Errorf("delete device %q: %w", id, err)
 	}
-	return requireAffected(result)
+	if err := requireAffected(result); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit delete device %q: %w", id, err)
+	}
+	return nil
 }
 
 const deviceSelect = `

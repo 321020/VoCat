@@ -13,7 +13,7 @@ func TestAssetNamesFor(t *testing.T) {
 	}{
 		{"linux", "amd64", []string{"vocat-linux-amd64"}},
 		{"linux", "386", []string{"vocat-linux-386"}},
-		{"linux", "arm64", []string{"vocat-linux-arm64"}},
+		{"linux", "arm64", []string{"vocat-linux-arm64", "vocat-linux-aarch64"}},
 		{"linux", "arm", []string{"vocat-linux-armv7", "vocat-linux-arm"}},
 	}
 	for _, item := range tests {

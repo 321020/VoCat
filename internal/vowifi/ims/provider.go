@@ -444,6 +444,8 @@ type Session struct {
 	inboundConnections map[net.Conn]struct{}
 	smsMu              sync.Mutex
 	nextRPReference    byte
+	callMu             sync.Mutex
+	calls              map[string]*imsCall
 
 	mu                  sync.Mutex
 	closed              bool
@@ -494,6 +496,7 @@ func newSession(
 		failures:           make(chan error, 1),
 		transactions:       make(map[sipTransactionKey]chan *sipResponse),
 		inboundConnections: make(map[net.Conn]struct{}),
+		calls:              make(map[string]*imsCall),
 		evidence: vowifi.IMSEvidence{
 			RegistrationState: "registering",
 			Transport:         transport,
@@ -741,11 +744,13 @@ func (session *Session) buildRegister(
 	requestURI := "sip:" + session.identity.domain
 	routeURI := "sip:" + session.endpoint.address() + ";transport=" + session.transport + ";lr"
 	contact := fmt.Sprintf(
-		"<sip:%s@%s;transport=%s>;+sip.instance=\"<%s>\";+g.3gpp.smsip",
+		"<sip:%s@%s;transport=%s>;+sip.instance=\"<%s>\";+g.3gpp.smsip;audio;"+
+			`+g.3gpp.icsi-ref="%s"`,
 		session.identity.user,
 		contactAddress,
 		session.transport,
 		session.instanceID,
+		"urn%3Aurn-7%3A3gpp-service.ims.icsi.mmtel",
 	)
 	lines := []string{
 		"REGISTER " + requestURI + " SIP/2.0",
@@ -759,7 +764,7 @@ func (session *Session) buildRegister(
 		"Contact: " + contact,
 		fmt.Sprintf("Expires: %d", expires),
 		"Supported: path, gruu",
-		"Allow: REGISTER, OPTIONS",
+		"Allow: REGISTER, INVITE, ACK, CANCEL, BYE, OPTIONS",
 		"User-Agent: " + session.provider.config.UserAgent,
 	}
 	if session.securityOffered() {

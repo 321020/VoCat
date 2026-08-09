@@ -268,6 +268,58 @@ func (manager *Manager) SendSMS(
 	return item.orchestrator.SendSMS(ctx, request)
 }
 
+func (manager *Manager) Calls(deviceID string) ([]vowifi.Call, error) {
+	if err := manager.Ensure(manager.ctx, deviceID); err != nil {
+		return nil, err
+	}
+	manager.mu.Lock()
+	item := manager.entries[deviceID]
+	manager.mu.Unlock()
+	if item == nil {
+		return nil, ErrNotRegistered
+	}
+	return item.orchestrator.Calls()
+}
+
+func (manager *Manager) DialCall(ctx context.Context, deviceID, number string) (vowifi.Call, error) {
+	if err := manager.Ensure(ctx, deviceID); err != nil {
+		return vowifi.Call{}, err
+	}
+	manager.mu.Lock()
+	item := manager.entries[deviceID]
+	manager.mu.Unlock()
+	if item == nil {
+		return vowifi.Call{}, ErrNotRegistered
+	}
+	return item.orchestrator.DialCall(ctx, number)
+}
+
+func (manager *Manager) AnswerCall(ctx context.Context, deviceID, id string) (vowifi.Call, error) {
+	if err := manager.Ensure(ctx, deviceID); err != nil {
+		return vowifi.Call{}, err
+	}
+	manager.mu.Lock()
+	item := manager.entries[deviceID]
+	manager.mu.Unlock()
+	if item == nil {
+		return vowifi.Call{}, ErrNotRegistered
+	}
+	return item.orchestrator.AnswerCall(ctx, id)
+}
+
+func (manager *Manager) HangupCall(ctx context.Context, deviceID, id string) error {
+	if err := manager.Ensure(ctx, deviceID); err != nil {
+		return err
+	}
+	manager.mu.Lock()
+	item := manager.entries[deviceID]
+	manager.mu.Unlock()
+	if item == nil {
+		return ErrNotRegistered
+	}
+	return item.orchestrator.HangupCall(ctx, id)
+}
+
 func (manager *Manager) startOperation(
 	deviceID string,
 	coalesceReconnect bool,

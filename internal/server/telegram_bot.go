@@ -811,7 +811,7 @@ func (bot *telegramBot) loadConfig(ctx context.Context) (telegramRuntimeConfig, 
 		Proxy:   configString(raw, "proxy"),
 	}
 	if config.BaseURL == "" {
-		config.BaseURL = "https://api.telegram.org"
+		config.BaseURL = defaultTelegramBaseURL
 	}
 	if admin := configString(raw, "admin_id"); admin != "" {
 		config.AdminID, err = strconv.ParseInt(admin, 10, 64)
@@ -826,12 +826,10 @@ func (bot *telegramBot) loadConfig(ctx context.Context) (telegramRuntimeConfig, 
 }
 
 func (bot *telegramBot) call(ctx context.Context, config telegramRuntimeConfig, method string, payload any, result any) error {
-	base, err := validateOutboundURL(ctx, config.BaseURL, true)
+	base, err := validateTelegramAPIURL(ctx, config.BaseURL, config.Token, method)
 	if err != nil {
 		return err
 	}
-	base.Path = strings.TrimRight(base.Path, "/") + "/bot" + config.Token + "/" + method
-	base.RawPath, base.RawQuery, base.Fragment = "", "", ""
 	body, err := json.Marshal(payload)
 	if err != nil {
 		return err

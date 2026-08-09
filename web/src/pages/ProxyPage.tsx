@@ -15,6 +15,7 @@ import { UpstreamDialog } from "../components/proxy/UpstreamDialog";
 import { DeviceBindingsDialog } from "../components/proxy/DeviceBindingsDialog";
 import { UpstreamSection } from "../components/proxy/UpstreamSection";
 import { tf, useI18n } from "../lib/i18n";
+import { listPlugins, pluginAssetURL, type InstalledPlugin } from "../extensions";
 
 interface BindingMutationResult {
   reconnectRequested?: boolean;
@@ -37,6 +38,7 @@ export default function ProxyPage() {
   const [bindingsDialogOpen, setBindingsDialogOpen] = useState(false);
   const [bindingsProxy, setBindingsProxy] = useState<UpstreamProxy | null>(null);
   const [busyDevice, setBusyDevice] = useState("");
+  const [plugins, setPlugins] = useState<InstalledPlugin[]>([]);
 
   const proxyRows = useMemo<UpstreamRow[]>(
     () => proxies.map((proxy) => ({
@@ -68,6 +70,16 @@ export default function ProxyPage() {
   useEffect(() => {
     void loadUpstream(true);
   }, [loadUpstream]);
+
+  useEffect(() => {
+    let active = true;
+    const load = () => listPlugins().then((items) => {
+      if (active) setPlugins(items || []);
+    }).catch(() => undefined);
+    void load();
+    window.addEventListener("vocat:plugins-changed", load);
+    return () => { active = false; window.removeEventListener("vocat:plugins-changed", load); };
+  }, []);
 
   usePolling(() => {
     if (!upstreamLoading) void loadUpstream(false);
@@ -232,6 +244,18 @@ export default function ProxyPage() {
         onDelete={removeUpstream}
         onOpenBindings={openBindingsDialog}
       />
+      {plugins.filter((plugin) => plugin.enabled).flatMap((plugin) =>
+        plugin.contributions.filter((contribution) => contribution.location === "proxy").map((contribution) => (
+          <section key={`${plugin.id}:${contribution.id}`} className="ui-card mt-6 overflow-hidden p-0">
+            <iframe
+              title={contribution.label}
+              src={pluginAssetURL(plugin, contribution)}
+              className="h-[640px] w-full border-0 bg-white dark:bg-[#15151a]"
+              sandbox="allow-scripts allow-forms allow-same-origin"
+            />
+          </section>
+        )),
+      )}
       <UpstreamDialog
         open={upstreamDialogOpen}
         editing={!!editingUpstream}

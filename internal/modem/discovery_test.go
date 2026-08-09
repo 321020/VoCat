@@ -123,6 +123,54 @@ func TestSysFSDiscoverySelectsTTYUSB2InQMIInterface00Layout(t *testing.T) {
 	}
 }
 
+func TestSysFSDiscoverySelectsATPortForSecondQMIUSBModem(t *testing.T) {
+	root := t.TempDir()
+	sysRoot := filepath.Join(root, "sys")
+	devRoot := filepath.Join(root, "dev")
+	usbRoot := filepath.Join(sysRoot, "bus", "usb", "devices")
+
+	for _, modem := range []struct {
+		usbName string
+		ttys    []string
+		wdm     string
+	}{
+		{"1-6", []string{"ttyUSB0", "ttyUSB1", "ttyUSB2", "ttyUSB3"}, "cdc-wdm0"},
+		{"1-5", []string{"ttyUSB4", "ttyUSB5", "ttyUSB6", "ttyUSB7"}, "cdc-wdm1"},
+	} {
+		mustWrite(t, filepath.Join(usbRoot, modem.usbName, "idVendor"), "2c7c\n")
+		mustWrite(t, filepath.Join(usbRoot, modem.usbName, "idProduct"), "0125\n")
+		for number, tty := range modem.ttys {
+			interfaceName := modem.usbName + ":1." + strconv.Itoa(number)
+			mustWrite(t, filepath.Join(usbRoot, interfaceName, "bInterfaceNumber"), fmt.Sprintf("%02x\n", number))
+			mustMkdir(t, filepath.Join(usbRoot, interfaceName, tty, "tty", tty))
+		}
+		mustWrite(t, filepath.Join(usbRoot, modem.usbName+":1.4", "bInterfaceNumber"), "04\n")
+		mustMkdir(t, filepath.Join(usbRoot, modem.usbName+":1.4", "usbmisc", modem.wdm))
+	}
+
+	candidates, err := NewSysFSDiscoverer(sysRoot, devRoot).Discover(context.Background())
+	if err != nil {
+		t.Fatalf("Discover: %v", err)
+	}
+	if len(candidates) != 2 {
+		t.Fatalf("got %d candidates, want 2", len(candidates))
+	}
+	for _, candidate := range candidates {
+		switch filepath.Base(candidate.USBPath) {
+		case "1-5":
+			if candidate.ATPort.Name != "ttyUSB6" || candidate.ATPort.Role != PortRoleAT {
+				t.Fatalf("second modem AT port = %#v, want ttyUSB6", candidate.ATPort)
+			}
+		case "1-6":
+			if candidate.ATPort.Name != "ttyUSB2" || candidate.ATPort.Role != PortRoleAT {
+				t.Fatalf("first modem AT port = %#v, want ttyUSB2", candidate.ATPort)
+			}
+		default:
+			t.Fatalf("unexpected candidate USB path %q", candidate.USBPath)
+		}
+	}
+}
+
 func TestSysFSDiscoveryIgnoresNonQuectelUSB(t *testing.T) {
 	root := t.TempDir()
 	usbRoot := filepath.Join(root, "sys", "bus", "usb", "devices")

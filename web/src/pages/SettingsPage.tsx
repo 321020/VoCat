@@ -21,6 +21,7 @@ import {
 } from "../components/settings/model";
 import { PushplusTab, TelegramTab } from "../components/settings/BotTabs";
 import { BarkTab, EmailTab, WebhookTab } from "../components/settings/PushTabs";
+import { PluginsCard } from "../components/settings/PluginsCard";
 
 const EMPTY_PASSWORD: PasswordForm = { oldPassword: "", newPassword: "", confirmPassword: "" };
 
@@ -223,8 +224,13 @@ export default function SettingsPage() {
     setCheckingUpdate(true);
     try {
       // vocat 后端返回 {available, version, message}（参考实现是 has_update 等）
-      const data = await api<{ available?: boolean; version?: string; message?: string }>("/system/update/check");
-      const info: UpdateInfo = { hasUpdate: !!data?.available, latestVersion: data?.version, releaseNote: data?.message };
+      const data = await api<{ available?: boolean; version?: string; message?: string; is_docker?: boolean }>("/system/update/check");
+      const info: UpdateInfo = {
+        hasUpdate: !!data?.available,
+        latestVersion: data?.version,
+        releaseNote: data?.message,
+        isDocker: !!data?.is_docker,
+      };
       setUpdateInfo(info);
       if (!info.hasUpdate) message.info(data?.message || t("当前已是最新版本"));
     } catch (error) {
@@ -303,6 +309,8 @@ export default function SettingsPage() {
           onChange={(patch) => setSecurity((prev) => ({ ...prev, ...patch }))}
           onSave={onSaveSecurity}
         />
+
+        {systemInfo.developer ? <PluginsCard /> : null}
 
         <div className="notify-card ui-card group relative overflow-hidden p-8 lg:col-span-2">
           <CardDecor />

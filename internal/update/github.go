@@ -25,7 +25,20 @@ type Asset struct {
 	Size               int64  `json:"size"`
 }
 
-const githubAPI = "https://api.github.com"
+// CheckResult describes a trusted release check without downloading assets.
+type CheckResult struct {
+	Available    bool
+	Applied      bool
+	Current      string
+	Latest       string
+	ReleaseNotes string
+	Release      *Release
+}
+
+const (
+	githubAPI         = "https://api.github.com"
+	DefaultRepository = "MengMengCode/VoCat"
+)
 
 // LatestRelease fetches the newest published release for repo (form
 // "owner/name"). A non-empty token is sent as a Bearer header, which is
@@ -71,6 +84,27 @@ func LatestRelease(ctx context.Context, repo, token string) (*Release, error) {
 		return nil, fmt.Errorf("update: decode release JSON: %w", err)
 	}
 	return &release, nil
+}
+
+// CheckLatest fetches the newest release and performs a semantic version
+// comparison so development builds are never offered an older release.
+func CheckLatest(ctx context.Context, repo, token, current string) (CheckResult, error) {
+	release, err := LatestRelease(ctx, repo, token)
+	if err != nil {
+		return CheckResult{}, err
+	}
+	latest := strings.TrimPrefix(strings.TrimSpace(release.TagName), "v")
+	available, err := IsNewerVersion(current, latest)
+	if err != nil {
+		return CheckResult{}, fmt.Errorf("update: compare release versions: %w", err)
+	}
+	return CheckResult{
+		Available:    available,
+		Current:      current,
+		Latest:       latest,
+		ReleaseNotes: strings.TrimSpace(release.Body),
+		Release:      release,
+	}, nil
 }
 
 // downloadAsset streams a release asset into dst, honoring the request context.

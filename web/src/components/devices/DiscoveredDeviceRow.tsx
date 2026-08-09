@@ -39,7 +39,7 @@ export function DiscoveredDeviceRow({
       <div className="mt-0.5 truncate text-xs text-gray-500">
         {device.controlPath} · AT: {device.atPort || "--"} · IMEI: {device.imei || "--"} · USB: {device.usbPath || "--"}
       </div>
-      {degraded ? <div className="mt-1 text-xs text-amber-700">{t("无法读取 IMEI（控制口可能挂死），暂不可添加。")}</div> : null}
+      {degraded ? <div className="mt-1 text-xs text-amber-700">{t("未找到可用的 AT 端口（串口可能仍在枚举），系统会自动重试；也可点击重新扫描。")}</div> : null}
     </button>
   );
 }

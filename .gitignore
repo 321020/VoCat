@@ -33,9 +33,12 @@ __pycache__/
 # committed. The whole build directory and the root release.py are ignored.
 build/*.py
 
+/extension/
+
 # ---- Docs / scratch ----
 *.md
 !README.md
+!docs/**/*.md
 *.txt
 build/lists/
 

@@ -9,13 +9,17 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
 
+	"golang.org/x/term"
+
 	"vocat/internal/auth"
 	"vocat/internal/config"
 	"vocat/internal/device"
+	"vocat/internal/extensions"
 	"vocat/internal/loghub"
 	"vocat/internal/server"
 	"vocat/internal/store"
@@ -35,8 +39,25 @@ func main() {
 	args := os.Args[1:]
 	switch subcommand, rest := splitSubcommand(args); subcommand {
 	case "":
-		// No subcommand: run the server. Backward-compatible with the
-		// existing systemd unit (ExecStart=/opt/vocat/bin/vocat).
+		// No subcommand: TTY+root → interactive menu (operator on the host);
+		// otherwise run the server. systemd runs vocat with stdin=/dev/null
+		// (non-TTY) so the unit keeps starting the server unchanged. Non-root
+		// on a TTY also falls through to the server rather than erroring on
+		// runMenu's root requirement.
+		if term.IsTerminal(int(os.Stdin.Fd())) && os.Geteuid() == 0 {
+			if err := runMenu(logger); err != nil {
+				logger.Error("menu failed", "error", err)
+				os.Exit(1)
+			}
+		} else {
+			if err := run(logger, logs); err != nil {
+				logger.Error("server stopped", "error", err)
+				os.Exit(1)
+			}
+		}
+	case "serve":
+		// Explicit foreground server. Use this when vocat with no arguments
+		// would otherwise enter the menu (root on a TTY) but a server is wanted.
 		if err := run(logger, logs); err != nil {
 			logger.Error("server stopped", "error", err)
 			os.Exit(1)
@@ -52,6 +73,14 @@ func main() {
 		if err := runMenu(logger); err != nil {
 			logger.Error("menu failed", "error", err)
 			os.Exit(1)
+		}
+	case "develop":
+		// Hidden subcommand: intentionally not listed in printUsage or the
+		// interactive menu. It toggles the developer-mode flag that gates the
+		// entire plugin/extension system; the flag takes effect on next start.
+		if err := runDevelop(rest, logger); err != nil {
+			logger.Error("develop failed", "error", err)
+			os.Exit(2)
 		}
 	case "help", "-h", "--help":
 		printUsage(os.Stdout)
@@ -90,6 +119,25 @@ func run(logger *slog.Logger, logs *loghub.Hub) error {
 		return err
 	}
 	defer database.Close()
+
+	// The plugin/extension system is gated behind a hidden developer-mode flag.
+	// When off (the default) the manager is never created and the server receives
+	// a nil Extensions handle, so every /extensions* and /plugin-assets/* route
+	// returns 503/404 and the SPA hides the plugin surface.
+	developerEnabled := isDeveloperEnabled(startupContext, database)
+	var extensionManager *extensions.Manager
+	if developerEnabled {
+		extensionManager, err = extensions.NewManager(
+			filepath.Join(filepath.Dir(cfg.DatabasePath), "plugins"),
+			logger,
+		)
+		if err != nil {
+			return fmt.Errorf("create plugin manager: %w", err)
+		}
+		defer extensionManager.Close()
+	} else {
+		logger.Info("developer mode is off; plugin system disabled")
+	}
 
 	authService, err := auth.New(database, auth.Options{
 		SessionTTL: cfg.SessionTTL,
@@ -154,6 +202,10 @@ func run(logger *slog.Logger, logs *loghub.Hub) error {
 		Logger:              logger,
 		SecureCookies:       cfg.SecureCookies,
 		MaxRequestBodyBytes: cfg.MaxRequestBodyBytes,
+		Extensions:          extensionManager,
+		DeveloperEnabled:    developerEnabled,
+		UpdateRepository:    strings.TrimSpace(os.Getenv("VOCAT_REPO")),
+		UpdateToken:         strings.TrimSpace(os.Getenv("GITHUB_TOKEN")),
 	})
 	if err != nil {
 		return err
@@ -302,6 +354,7 @@ func newVoWiFiOrchestrator(
 			_, saveErr := database.SaveSMSMessage(ctx, store.SMSMessage{
 				MessageID:  message.MessageID,
 				DeviceID:   message.DeviceID,
+				ModemIMEI:  deviceConfig.ModemIMEI,
 				IMSI:       message.IMSI,
 				Peer:       message.From,
 				Direction:  "inbound",
@@ -318,6 +371,7 @@ func newVoWiFiOrchestrator(
 		OnSMSStatus: func(ctx context.Context, report ims.ReceivedSMSStatus) error {
 			deliveryReport := store.SMSDeliveryReport{
 				DeviceID:          report.DeviceID,
+				ModemIMEI:         deviceConfig.ModemIMEI,
 				IMSI:              report.IMSI,
 				Peer:              report.To,
 				Source:            "ims",

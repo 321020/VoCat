@@ -54,6 +54,48 @@ func TestSMSThreadAllDevicesUsesIMSIFilter(t *testing.T) {
 	}
 }
 
+func TestSMSThreadConfiguredDeviceUsesStableIMEI(t *testing.T) {
+	ctx := context.Background()
+	database, err := store.Open(ctx, ":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = database.Close() })
+	const imei = "867394042309830"
+	if err := database.UpsertDevice(ctx, store.Device{
+		ID: "ec20_2", Name: "EC20 renamed", ModemIMEI: imei,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.SaveSMSMessage(ctx, store.SMSMessage{
+		MessageID: "before-rename", DeviceID: "ec20_1", ModemIMEI: imei,
+		IMSI: "imsi-a", Peer: "VOXI", Direction: "inbound", Body: "history",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	server := &Server{store: database}
+	request := httptest.NewRequest(
+		http.MethodGet,
+		"/api/sms/thread?device_id=ec20_2&imsi=imsi-a&peer=VOXI",
+		nil,
+	)
+	response := httptest.NewRecorder()
+	server.handleSMSThread(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", response.Code, response.Body.String())
+	}
+	var envelope struct {
+		Data []map[string]any `json:"data"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &envelope); err != nil {
+		t.Fatal(err)
+	}
+	if len(envelope.Data) != 1 || envelope.Data[0]["modem_imei"] != imei {
+		t.Fatalf("thread data = %#v", envelope.Data)
+	}
+}
+
 func TestNormalizeSMSDeviceFilter(t *testing.T) {
 	if got := normalizeSMSDeviceFilter(" ALL "); got != "" {
 		t.Fatalf("all filter = %q", got)
@@ -88,9 +130,9 @@ func TestSMSSendOutcome(t *testing.T) {
 
 func TestBlockedSMSDestination(t *testing.T) {
 	tests := []struct {
-		name   string
-		phone  string
-		block  bool
+		name  string
+		phone string
+		block bool
 	}{
 		{"e164 china", "+8613800138000", true},
 		{"no plus china", "8613800138000", true},

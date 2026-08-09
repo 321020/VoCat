@@ -3,13 +3,16 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 
 	"vocat/internal/device"
+	"vocat/internal/modem"
 	"vocat/internal/store"
+	"vocat/internal/update"
 )
 
 func decodeData(t *testing.T, recorder *httptest.ResponseRecorder) map[string]any {
@@ -37,6 +40,50 @@ func TestAttachSingleEUICCIdentityFillsProfileGroupMetadataKey(t *testing.T) {
 	}
 	if groups[0]["aidHex"] != "A0000005591010FFFFFFFF8900000100" {
 		t.Fatalf("group AID = %v", groups[0]["aidHex"])
+	}
+}
+
+func TestPhysicalMatchesConfigRejectsDuplicateAndroidSerialAlias(t *testing.T) {
+	config := store.Device{
+		ID:        "EC20",
+		ATPort:    "/dev/serial/by-id/usb-Android_Android-if02-port0",
+		USBPath:   "/sys/bus/usb/devices/1-6",
+		ModemIMEI: "111111111111111",
+	}
+	newModem := device.Device{
+		ID: "quectel-0125-1-5",
+		Candidate: modem.Candidate{
+			USBPath: "/sys/bus/usb/devices/1-5",
+			ATPort: modem.Port{
+				Path:       "/dev/ttyUSB6",
+				StablePath: config.ATPort,
+			},
+		},
+		Snapshot: &device.Snapshot{IMEI: "222222222222222"},
+	}
+	if physicalMatchesConfig(newModem, config) {
+		t.Fatal("different modem matched through a duplicated Android by-id alias")
+	}
+
+	movedOriginal := newModem
+	movedOriginal.Snapshot = &device.Snapshot{IMEI: config.ModemIMEI}
+	if !physicalMatchesConfig(movedOriginal, config) {
+		t.Fatal("same IMEI should follow the modem to a different USB port")
+	}
+}
+
+func TestFindDiscoveredDevicePrefersPhysicalIdentityOverSerialAlias(t *testing.T) {
+	alias := "/dev/serial/by-id/usb-Android_Android-if02-port0"
+	devices := []device.Device{
+		{ID: "old", Candidate: modem.Candidate{USBPath: "/sys/bus/usb/devices/1-6", ATPort: modem.Port{StablePath: alias}}},
+		{ID: "new", Candidate: modem.Candidate{USBPath: "/sys/bus/usb/devices/1-5", ATPort: modem.Port{StablePath: alias}}},
+	}
+	selected := findDiscoveredDevice(devices, deviceConfigPayload{
+		USBPath: "/sys/bus/usb/devices/1-5",
+		ATPort:  alias,
+	})
+	if selected == nil || selected.ID != "new" {
+		t.Fatalf("selected = %#v, want new physical USB device", selected)
 	}
 }
 
@@ -275,6 +322,56 @@ func TestHandleUpdateApplyIsSafeNoop(t *testing.T) {
 	}
 	if data := decodeData(t, recorder); data["applied"] != false {
 		t.Fatalf("update apply must be a no-op, got %v", data)
+	}
+}
+
+func TestHandleUpdateCheckUsesTrustedRepository(t *testing.T) {
+	server := &Server{
+		logger:           regionTestLogger(),
+		updateRepository: update.DefaultRepository,
+		updateCheck: func(_ context.Context, repo, token, current string) (update.CheckResult, error) {
+			if repo != update.DefaultRepository || token != "token" || current == "" {
+				t.Fatalf("check arguments = %q, %q, %q", repo, token, current)
+			}
+			return update.CheckResult{
+				Available:    true,
+				Current:      current,
+				Latest:       "9.9.9",
+				ReleaseNotes: "release notes",
+			}, nil
+		},
+		updateToken: "token",
+	}
+	recorder := httptest.NewRecorder()
+	server.handleUpdateCheck(recorder, httptest.NewRequest(http.MethodGet, "/check", nil))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body)
+	}
+	data := decodeData(t, recorder)
+	if data["available"] != true || data["version"] != "9.9.9" || data["repository"] != update.DefaultRepository {
+		t.Fatalf("check data = %#v", data)
+	}
+}
+
+func TestHandleUpdateApplyInstallsFromTrustedRepository(t *testing.T) {
+	server := &Server{
+		logger:           regionTestLogger(),
+		updateRepository: update.DefaultRepository,
+		updateApply: func(_ context.Context, _ *slog.Logger, options update.Options, restart bool) (update.CheckResult, error) {
+			if options.Repo != update.DefaultRepository || restart {
+				t.Fatalf("apply options = %#v, restart = %v", options, restart)
+			}
+			return update.CheckResult{Applied: true, Latest: "9.9.9"}, nil
+		},
+	}
+	recorder := httptest.NewRecorder()
+	server.handleUpdateApply(recorder, httptest.NewRequest(http.MethodPost, "/apply", nil))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body)
+	}
+	data := decodeData(t, recorder)
+	if data["applied"] != true || data["version"] != "9.9.9" {
+		t.Fatalf("apply data = %#v", data)
 	}
 }
 

@@ -160,13 +160,27 @@ func validateSMSNotificationConfig(channel string, config map[string]any) error 
 
 func (s *Server) newSMSNotification(ctx context.Context, message store.SMSMessage) smsNotification {
 	name := ""
-	if device, err := s.store.Device(ctx, message.DeviceID); err == nil {
+	deviceID := message.DeviceID
+	if message.ModemIMEI != "" {
+		if devices, err := s.store.ListDevices(ctx); err == nil {
+			var newest time.Time
+			for _, candidate := range devices {
+				if candidate.ModemIMEI == message.ModemIMEI &&
+					(newest.IsZero() || candidate.UpdatedAt.After(newest)) {
+					deviceID = candidate.ID
+					name = strings.TrimSpace(candidate.Name)
+					newest = candidate.UpdatedAt
+				}
+			}
+		}
+	}
+	if device, err := s.store.Device(ctx, deviceID); err == nil {
 		name = strings.TrimSpace(device.Name)
 	}
 	return smsNotification{
-		DeviceID:    message.DeviceID,
+		DeviceID:    deviceID,
 		DeviceName:  name,
-		DeviceLabel: firstNonEmpty(name, message.DeviceID, "--"),
+		DeviceLabel: firstNonEmpty(name, deviceID, "--"),
 		Number:      firstNonEmpty(message.Peer, "--"),
 		Time:        message.Timestamp,
 		Content:     message.Body,

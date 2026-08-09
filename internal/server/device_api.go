@@ -251,16 +251,31 @@ func (s *Server) handleDevices(w http.ResponseWriter, r *http.Request) bool {
 }
 
 func findDiscoveredDevice(devices []device.Device, config deviceConfigPayload) *device.Device {
+	if config.ModemIMEI != "" {
+		for index := range devices {
+			if devices[index].Snapshot != nil && devices[index].Snapshot.IMEI == config.ModemIMEI {
+				return &devices[index]
+			}
+		}
+	}
+	if config.USBPath != "" {
+		for index := range devices {
+			if devices[index].Candidate.USBPath == config.USBPath {
+				return &devices[index]
+			}
+		}
+	}
+	if config.ControlDevice != "" {
+		for index := range devices {
+			if devices[index].Candidate.QMIControl == config.ControlDevice {
+				return &devices[index]
+			}
+		}
+	}
 	for index := range devices {
 		candidate := devices[index].Candidate
 		if config.ATPort != "" &&
 			(candidate.ATPort.Path == config.ATPort || candidate.ATPort.OpenPath() == config.ATPort) {
-			return &devices[index]
-		}
-		if config.ControlDevice != "" && candidate.QMIControl == config.ControlDevice {
-			return &devices[index]
-		}
-		if config.USBPath != "" && candidate.USBPath == config.USBPath {
 			return &devices[index]
 		}
 	}
@@ -502,6 +517,16 @@ func (s *Server) handleDevicePath(
 		return s.handleVoWiFiReconnect(w, r, config, physicalPresent)
 	case "vowifi/e911/websheet":
 		return s.handleE911Websheet(w, r, config)
+	case "calls":
+		if !s.requirePhysicalDevice(w, physicalPresent) {
+			return true
+		}
+		return s.handleCalls(w, r, config, physicalID)
+	case "calls/dial", "calls/answer", "calls/hangup":
+		if !s.requirePhysicalDevice(w, physicalPresent) {
+			return true
+		}
+		return s.handleCallAction(w, r, config, physicalID, tail[1])
 	default:
 		return false
 	}
@@ -1043,6 +1068,14 @@ func physicalMatchesConfig(entry device.Device, config store.Device) bool {
 	if entry.ID == config.ID {
 		return true
 	}
+	if config.ModemIMEI != "" && entry.Snapshot != nil && entry.Snapshot.IMEI != "" {
+		return config.ModemIMEI == entry.Snapshot.IMEI
+	}
+	if config.USBPath != "" && candidate.USBPath != "" {
+		return config.USBPath == candidate.USBPath
+	}
+	// Control and serial device nodes are allocation-order dependent. They are
+	// only legacy fallbacks when no physical USB path or readable IMEI exists.
 	if config.ATPort != "" &&
 		(config.ATPort == candidate.ATPort.Path || config.ATPort == candidate.ATPort.OpenPath()) {
 		return true
@@ -1050,12 +1083,7 @@ func physicalMatchesConfig(entry device.Device, config store.Device) bool {
 	if config.ControlDevice != "" && config.ControlDevice == candidate.QMIControl {
 		return true
 	}
-	if config.USBPath != "" && config.USBPath == candidate.USBPath {
-		return true
-	}
-	return config.ModemIMEI != "" &&
-		entry.Snapshot != nil &&
-		config.ModemIMEI == entry.Snapshot.IMEI
+	return false
 }
 
 func (s *Server) configuredDeviceSummary(

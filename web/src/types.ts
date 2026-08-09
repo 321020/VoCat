@@ -229,6 +229,7 @@ export interface CardPolicy {
 export interface SMSContact {
   deviceId: string;
   deviceName?: string;
+  modemImei?: string;
   imsi: string;
   localPhone?: string;
   peer: string;
@@ -247,6 +248,7 @@ export interface SMSMessage {
   id: number;
   messageId?: string;
   deviceId: string;
+  modemImei?: string;
   imsi: string;
   peer: string;
   direction: "inbound" | "outbound" | "received" | "sent";
@@ -377,6 +379,7 @@ export interface SystemInfo {
   os?: string;
   architecture?: string;
   uptime?: string;
+  developer?: boolean;
 }
 
 export type Notice = {

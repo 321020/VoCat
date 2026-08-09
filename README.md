@@ -14,13 +14,15 @@
 </p>
 
 <p align="center">
-  <img alt="Linux" src="https://img.shields.io/badge/Linux-amd64_%7C_386_%7C_arm64_%7C_armv7-FCC624?style=flat-square&logo=linux&logoColor=111111">
+  <img alt="Linux" src="https://img.shields.io/badge/Linux-amd64_%7C_386_%7C_arm64_%7C_aarch64_%7C_armv7-FCC624?style=flat-square&logo=linux&logoColor=111111">
   <img alt="Docker" src="https://img.shields.io/badge/Docker-Multi--Arch-2496ED?style=flat-square&logo=docker&logoColor=white">
   <img alt="WiFi Calling" src="https://img.shields.io/badge/WiFi_Calling-IMS_SMS-7B1FA2?style=flat-square">
   <img alt="eSIM" src="https://img.shields.io/badge/eSIM-LPA_%2F_eUICC-009688?style=flat-square">
   <img alt="Telegram" src="https://img.shields.io/badge/Telegram-Bot-26A5E4?style=flat-square&logo=telegram&logoColor=white">
   <img alt="GitHub Actions" src="https://img.shields.io/badge/GitHub_Actions-Release-2088FF?style=flat-square&logo=githubactions&logoColor=white">
 </p>
+
+**English** | [简体中文](docs/README.zh-CN.md)
 
 Vocat is an open-source web control panel and engineering toolkit for Quectel EC20/EC25-class cellular modems. It combines modem discovery, live radio status, AT and USSD terminals, SMS, WiFi Calling, eSIM management, network selection, proxy routing, notifications, audit logs, and release automation in one self-contained service.
 
@@ -76,7 +78,7 @@ sudo bash install.sh 0.0.2
 
 The installer:
 
-- detects `amd64`, `386`, `arm64`, or `armv7`;
+- detects `amd64`, `386`, `arm64`, `aarch64`, or `armv7`;
 - downloads the matching GitHub Release binary;
 - verifies it against `SHA256SUMS`;
 - installs Vocat under `/opt/vocat`;
@@ -99,6 +101,7 @@ Download the matching binary and `SHA256SUMS` from GitHub Releases:
 | Linux x86-64 | `vocat-linux-amd64` |
 | Linux x86 32-bit | `vocat-linux-386` |
 | Linux ARM64 | `vocat-linux-arm64` |
+| Linux AArch64 | `vocat-linux-aarch64` |
 | Linux ARMv7 | `vocat-linux-armv7` |
 
 Verify and install it:
@@ -110,11 +113,13 @@ sudo install -m 0755 vocat-linux-amd64 /opt/vocat/bin/vocat
 sudo env \
   VOCAT_DATABASE_PATH=/opt/vocat/data/vocat.db \
   VOCAT_ADMIN_PASSWORD=change-this-password \
-  /opt/vocat/bin/vocat
+  /opt/vocat/bin/vocat serve
 ```
 
-This manual command runs Vocat in the foreground. Use the one-click installer
-when a managed systemd service and automatic restart are required.
+This manual command runs Vocat in the foreground. Use `vocat serve` so the
+process starts the server directly; running `vocat` without arguments as root
+on a TTY opens the interactive management menu instead. Use the one-click
+installer when a managed systemd service and automatic restart are required.
 
 ### Docker
 
@@ -167,7 +172,7 @@ Vocat reads an optional JSON configuration file from `VOCAT_CONFIG`, then applie
 | `VOCAT_SECURE_COOKIES` | `false` | Marks session cookies as secure when HTTPS is used. |
 | `VOCAT_SHUTDOWN_TIMEOUT` | `10s` | Graceful shutdown timeout. |
 | `VOCAT_MAX_REQUEST_BODY_BYTES` | `1048576` | Maximum API request body size. |
-| `VOCAT_REPO` | empty | GitHub repository used by the self-updater, in `owner/name` form. |
+| `VOCAT_REPO` | `MengMengCode/VoCat` | Trusted GitHub repository used by the self-updater, in `owner/name` form. |
 | `GITHUB_TOKEN` | empty | Optional GitHub token for private repositories or higher API limits. |
 
 Do not store Telegram tokens, SMTP passwords, webhook secrets, SIM credentials, or other private data in the repository. Configure them through the application settings or protected environment files.
@@ -255,7 +260,7 @@ go build -trimpath -ldflags "-s -w" -o vocat ./cmd/vocat
 
 Pushing a version tag starts two GitHub Actions workflows:
 
-- `release-binaries` builds and publishes `amd64`, `386`, `arm64`, and `armv7` binaries plus `SHA256SUMS`.
+- `release-binaries` builds and publishes `amd64`, `386`, `arm64`, `aarch64`, and `armv7` binaries plus `SHA256SUMS`.
 - `docker` builds and publishes a multi-architecture image to GitHub Container Registry.
 
 ```bash

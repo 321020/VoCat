@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"os"
 	"runtime"
 	"strconv"
 	"strings"
@@ -17,10 +18,14 @@ import (
 	"vocat/internal/i18n"
 	"vocat/internal/loghub"
 	"vocat/internal/store"
+	"vocat/internal/update"
 )
 
 func (s *Server) routeGeneralAPI(w http.ResponseWriter, r *http.Request) bool {
 	cleanPath := strings.Trim(strings.TrimPrefix(r.URL.Path, "/api"), "/")
+	if s.routeExtensionAPI(w, r, cleanPath) {
+		return true
+	}
 	if s.routeSMSAPI(w, r, cleanPath) {
 		return true
 	}
@@ -309,6 +314,7 @@ func (s *Server) handleSystemInfo(w http.ResponseWriter, r *http.Request) {
 			"os":           runtime.GOOS,
 			"architecture": runtime.GOARCH,
 			"uptime":       formatDuration(time.Since(s.startedAt)),
+			"developer":    s.developerEnabled,
 		},
 	})
 }
@@ -317,28 +323,124 @@ func (s *Server) handleUpdateCheck(w http.ResponseWriter, r *http.Request) {
 	if !requireMethod(w, r, http.MethodGet) {
 		return
 	}
+	if strings.TrimSpace(s.updateRepository) == "" || s.updateCheck == nil {
+		writeJSON(w, http.StatusOK, map[string]any{
+			"data": map[string]any{
+				"available": false,
+				"version":   buildinfo.Version,
+				"message":   i18n.T("未配置受信任的软件更新源；不会从未知地址下载或执行文件。"),
+			},
+		})
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+	defer cancel()
+	result, err := s.updateCheck(
+		ctx,
+		s.updateRepository,
+		s.updateToken,
+		buildinfo.Version,
+	)
+	if err != nil {
+		s.logger.Warn("check for updates failed", "repository", s.updateRepository, "error", err)
+		writeError(w, http.StatusBadGateway, "update_check_failed", err.Error())
+		return
+	}
+	message := ""
+	if result.Available {
+		message = result.ReleaseNotes
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"data": map[string]any{
-			"available": false,
-			"version":   buildinfo.Version,
-			"message":   i18n.T("未配置受信任的软件更新源；不会从未知地址下载或执行文件。"),
+			"available":       result.Available,
+			"current_version": result.Current,
+			"version":         result.Latest,
+			"message":         message,
+			"repository":      s.updateRepository,
+			"is_docker":       runningInDocker(),
 		},
 	})
 }
 
-// handleUpdateApply deliberately performs no update. Without a configured,
-// trusted update channel the product never downloads or executes code, so an
-// apply request is acknowledged as a safe no-op rather than acted on.
+func runningInDocker() bool {
+	if _, err := os.Stat("/.dockerenv"); err == nil {
+		return true
+	}
+	return strings.EqualFold(strings.TrimSpace(os.Getenv("VOCAT_CONTAINER")), "docker")
+}
+
 func (s *Server) handleUpdateApply(w http.ResponseWriter, r *http.Request) {
 	if !requireMethod(w, r, http.MethodPost) {
 		return
 	}
+	if strings.TrimSpace(s.updateRepository) == "" || s.updateApply == nil {
+		writeJSON(w, http.StatusOK, map[string]any{
+			"data": map[string]any{
+				"applied": false,
+				"message": i18n.T("未配置受信任的软件更新源；未执行任何更新。"),
+			},
+		})
+		return
+	}
+	if runningInDocker() {
+		writeError(w, http.StatusConflict, "container_update_required", "pull the latest container image and recreate the container")
+		return
+	}
+	s.updateMu.Lock()
+	if s.updateApplying {
+		s.updateMu.Unlock()
+		writeError(w, http.StatusConflict, "update_busy", "another update is already in progress")
+		return
+	}
+	s.updateApplying = true
+	s.updateMu.Unlock()
+	defer func() {
+		s.updateMu.Lock()
+		s.updateApplying = false
+		s.updateMu.Unlock()
+	}()
+
+	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Minute)
+	defer cancel()
+	result, err := s.updateApply(ctx, s.logger, update.Options{
+		Repo:  s.updateRepository,
+		Token: s.updateToken,
+	}, false)
+	if err != nil {
+		s.logger.Error("apply update failed", "repository", s.updateRepository, "error", err)
+		writeError(w, http.StatusBadGateway, "update_apply_failed", err.Error())
+		return
+	}
+	if !result.Applied {
+		writeJSON(w, http.StatusOK, map[string]any{
+			"data": map[string]any{
+				"applied": false,
+				"version": result.Latest,
+				"message": "The installed version is already current.",
+			},
+		})
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"data": map[string]any{
-			"applied": false,
-			"message": i18n.T("未配置受信任的软件更新源；未执行任何更新。"),
+			"applied": true,
+			"version": result.Latest,
+			"message": "Update verified and installed; the service is restarting.",
 		},
 	})
+	if flusher, ok := w.(http.Flusher); ok {
+		flusher.Flush()
+	}
+	if s.updateRestart != nil {
+		restart := s.updateRestart
+		logger := s.logger
+		go func() {
+			time.Sleep(time.Second)
+			if err := restart(logger); err != nil {
+				logger.Error("restart after update failed", "error", err)
+			}
+		}()
+	}
 }
 
 func (s *Server) handlePasswordChange(w http.ResponseWriter, r *http.Request) {

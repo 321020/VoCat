@@ -127,6 +127,7 @@ func (d *SysFSDiscoverer) Discover(ctx context.Context) ([]Candidate, error) {
 			}
 			return left.Name < right.Name
 		})
+		assignQuectelPortRoles(state.candidate.Ports)
 		state.candidate.ATPort = selectATPort(state.candidate.Ports)
 		result = append(result, state.candidate)
 	}
@@ -240,30 +241,45 @@ func sanitizeID(value string) string {
 	return strings.Trim(result.String(), "-")
 }
 
-func quecPortRole(interfaceNumber int, name string) PortRole {
-	// Quectel exposes the same logical ports under more than one USB
-	// composition. In both layouts seen on EC20/EC25 hardware the kernel
-	// stable tty name is the stronger hint: ttyUSB0 is diagnostic and
-	// ttyUSB2 is the primary AT port, even when their interface numbers are
-	// 00/02 instead of 02/04.
-	switch name {
-	case "ttyUSB0":
-		return PortRoleDiagnostic
-	case "ttyUSB1":
-		return PortRoleNMEA
-	case "ttyUSB2":
-		return PortRoleAT
-	case "ttyUSB3":
-		return PortRoleModem
+func assignQuectelPortRoles(ports []Port) {
+	// ttyUSB numbers are allocated globally by Linux. A second modem therefore
+	// commonly exposes ttyUSB4..ttyUSB7, so absolute tty names cannot identify
+	// the logical AT port. Infer the Quectel composition once per physical USB
+	// device and assign roles from that device's interface numbers.
+	base := 0x02
+	for _, port := range ports {
+		if port.InterfaceNumber <= 0x01 {
+			base = 0x00
+			break
+		}
 	}
+	for index := range ports {
+		switch ports[index].InterfaceNumber - base {
+		case 0:
+			ports[index].Role = PortRoleDiagnostic
+		case 1:
+			ports[index].Role = PortRoleNMEA
+		case 2:
+			ports[index].Role = PortRoleAT
+		case 3:
+			ports[index].Role = PortRoleModem
+		default:
+			ports[index].Role = PortRoleUnknown
+		}
+	}
+}
+
+func quecPortRole(interfaceNumber int, name string) PortRole {
+	// Initial best effort. assignQuectelPortRoles replaces this once every
+	// interface belonging to the same physical modem has been collected.
 	switch interfaceNumber {
-	case 0x02:
+	case 0x00:
 		return PortRoleDiagnostic
-	case 0x03:
+	case 0x01:
 		return PortRoleNMEA
-	case 0x04:
+	case 0x02:
 		return PortRoleAT
-	case 0x05:
+	case 0x03:
 		return PortRoleModem
 	default:
 		if name == "ttyUSB2" {
@@ -279,9 +295,9 @@ func selectATPort(ports []Port) Port {
 	for _, port := range ports {
 		score := 0
 		switch {
-		case port.Name == "ttyUSB2":
-			score = 120
 		case port.Role == PortRoleAT:
+			score = 120
+		case port.Name == "ttyUSB2":
 			score = 100
 		case port.InterfaceNumber == 0x04:
 			score = 90

@@ -211,6 +211,30 @@ func TestNotificationSettingsRejectsUnknownAndMalformedInput(t *testing.T) {
 	}
 }
 
+func TestNotificationSettingsAcceptsTelegramReverseProxyTemplate(t *testing.T) {
+	test := newSettingsAPITest(t)
+	recorder := test.request(
+		t,
+		http.MethodPut,
+		"/api/settings/notifications",
+		`{"telegram":{"enabled":true,"bot_token":"123456:abcdefghijklmnopqrstuvwxyz","chat_id":"1","base_url":"https://telegram.example.com/bot%s/%s"}}`,
+	)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("PUT status = %d, body = %s", recorder.Code, recorder.Body)
+	}
+	stored, err := test.database.NotificationSetting(context.Background(), "telegram")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var config map[string]any
+	if err := json.Unmarshal(stored.Config, &config); err != nil {
+		t.Fatal(err)
+	}
+	if config["base_url"] != "https://telegram.example.com/bot%s/%s" {
+		t.Fatalf("stored Telegram base URL = %#v", config["base_url"])
+	}
+}
+
 func TestNotificationTestsBlockSSRFAndUnsupportedChannels(t *testing.T) {
 	test := newSettingsAPITest(t)
 	var webhookHits atomic.Int32

@@ -21,6 +21,7 @@ import { ErrorBoundary } from "../ui/ErrorBoundary";
 import { cx } from "../../lib/utils";
 import { BrandLogo } from "./BrandLogo";
 import { VersionBadge } from "./VersionBadge";
+import { listPlugins, type InstalledPlugin } from "../../extensions";
 
 const NAV = [
   { to: "/", label: "仪表盘", icon: BoardRegular, end: true },
@@ -41,8 +42,9 @@ export function AuthenticatedShell({
   const [collapsed, setCollapsed] = useState(false);
   const [isMobile, setIsMobile] = useState(false);
   const [mobileOpen, setMobileOpen] = useState(false);
+  const [plugins, setPlugins] = useState<InstalledPlugin[]>([]);
   const { logout, user } = useAuth();
-  const { t } = useI18n();
+  const { t, lang } = useI18n();
   const navigate = useNavigate();
   const location = useLocation();
 
@@ -55,6 +57,16 @@ export function AuthenticatedShell({
     update();
     window.addEventListener("resize", update, { passive: true });
     return () => window.removeEventListener("resize", update);
+  }, []);
+
+  useEffect(() => {
+    let active = true;
+    const load = () => listPlugins().then((items) => {
+      if (active) setPlugins(items || []);
+    }).catch(() => undefined);
+    void load();
+    window.addEventListener("vocat:plugins-changed", load);
+    return () => { active = false; window.removeEventListener("vocat:plugins-changed", load); };
   }, []);
 
   useEffect(() => {
@@ -79,16 +91,37 @@ export function AuthenticatedShell({
   }
 
   function menuList(collapse: boolean) {
+    const sidebarPlugins = plugins
+      .filter((plugin) => plugin.enabled)
+      .flatMap((plugin) => plugin.contributions
+        .filter((contribution) => contribution.location === "sidebar")
+        .map((contribution) => ({ plugin, contribution })));
+    const navItems: Array<(typeof NAV)[number] | { to: string; label: string; icon: typeof GlobeRegular; pluginLabelZH?: string }> = [];
+    for (const item of NAV) {
+      navItems.push(item);
+      if (item.to === "/sms") {
+        for (const extension of sidebarPlugins.filter((entry) => !entry.contribution.after || entry.contribution.after === "sms")) {
+          navItems.push({
+            to: `/extensions/${encodeURIComponent(extension.plugin.id)}/${encodeURIComponent(extension.contribution.id)}`,
+            label: extension.contribution.label,
+            pluginLabelZH: extension.contribution.labelZh,
+            icon: GlobeRegular,
+          });
+        }
+      }
+    }
     return (
       <nav className={cx("sidebar-menu mt-2", collapse && "is-collapsed")} aria-label={t("主导航")}>
-        {NAV.map((item) => {
+        {navItems.map((item) => {
           const Icon = item.icon;
-          const label = t(item.label);
+          const label = "pluginLabelZH" in item && item.pluginLabelZH
+            ? (lang === "zh" ? item.pluginLabelZH : item.label)
+            : t(item.label);
           return (
             <NavLink
               key={item.to}
               to={item.to}
-              end={item.end}
+              end={"end" in item ? item.end : undefined}
               title={collapse ? label : undefined}
               className={({ isActive }) => cx("vocat-menu-item", isActive && "is-active")}
             >

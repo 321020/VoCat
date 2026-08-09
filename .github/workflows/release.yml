@@ -72,6 +72,10 @@ jobs:
             goarch: arm64
             goarm: ""
             filename: vocat-linux-arm64
+          - target: linux-aarch64
+            goarch: arm64
+            goarm: ""
+            filename: vocat-linux-aarch64
           - target: linux-armv7
             goarch: arm
             goarm: "7"

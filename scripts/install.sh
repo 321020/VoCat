@@ -128,10 +128,12 @@ skip_if_equal() {
 
 # --- Detect architecture -----------------------------------------------------
 detect_arch() {
+    ARCH_FALLBACK=""
     case "$(uname -m)" in
         x86_64) ARCH="amd64" ;;
         i386|i486|i586|i686) ARCH="386" ;;
-        aarch64|arm64) ARCH="arm64" ;;
+        aarch64) ARCH="aarch64"; ARCH_FALLBACK="arm64" ;;
+        arm64) ARCH="arm64"; ARCH_FALLBACK="aarch64" ;;
         armv7l|armv7*) ARCH="armv7" ;;
         *) die "不支持的架构: $(uname -m)" "Unsupported architecture: $(uname -m)" ;;
     esac
@@ -144,6 +146,9 @@ download_and_verify() {
     trap 'rm -rf "$VOCAT_TMP"' EXIT
     local base="https://github.com/${REPO}/releases/download/v${TARGET_VERSION}"
     local asset="vocat-linux-${ARCH}"
+    if [ -n "$ARCH_FALLBACK" ] && ! curl -fsIL -o /dev/null "${base}/${asset}"; then
+        asset="vocat-linux-${ARCH_FALLBACK}"
+    fi
     msg "下载 $asset ..." "Downloading $asset ..."
     curl -fsSL -o "${VOCAT_TMP}/vocat" "${base}/${asset}" || die "下载二进制失败。" "Failed to download the binary."
     curl -fsSL -o "${VOCAT_TMP}/SHA256SUMS" "${base}/SHA256SUMS" || die "下载 SHA256SUMS 失败。" "Failed to download SHA256SUMS."

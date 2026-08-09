@@ -365,6 +365,25 @@ type SMSSender interface {
 	SendSMS(context.Context, SMSSubmitRequest) (SMSSubmitResult, error)
 }
 
+// Call describes one signalling-only IMS call. VoCat intentionally does not
+// open, capture, or relay an RTP media stream for extension call tests.
+type Call struct {
+	ID        string    `json:"id"`
+	Number    string    `json:"number"`
+	Direction string    `json:"direction"`
+	State     string    `json:"state"`
+	StartedAt time.Time `json:"started_at"`
+}
+
+// CallController is an optional capability of an IMS session. Implementations
+// manage SIP signalling only; audio handling is explicitly outside this API.
+type CallController interface {
+	Calls() []Call
+	DialCall(context.Context, string) (Call, error)
+	AnswerCall(context.Context, string) (Call, error)
+	HangupCall(context.Context, string) error
+}
+
 // PhoneStore persists a number only after it was explicitly associated by IMS.
 type PhoneStore interface {
 	SaveAssociatedNumber(context.Context, PhoneRecord) error

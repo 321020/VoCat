@@ -27,6 +27,7 @@ export interface ThreadQuery {
   peer: string;
   limit: number;
   deviceId?: string;
+  modemImei?: string;
   imsi?: string;
   beforeTs?: string;
   beforeId?: number;
@@ -38,6 +39,7 @@ export function getThread(q: ThreadQuery): Promise<SMSMessage[]> {
       peer: q.peer,
       limit: q.limit,
       device_id: q.deviceId,
+      modem_imei: q.modemImei,
       imsi: q.imsi,
       before_ts: q.beforeTs,
       before_id: q.beforeId,
@@ -78,9 +80,10 @@ export function deleteMessage(id: number): Promise<{ threadEmpty?: boolean }> {
 export interface DeleteThreadQuery {
   peer: string;
   deviceId?: string;
+  modemImei?: string;
   imsi?: string;
 }
 
 export function deleteThread(q: DeleteThreadQuery): Promise<unknown> {
-  return api(`/sms/thread${qs({ peer: q.peer, device_id: q.deviceId, imsi: q.imsi })}`, { method: "DELETE" });
+  return api(`/sms/thread${qs({ peer: q.peer, device_id: q.deviceId, modem_imei: q.modemImei, imsi: q.imsi })}`, { method: "DELETE" });
 }

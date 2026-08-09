@@ -15,6 +15,7 @@ import ProxyPage from "./pages/ProxyPage";
 import SmsPage from "./pages/SmsPage";
 import LogsPage from "./pages/LogsPage";
 import SettingsPage from "./pages/SettingsPage";
+import ExtensionPage from "./pages/ExtensionPage";
 
 const THEME_KEY = "theme";
 const DISCLAIMER_KEY = "vocat_disclaimer_agreed_at";
@@ -109,6 +110,7 @@ function AppRoot() {
           <Route path="devices/*" element={<DevicesPage />} />
           <Route path="proxy" element={<ProxyPage />} />
           <Route path="sms" element={<SmsPage />} />
+          <Route path="extensions/:pluginId/:contributionId" element={<ExtensionPage />} />
           <Route path="logs" element={<LogsPage />} />
           <Route path="settings" element={<SettingsPage />} />
         </Route>

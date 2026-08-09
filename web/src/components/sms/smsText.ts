@@ -4,6 +4,7 @@ import { tl, useI18n } from "../../lib/i18n";
 // Aggregated conversation row built from an SMSContact (mirrors the VoHive `Os` mapper).
 export interface SmsThread {
   key: string;
+  modemImei: string;
   imsi: string;
   peer: string;
   deviceId: string;
@@ -79,8 +80,10 @@ export function dayLabel(ts: number): string {
 
 export function deriveThread(c: SMSContact): SmsThread {
   const lastMessage = String(c.lastContent ?? c.lastMessage ?? "").slice(0, 80);
+  const modemImei = String(c.modemImei || "").trim();
   return {
-    key: `${c.imsi}|${c.peer}`,
+    key: `${modemImei || `device:${c.deviceId}`}|${c.imsi}|${c.peer}`,
+    modemImei,
     imsi: c.imsi,
     peer: c.peer,
     deviceId: c.deviceId,

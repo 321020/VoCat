@@ -291,10 +291,11 @@ export default function SmsPage() {
     const id = ++threadReqId.current;
     if (!silent) setMessagesLoadingState(true);
     const query: ThreadQuery = { peer: thread.peer, limit: THREAD_PAGE };
-	if (device !== "all") query.deviceId = device;
-	else {
-		query.imsi = thread.imsi;
-	}
+    if (device !== "all") query.deviceId = device;
+    else {
+      query.modemImei = thread.modemImei;
+      query.imsi = thread.imsi;
+    }
     try {
       const list = sortMessages(await getThread(query));
       if (id !== threadReqId.current) return false;
@@ -425,10 +426,11 @@ export default function SmsPage() {
     try {
       const oldest = messagesRef.current[0];
       const query: ThreadQuery = { peer: thread.peer, limit: THREAD_PAGE, beforeTs: oldest.timestamp, beforeId: oldest.id };
-		if (device !== "all") query.deviceId = device;
-		else {
-			query.imsi = thread.imsi;
-		}
+      if (device !== "all") query.deviceId = device;
+      else {
+        query.modemImei = thread.modemImei;
+        query.imsi = thread.imsi;
+      }
       const older = sortMessages(await getThread(query));
       setMessagesState([...older, ...messagesRef.current]);
       setHasMoreState(older.length === THREAD_PAGE);
@@ -547,7 +549,7 @@ export default function SmsPage() {
         const q: DeleteThreadQuery =
           deviceRef.current !== "all"
             ? { deviceId: deviceRef.current, peer: t.peer }
-            : { deviceId: "all", imsi: t.imsi, peer: t.peer };
+            : { deviceId: "all", modemImei: t.modemImei, imsi: t.imsi, peer: t.peer };
         await deleteThread(q);
         message.success(tl("已删除对话"));
         if (keyRef.current === t.key) clearSelection(true);

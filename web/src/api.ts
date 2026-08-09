@@ -74,8 +74,9 @@ export interface RequestOptions extends Omit<RequestInit, "body"> {
 export async function api<T>(path: string, options: RequestOptions = {}): Promise<T> {
   const method = (options.method || "GET").toUpperCase();
   const headers = new Headers(options.headers);
+  const formBody = typeof FormData !== "undefined" && options.body instanceof FormData;
   headers.set("Accept", options.raw ? "*/*" : "application/json");
-  if (options.body !== undefined) headers.set("Content-Type", "application/json");
+  if (options.body !== undefined && !formBody) headers.set("Content-Type", "application/json");
   if (isMutation(method)) {
     const csrf = sessionStorage.getItem(CSRF_KEY);
     if (csrf) headers.set("X-CSRF-Token", csrf);
@@ -86,7 +87,11 @@ export async function api<T>(path: string, options: RequestOptions = {}): Promis
     method,
     headers,
     credentials: "include",
-    body: options.body === undefined ? undefined : JSON.stringify(snakeize(options.body)),
+    body: options.body === undefined
+      ? undefined
+      : formBody
+        ? options.body as FormData
+        : JSON.stringify(snakeize(options.body)),
   });
 
   if (options.raw) return response as T;

@@ -127,6 +127,7 @@ type SMSMessage struct {
 	ID            int64
 	MessageID     string
 	DeviceID      string
+	ModemIMEI     string
 	IMSI          string
 	Peer          string
 	Direction     string
@@ -143,19 +144,21 @@ type SMSMessage struct {
 }
 
 type SMSFilter struct {
-	DeviceID string
-	IMSI     string
-	Peer     string
-	Since    time.Time
-	Until    time.Time
-	BeforeID int64
-	Limit    int
+	DeviceID  string
+	ModemIMEI string
+	IMSI      string
+	Peer      string
+	Since     time.Time
+	Until     time.Time
+	BeforeID  int64
+	Limit     int
 }
 
 // SMSDeliveryReport is network evidence for one submitted SMS part. The
 // message reference is the TP-MR returned in SMS-STATUS-REPORT.
 type SMSDeliveryReport struct {
 	DeviceID          string
+	ModemIMEI         string
 	IMSI              string
 	Peer              string
 	Source            string
@@ -170,6 +173,7 @@ type SMSDeliveryReport struct {
 type SMSContact struct {
 	DeviceID      string
 	DeviceName    string
+	ModemIMEI     string
 	IMSI          string
 	LocalPhone    string
 	Peer          string

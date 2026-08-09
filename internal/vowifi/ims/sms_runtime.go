@@ -264,6 +264,9 @@ func (session *Session) exchangeRuntime(
 }
 
 func (session *Session) handleSIPRequest(request *sipRequest, respond func([]byte) error) {
+	if session.handleCallRequest(request, respond) {
+		return
+	}
 	status := 200
 	switch request.Method {
 	case "OPTIONS":

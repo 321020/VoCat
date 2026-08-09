@@ -40,6 +40,7 @@ func saveSMSMessage(
 	value SMSMessage,
 ) (SMSMessage, error) {
 	value.DeviceID = strings.TrimSpace(value.DeviceID)
+	value.ModemIMEI = strings.TrimSpace(value.ModemIMEI)
 	value.Peer = strings.TrimSpace(value.Peer)
 	value.Direction = strings.ToLower(strings.TrimSpace(value.Direction))
 	if value.DeviceID == "" {
@@ -77,13 +78,13 @@ func saveSMSMessage(
 	if value.ID > 0 {
 		result, err := executor.ExecContext(ctx, `
 			UPDATE sms_messages SET
-				message_id = ?, device_id = ?, imsi = ?, peer = ?,
+				message_id = ?, device_id = ?, modem_imei = ?, imsi = ?, peer = ?,
 				direction = ?, body = ?, message_time = ?, status = ?,
 				source = ?, parts_total = ?, delivery_state = ?, is_read = ?,
 				extra_json = ?, updated_at = ?
 			WHERE id = ?
 		`,
-			value.MessageID, value.DeviceID, value.IMSI, value.Peer,
+			value.MessageID, value.DeviceID, value.ModemIMEI, value.IMSI, value.Peer,
 			value.Direction, value.Body, value.Timestamp.Unix(), value.Status,
 			value.Source, value.PartsTotal, value.DeliveryState,
 			boolInt(value.Read), string(extra), value.UpdatedAt.Unix(), value.ID,
@@ -99,11 +100,16 @@ func saveSMSMessage(
 
 	result, err := executor.ExecContext(ctx, `
 		INSERT INTO sms_messages (
-			message_id, device_id, imsi, peer, direction, body, message_time,
+			message_id, device_id, modem_imei, imsi, peer, direction, body, message_time,
 			status, source, parts_total, delivery_state, is_read, extra_json,
 			created_at, updated_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-		ON CONFLICT(device_id, message_id) WHERE message_id <> '' DO UPDATE SET
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT DO UPDATE SET
+			device_id = excluded.device_id,
+			modem_imei = CASE
+				WHEN excluded.modem_imei <> '' THEN excluded.modem_imei
+				ELSE sms_messages.modem_imei
+			END,
 			imsi = excluded.imsi,
 			peer = excluded.peer,
 			direction = excluded.direction,
@@ -117,7 +123,7 @@ func saveSMSMessage(
 			extra_json = excluded.extra_json,
 			updated_at = excluded.updated_at
 	`,
-		value.MessageID, value.DeviceID, value.IMSI, value.Peer,
+		value.MessageID, value.DeviceID, value.ModemIMEI, value.IMSI, value.Peer,
 		value.Direction, value.Body, value.Timestamp.Unix(), value.Status,
 		value.Source, value.PartsTotal, value.DeliveryState,
 		boolInt(value.Read), string(extra), value.CreatedAt.Unix(),
@@ -127,10 +133,13 @@ func saveSMSMessage(
 		return SMSMessage{}, fmt.Errorf("save SMS: %w", err)
 	}
 	if value.MessageID != "" {
+		hardwareKey := smsHardwareKey(value.ModemIMEI, value.DeviceID)
 		return scanSMSMessage(executor.QueryRowContext(
 			ctx,
-			smsMessageSelect+` WHERE device_id = ? AND message_id = ?`,
-			value.DeviceID,
+			smsMessageSelect+` WHERE
+				COALESCE(NULLIF(modem_imei, ''), 'device:' || device_id) = ?
+				AND message_id = ?`,
+			hardwareKey,
 			value.MessageID,
 		))
 	}
@@ -207,7 +216,9 @@ func (s *Store) ListInboundSMSAfterID(ctx context.Context, afterID int64, limit 
 // outbound submission and advances its aggregate delivery state. Multipart
 // messages become delivered only after every submitted part is reported.
 func (s *Store) ApplySMSDeliveryReport(ctx context.Context, report SMSDeliveryReport) (SMSMessage, error) {
-	if report.DeviceID == "" || report.MessageReference < 0 || report.MessageReference > 255 {
+	report.DeviceID = strings.TrimSpace(report.DeviceID)
+	report.ModemIMEI = strings.TrimSpace(report.ModemIMEI)
+	if (report.DeviceID == "" && report.ModemIMEI == "") || report.MessageReference < 0 || report.MessageReference > 255 {
 		return SMSMessage{}, errors.New("invalid SMS delivery report identity")
 	}
 	if report.ReceivedAt.IsZero() {
@@ -219,7 +230,7 @@ func (s *Store) ApplySMSDeliveryReport(ctx context.Context, report SMSDeliveryRe
 	}
 	defer tx.Rollback()
 	query := smsMessageSelect + `
-		WHERE device_id = ?
+		WHERE ((? <> '' AND modem_imei = ?) OR (? = '' AND device_id = ?))
 			AND direction IN ('outbound', 'sent')
 			AND (? = '' OR imsi = ?)
 			AND (? = '' OR peer = ?)
@@ -229,7 +240,7 @@ func (s *Store) ApplySMSDeliveryReport(ctx context.Context, report SMSDeliveryRe
 	rows, err := tx.QueryContext(
 		ctx,
 		query,
-		report.DeviceID,
+		report.ModemIMEI, report.ModemIMEI, report.ModemIMEI, report.DeviceID,
 		report.IMSI, report.IMSI,
 		report.Peer, report.Peer,
 		report.Source, report.Source,
@@ -449,28 +460,42 @@ func (s *Store) MarkSMSThreadRead(
 func (s *Store) ListSMSContacts(ctx context.Context, filter SMSFilter) ([]SMSContact, error) {
 	where, args := smsWhere(filter, "m.")
 	query := `
-		WITH ranked AS (
+		WITH resolved AS (
 			SELECT
-				m.id, m.device_id, m.imsi, m.peer, m.body, m.message_time,
-				m.direction,
+				m.*,
+				COALESCE(NULLIF(m.modem_imei, ''), 'device:' || m.device_id) AS hardware_key,
+				COALESCE((
+					SELECT current_device.id
+					FROM devices current_device
+					WHERE m.modem_imei <> ''
+						AND current_device.modem_imei = m.modem_imei
+					ORDER BY current_device.updated_at DESC, current_device.id
+					LIMIT 1
+				), m.device_id) AS resolved_device_id
+			FROM sms_messages m` + where + `
+		), ranked AS (
+			SELECT
+				m.id, m.resolved_device_id, m.modem_imei, m.imsi, m.peer,
+				m.body, m.message_time, m.direction,
 				ROW_NUMBER() OVER (
-					PARTITION BY m.device_id, m.imsi, m.peer
+					PARTITION BY m.hardware_key, m.imsi, m.peer
 					ORDER BY m.message_time DESC, m.id DESC
 				) AS row_number,
 				SUM(CASE
 					WHEN m.direction IN ('inbound', 'received') AND m.is_read = 0
 					THEN 1 ELSE 0
 				END) OVER (
-					PARTITION BY m.device_id, m.imsi, m.peer
+					PARTITION BY m.hardware_key, m.imsi, m.peer
 				) AS unread_count,
 				COUNT(*) OVER (
-					PARTITION BY m.device_id, m.imsi, m.peer
+					PARTITION BY m.hardware_key, m.imsi, m.peer
 				) AS message_count
-			FROM sms_messages m` + where + `
+			FROM resolved m
 		)
 		SELECT
-			r.device_id,
+			r.resolved_device_id,
 			COALESCE(d.name, ''),
+			r.modem_imei,
 			r.imsi,
 			COALESCE(NULLIF(dr.phone_number, ''), NULLIF(vr.local_phone, ''), ''),
 			r.peer,
@@ -482,9 +507,9 @@ func (s *Store) ListSMSContacts(ctx context.Context, filter SMSFilter) ([]SMSCon
 			r.unread_count,
 			r.message_count
 		FROM ranked r
-		LEFT JOIN devices d ON d.id = r.device_id
-		LEFT JOIN device_runtime dr ON dr.device_id = r.device_id
-		LEFT JOIN vowifi_runtime vr ON vr.device_id = r.device_id
+		LEFT JOIN devices d ON d.id = r.resolved_device_id
+		LEFT JOIN device_runtime dr ON dr.device_id = r.resolved_device_id
+		LEFT JOIN vowifi_runtime vr ON vr.device_id = r.resolved_device_id
 		WHERE r.row_number = 1
 		ORDER BY r.message_time DESC, r.id DESC
 		LIMIT ?`
@@ -500,7 +525,7 @@ func (s *Store) ListSMSContacts(ctx context.Context, filter SMSFilter) ([]SMSCon
 		var value SMSContact
 		var timestamp int64
 		if err := rows.Scan(
-			&value.DeviceID, &value.DeviceName, &value.IMSI,
+			&value.DeviceID, &value.DeviceName, &value.ModemIMEI, &value.IMSI,
 			&value.LocalPhone, &value.Peer, &value.DisplayName,
 			&value.LastMessage, &timestamp, &value.Direction,
 			&value.LastSMSID, &value.UnreadCount, &value.MessageCount,
@@ -517,7 +542,7 @@ func (s *Store) ListSMSContacts(ctx context.Context, filter SMSFilter) ([]SMSCon
 }
 
 const smsMessageSelect = `
-	SELECT id, message_id, device_id, imsi, peer, direction, body,
+	SELECT id, message_id, device_id, modem_imei, imsi, peer, direction, body,
 		message_time, status, source, parts_total, delivery_state, is_read,
 		extra_json, created_at, updated_at
 	FROM sms_messages`
@@ -528,7 +553,7 @@ func scanSMSMessage(row rowScanner) (SMSMessage, error) {
 	var read int
 	var extra string
 	err := row.Scan(
-		&value.ID, &value.MessageID, &value.DeviceID, &value.IMSI,
+		&value.ID, &value.MessageID, &value.DeviceID, &value.ModemIMEI, &value.IMSI,
 		&value.Peer, &value.Direction, &value.Body, &messageTime,
 		&value.Status, &value.Source, &value.PartsTotal,
 		&value.DeliveryState, &read, &extra, &createdAt, &updatedAt,
@@ -554,6 +579,10 @@ func smsWhere(filter SMSFilter, prefix string) (string, []any) {
 		clauses = append(clauses, prefix+`device_id = ?`)
 		args = append(args, filter.DeviceID)
 	}
+	if filter.ModemIMEI != "" {
+		clauses = append(clauses, prefix+`modem_imei = ?`)
+		args = append(args, filter.ModemIMEI)
+	}
 	if filter.IMSI != "" {
 		clauses = append(clauses, prefix+`imsi = ?`)
 		args = append(args, filter.IMSI)
@@ -578,6 +607,13 @@ func smsWhere(filter SMSFilter, prefix string) (string, []any) {
 		return "", args
 	}
 	return " WHERE " + strings.Join(clauses, " AND "), args
+}
+
+func smsHardwareKey(modemIMEI, deviceID string) string {
+	if modemIMEI = strings.TrimSpace(modemIMEI); modemIMEI != "" {
+		return modemIMEI
+	}
+	return "device:" + strings.TrimSpace(deviceID)
 }
 
 func normalizedLimit(value int) int {

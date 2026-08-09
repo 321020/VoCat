@@ -51,11 +51,11 @@ func Run(logger *slog.Logger, args []string) error {
 	if opts.Repo == "" {
 		opts.Repo = strings.TrimSpace(os.Getenv("VOCAT_REPO"))
 	}
+	if opts.Repo == "" {
+		opts.Repo = DefaultRepository
+	}
 	if opts.Token == "" {
 		opts.Token = strings.TrimSpace(os.Getenv("GITHUB_TOKEN"))
-	}
-	if opts.Repo == "" {
-		return fmt.Errorf("update: no repository configured (set --repo=owner/name or VOCAT_REPO)")
 	}
 	if opts.Target == "" {
 		opts.Target = resolveDefaultTarget()
@@ -65,33 +65,55 @@ func Run(logger *slog.Logger, args []string) error {
 	defer cancel()
 
 	logger.Info("checking for updates", "repo", opts.Repo, "current", buildinfo.Version)
-	release, err := LatestRelease(ctx, opts.Repo, opts.Token)
+	result, err := CheckLatest(ctx, opts.Repo, opts.Token, buildinfo.Version)
 	if err != nil {
 		return err
 	}
-	latest := strings.TrimPrefix(release.TagName, "v")
-	if latest == "" {
-		latest = release.TagName
-	}
-
-	if latest == buildinfo.Version && !opts.Force {
+	if !result.Available && !opts.Force {
 		logger.Info("already up to date", "version", buildinfo.Version)
 		fmt.Printf("vocat %s is already the latest release.\n", buildinfo.Version)
 		return nil
 	}
 	if opts.Check {
-		fmt.Printf("update available: %s -> %s\n", buildinfo.Version, latest)
-		if release.Body != "" {
-			fmt.Println(strings.TrimSpace(release.Body))
+		fmt.Printf("update available: %s -> %s\n", buildinfo.Version, result.Latest)
+		if result.ReleaseNotes != "" {
+			fmt.Println(result.ReleaseNotes)
 		}
 		return nil
 	}
 
-	logger.Info("update available", "current", buildinfo.Version, "latest", latest)
-	return applyUpdate(ctx, logger, opts, release, latest)
+	logger.Info("update available", "current", buildinfo.Version, "latest", result.Latest)
+	return applyUpdate(ctx, logger, opts, result.Release, result.Latest, true)
 }
 
-func applyUpdate(ctx context.Context, logger *slog.Logger, opts Options, release *Release, latest string) error {
+// ApplyLatest downloads, verifies, and atomically installs the newest trusted
+// release. HTTP callers can pass restart=false and restart after flushing the
+// response.
+func ApplyLatest(ctx context.Context, logger *slog.Logger, opts Options, restart bool) (CheckResult, error) {
+	if strings.TrimSpace(opts.Repo) == "" {
+		opts.Repo = DefaultRepository
+	}
+	if strings.TrimSpace(opts.Token) == "" {
+		opts.Token = strings.TrimSpace(os.Getenv("GITHUB_TOKEN"))
+	}
+	if strings.TrimSpace(opts.Target) == "" {
+		opts.Target = resolveDefaultTarget()
+	}
+	result, err := CheckLatest(ctx, opts.Repo, opts.Token, buildinfo.Version)
+	if err != nil {
+		return CheckResult{}, err
+	}
+	if !result.Available && !opts.Force {
+		return result, nil
+	}
+	if err := applyUpdate(ctx, logger, opts, result.Release, result.Latest, restart); err != nil {
+		return CheckResult{}, err
+	}
+	result.Applied = true
+	return result, nil
+}
+
+func applyUpdate(ctx context.Context, logger *slog.Logger, opts Options, release *Release, latest string, restart bool) error {
 	assetNames := assetNamesFor(runtime.GOOS, runtime.GOARCH)
 	var asset *Asset
 	for _, name := range assetNames {
@@ -169,11 +191,13 @@ func applyUpdate(ctx context.Context, logger *slog.Logger, opts Options, release
 	logger.Info("installed new binary", "target", opts.Target, "version", latest)
 	fmt.Printf("vocat updated to %s.\n", latest)
 
-	if err := restartService(logger); err != nil {
-		// The file replacement already succeeded; a restart failure is not
-		// fatal — the operator can restart the service manually.
-		fmt.Printf("Binary replaced, but automatic restart failed: %v\n", err)
-		fmt.Println("Restart the vocat service manually to apply the new build.")
+	if restart {
+		if err := RestartService(logger); err != nil {
+			// The file replacement already succeeded; a restart failure is not
+			// fatal — the operator can restart the service manually.
+			fmt.Printf("Binary replaced, but automatic restart failed: %v\n", err)
+			fmt.Println("Restart the vocat service manually to apply the new build.")
+		}
 	}
 	return nil
 }
@@ -201,10 +225,10 @@ func backupAndReplace(target, tmp string) error {
 	return nil
 }
 
-// restartService restarts the vocat systemd unit. If systemctl is unavailable
+// RestartService restarts the vocat systemd unit. If systemctl is unavailable
 // (non-systemd hosts, containers), it returns an error the caller surfaces as
 // a non-fatal warning.
-func restartService(logger *slog.Logger) error {
+func RestartService(logger *slog.Logger) error {
 	if _, err := exec.LookPath("systemctl"); err != nil {
 		return fmt.Errorf("systemctl not found in PATH")
 	}
@@ -245,6 +269,11 @@ func findAsset(release *Release, name string) *Asset {
 }
 
 func assetNamesFor(goos, goarch string) []string {
+	if goos == "linux" && goarch == "arm64" {
+		// AArch64 and arm64 name the same instruction set. Prefer the historic
+		// release name and accept the explicit architecture alias as fallback.
+		return []string{"vocat-linux-arm64", "vocat-linux-aarch64"}
+	}
 	if goos == "linux" && goarch == "arm" {
 		// Official 32-bit ARM builds target GOARM=7. Keep the generic legacy
 		// name as a fallback for installations consuming an older release.
@@ -261,7 +290,7 @@ Fetch the latest release from GitHub and replace this binary in place.
 Flags:
   --check            Report whether an update is available, then exit.
   --force            Reinstall even when already at the latest version.
-  --repo owner/name  GitHub repository (default: $VOCAT_REPO).
+  --repo owner/name  GitHub repository (default: $VOCAT_REPO or MengMengCode/VoCat).
   --target path      Binary to replace (default: /opt/vocat/bin/vocat if
                      present, otherwise the running executable).
   --token token      GitHub bearer token (default: $GITHUB_TOKEN).
