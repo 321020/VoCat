@@ -3,11 +3,13 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"vocat/internal/device"
 	"vocat/internal/modem"
@@ -354,7 +356,22 @@ func TestHandleUpdateCheckUsesTrustedRepository(t *testing.T) {
 }
 
 func TestHandleUpdateApplyInstallsFromTrustedRepository(t *testing.T) {
+	database, err := store.Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = database.Close() })
+	if err := database.SetAdmin(context.Background(), "admin", []byte("hash")); err != nil {
+		t.Fatal(err)
+	}
+	tokenHash := []byte("active-session")
+	if err := database.CreateSession(
+		context.Background(), 1, tokenHash, []byte("csrf"), time.Now().Add(time.Hour),
+	); err != nil {
+		t.Fatal(err)
+	}
 	server := &Server{
+		store:            database,
 		logger:           regionTestLogger(),
 		updateRepository: update.DefaultRepository,
 		updateApply: func(_ context.Context, _ *slog.Logger, options update.Options, restart bool) (update.CheckResult, error) {
@@ -370,8 +387,20 @@ func TestHandleUpdateApplyInstallsFromTrustedRepository(t *testing.T) {
 		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body)
 	}
 	data := decodeData(t, recorder)
-	if data["applied"] != true || data["version"] != "9.9.9" {
+	if data["applied"] != true || data["version"] != "9.9.9" || data["reauthentication_required"] != true {
 		t.Fatalf("apply data = %#v", data)
+	}
+	if _, err := database.SessionByTokenHash(context.Background(), tokenHash); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("session must be revoked after update, got %v", err)
+	}
+	expired := map[string]bool{}
+	for _, cookie := range recorder.Result().Cookies() {
+		if cookie.MaxAge < 0 {
+			expired[cookie.Name] = true
+		}
+	}
+	if !expired[sessionCookieName] || !expired[csrfCookieName] {
+		t.Fatalf("auth cookies were not expired: %#v", recorder.Result().Cookies())
 	}
 }
 

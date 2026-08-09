@@ -421,11 +421,22 @@ func (s *Server) handleUpdateApply(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
+	// A binary update changes the trusted server code underneath every active
+	// browser/API session. Revoke every durable token before scheduling the
+	// restart and expire this client's cookies so all users must authenticate
+	// against the newly installed version.
+	if err := s.store.DeleteAllSessions(r.Context()); err != nil {
+		s.logger.Error("revoke sessions after update failed", "error", err)
+		writeError(w, http.StatusInternalServerError, "update_session_revocation_failed", "The update was installed, but active sessions could not be revoked; restart the service and sign in again.")
+		return
+	}
+	s.clearAuthCookies(w)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"data": map[string]any{
-			"applied": true,
-			"version": result.Latest,
-			"message": "Update verified and installed; the service is restarting.",
+			"applied":                   true,
+			"version":                   result.Latest,
+			"reauthentication_required": true,
+			"message":                   "Update verified and installed; all sessions were revoked and the service is restarting.",
 		},
 	})
 	if flusher, ok := w.(http.Flusher); ok {
