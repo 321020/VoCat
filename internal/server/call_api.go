@@ -76,8 +76,8 @@ func (s *Server) handleCallAction(w http.ResponseWriter, r *http.Request, config
 			return true
 		}
 		duration = time.Duration(request.DurationSeconds) * time.Second
-		if duration < time.Second || duration > maxCallDuration {
-			writeError(w, http.StatusBadRequest, "invalid_duration", "duration_seconds must be between 1 and 600")
+		if duration < 0 || duration > maxCallDuration {
+			writeError(w, http.StatusBadRequest, "invalid_duration", "duration_seconds must be 0 (no automatic hang-up) or between 1 and 600")
 			return true
 		}
 		command = "ATD" + number + ";"
@@ -137,7 +137,9 @@ func (s *Server) handleCallAction(w http.ResponseWriter, r *http.Request, config
 			if call, ok := result.(vowifi.Call); ok {
 				callID = call.ID
 			}
-			go s.hangupVoWiFiAfter(config.ID, callID, duration)
+			if duration > 0 {
+				go s.hangupVoWiFiAfter(config.ID, callID, duration)
+			}
 		}
 		s.recordAudit(r.Context(), "admin", "call."+action, "device", config.ID, "success", transport)
 		writeJSON(w, http.StatusAccepted, map[string]any{"data": map[string]any{
@@ -158,7 +160,9 @@ func (s *Server) handleCallAction(w http.ResponseWriter, r *http.Request, config
 		return true
 	}
 	if action == "dial" {
-		go s.hangupAfter(config.ID, physicalID, duration)
+		if duration > 0 {
+			go s.hangupAfter(config.ID, physicalID, duration)
+		}
 	}
 	s.recordAudit(r.Context(), "admin", "call."+action, "device", config.ID, "success", transport)
 	writeJSON(w, http.StatusAccepted, map[string]any{
@@ -179,7 +183,7 @@ func resolveVoWiFiCallID(controller VoWiFiCallController, deviceID, id, required
 		return "", err
 	}
 	for _, call := range calls {
-		if requiredState == "" || call.State == requiredState {
+		if call.State != "ended" && call.State != "failed" && (requiredState == "" || call.State == requiredState) {
 			return call.ID, nil
 		}
 	}

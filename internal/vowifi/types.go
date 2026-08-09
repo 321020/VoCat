@@ -368,11 +368,14 @@ type SMSSender interface {
 // Call describes one signalling-only IMS call. VoCat intentionally does not
 // open, capture, or relay an RTP media stream for extension call tests.
 type Call struct {
-	ID        string    `json:"id"`
-	Number    string    `json:"number"`
-	Direction string    `json:"direction"`
-	State     string    `json:"state"`
-	StartedAt time.Time `json:"started_at"`
+	ID        string     `json:"id"`
+	Number    string     `json:"number"`
+	Direction string     `json:"direction"`
+	State     string     `json:"state"`
+	StartedAt time.Time  `json:"started_at"`
+	SIPCode   int        `json:"sip_code,omitempty"`
+	Reason    string     `json:"reason,omitempty"`
+	EndedAt   *time.Time `json:"ended_at,omitempty"`
 }
 
 // CallController is an optional capability of an IMS session. Implementations

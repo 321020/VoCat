@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"testing"
 
 	"vocat/internal/modem"
@@ -41,3 +42,32 @@ func TestCallTransportRequiresIMSReady(t *testing.T) {
 		t.Fatalf("callTransport with IMS ready = %q, want vowifi", got)
 	}
 }
+
+func TestResolveVoWiFiCallIDIgnoresTerminalCalls(t *testing.T) {
+	controller := &fakeCallController{calls: []vowifi.Call{
+		{ID: "failed", State: "failed"},
+		{ID: "active", State: "active"},
+	}}
+	got, err := resolveVoWiFiCallID(controller, "ec20", "", "")
+	if err != nil || got != "active" {
+		t.Fatalf("resolveVoWiFiCallID() = %q, %v; want active", got, err)
+	}
+}
+
+type fakeCallController struct {
+	calls []vowifi.Call
+}
+
+func (controller *fakeCallController) Calls(string) ([]vowifi.Call, error) {
+	return controller.calls, nil
+}
+
+func (*fakeCallController) DialCall(context.Context, string, string) (vowifi.Call, error) {
+	return vowifi.Call{}, nil
+}
+
+func (*fakeCallController) AnswerCall(context.Context, string, string) (vowifi.Call, error) {
+	return vowifi.Call{}, nil
+}
+
+func (*fakeCallController) HangupCall(context.Context, string, string) error { return nil }

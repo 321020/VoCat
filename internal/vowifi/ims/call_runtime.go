@@ -18,6 +18,8 @@ var (
 	ErrCallState    = errors.New("ims: call is not in the required state")
 )
 
+const terminalCallRetention = 30 * time.Second
+
 type imsCall struct {
 	public     vowifi.Call
 	callID     string
@@ -37,11 +39,14 @@ type imsCall struct {
 func (session *Session) Calls() []vowifi.Call {
 	session.callMu.Lock()
 	defer session.callMu.Unlock()
+	now := time.Now().UTC()
 	calls := make([]vowifi.Call, 0, len(session.calls))
-	for _, call := range session.calls {
-		if call.public.State != "ended" && call.public.State != "failed" {
-			calls = append(calls, call.public)
+	for id, call := range session.calls {
+		if call.public.EndedAt != nil && now.Sub(*call.public.EndedAt) > terminalCallRetention {
+			delete(session.calls, id)
+			continue
 		}
+		calls = append(calls, call.public)
 	}
 	sort.Slice(calls, func(i, j int) bool { return calls[i].StartedAt.Before(calls[j].StartedAt) })
 	return calls
@@ -144,13 +149,14 @@ func (session *Session) watchOutgoingCall(call *imsCall, key sipTransactionKey) 
 		case <-session.refreshContext.Done():
 			return
 		case <-timer.C:
-			session.setCallState(call.callID, "failed")
+			session.finishCall(call.callID, "failed", 0, "SIP INVITE transaction timed out")
 			return
 		case response := <-call.responses:
 			if response == nil {
 				continue
 			}
 			if response.StatusCode < 200 {
+				session.setCallDiagnostic(call.callID, response.StatusCode, response.Reason)
 				if response.StatusCode >= 180 {
 					session.setCallState(call.callID, "ringing")
 				}
@@ -170,7 +176,7 @@ func (session *Session) watchOutgoingCall(call *imsCall, key sipTransactionKey) 
 				_ = session.sendACK(call)
 				session.setCallState(call.callID, "active")
 			} else {
-				session.setCallState(call.callID, "failed")
+				session.finishCall(call.callID, "failed", response.StatusCode, response.Reason)
 			}
 			return
 		}
@@ -223,18 +229,18 @@ func (session *Session) HangupCall(ctx context.Context, id string) error {
 		if err := respond(response); err != nil {
 			return err
 		}
-		session.setCallState(id, "ended")
+		session.finishCall(id, "ended", 0, "")
 		return nil
 	}
 	method := "BYE"
 	if direction == "outgoing" && (state == "dialing" || state == "ringing") {
 		method = "CANCEL"
 	}
-	if err := session.sendDialogRequest(ctx, call, method); err != nil {
-		return err
-	}
-	session.setCallState(id, "ended")
-	return nil
+	err := session.sendDialogRequest(ctx, call, method)
+	// A remote endpoint may already have removed the dialog and answer BYE with
+	// 481. The local call must still leave the active list after a hang-up.
+	session.finishCall(id, "ended", 0, "")
+	return err
 }
 
 func (session *Session) handleCallRequest(request *sipRequest, respond func([]byte) error) bool {
@@ -280,7 +286,7 @@ func (session *Session) handleCallRequest(request *sipRequest, respond func([]by
 				}
 			}
 		}
-		session.setCallState(callID, "ended")
+		session.finishCall(callID, "ended", 0, "")
 		return true
 	default:
 		return false
@@ -395,6 +401,34 @@ func (session *Session) setCallState(id, state string) {
 	session.callMu.Lock()
 	if call := session.calls[id]; call != nil {
 		call.public.State = state
+		if state != "ended" && state != "failed" {
+			call.public.EndedAt = nil
+		}
+	}
+	session.callMu.Unlock()
+}
+
+func (session *Session) setCallDiagnostic(id string, code int, reason string) {
+	session.callMu.Lock()
+	if call := session.calls[id]; call != nil {
+		call.public.SIPCode = code
+		call.public.Reason = safeSIPDiagnostic(reason)
+	}
+	session.callMu.Unlock()
+}
+
+func (session *Session) finishCall(id, state string, code int, reason string) {
+	now := time.Now().UTC()
+	session.callMu.Lock()
+	if call := session.calls[id]; call != nil {
+		call.public.State = state
+		if code != 0 {
+			call.public.SIPCode = code
+		}
+		if reason = safeSIPDiagnostic(reason); reason != "" {
+			call.public.Reason = reason
+		}
+		call.public.EndedAt = &now
 	}
 	session.callMu.Unlock()
 }

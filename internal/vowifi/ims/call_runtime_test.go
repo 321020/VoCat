@@ -4,6 +4,8 @@ import (
 	"context"
 	"strings"
 	"testing"
+
+	"vocat/internal/vowifi"
 )
 
 func TestIncomingCallCanRingAndAnswerWithoutAudio(t *testing.T) {
@@ -60,8 +62,21 @@ func TestIncomingCallCanBeRejected(t *testing.T) {
 	if !strings.HasPrefix(string(response), "SIP/2.0 486 Busy Here") {
 		t.Fatalf("reject response = %q", response)
 	}
-	if len(session.Calls()) != 0 {
-		t.Fatal("ended call remained active")
+	calls := session.Calls()
+	if len(calls) != 1 || calls[0].State != "ended" || calls[0].EndedAt == nil {
+		t.Fatalf("terminal call status = %#v", calls)
+	}
+}
+
+func TestRejectedOutgoingCallRetainsSIPReason(t *testing.T) {
+	session := &Session{calls: make(map[string]*imsCall)}
+	call := &imsCall{public: vowifi.Call{ID: "rejected", State: "dialing"}}
+	session.calls[call.public.ID] = call
+	session.finishCall(call.public.ID, "failed", 484, "Address Incomplete\r\nignored")
+	calls := session.Calls()
+	if len(calls) != 1 || calls[0].State != "failed" || calls[0].SIPCode != 484 ||
+		calls[0].Reason != "Address Incomplete ignored" || calls[0].EndedAt == nil {
+		t.Fatalf("rejected call = %#v", calls)
 	}
 }
 
