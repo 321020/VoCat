@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { AlertRegular, CheckmarkRegular } from "@fluentui/react-icons";
 import { api, apiMessage, getSecuritySettings, updateSecuritySettings } from "../api";
-import type { NotificationSettings, SecuritySettings, SystemInfo } from "../types";
+import type { DeveloperSettings, HTTPSSettings, NotificationSettings, SecuritySettings, SystemInfo } from "../types";
 import { Button, PageHeader, confirmDialog, message } from "../components/ui";
 import { CardDecor, CardIcon, CardTitle, SecurityCard, SystemInfoCard } from "../components/settings/Cards";
 import type { PasswordForm, UpdateInfo } from "../components/settings/Cards";
@@ -22,6 +22,8 @@ import {
 import { PushplusTab, TelegramTab } from "../components/settings/BotTabs";
 import { BarkTab, EmailTab, WebhookTab } from "../components/settings/PushTabs";
 import { PluginsCard } from "../components/settings/PluginsCard";
+import { HTTPSCard } from "../components/settings/HTTPSCard";
+import { DeviceQuotaCard } from "../components/settings/DeviceQuotaCard";
 
 const EMPTY_PASSWORD: PasswordForm = { oldPassword: "", newPassword: "", confirmPassword: "" };
 
@@ -58,6 +60,13 @@ export default function SettingsPage() {
   const [clientAllowed, setClientAllowed] = useState(true);
   const [loadingSecurity, setLoadingSecurity] = useState(false);
   const [savingSecurity, setSavingSecurity] = useState(false);
+  const [httpsSettings, setHTTPSSettings] = useState<HTTPSSettings | null>(null);
+  const [loadingHTTPS, setLoadingHTTPS] = useState(false);
+  const [savingHTTPS, setSavingHTTPS] = useState(false);
+  const [developerSettings, setDeveloperSettings] = useState<DeveloperSettings | null>(null);
+  const [deviceLimit, setDeviceLimit] = useState(5);
+  const [loadingDeveloper, setLoadingDeveloper] = useState(false);
+  const [savingDeveloper, setSavingDeveloper] = useState(false);
 
   const updateChannel = useCallback(<K extends keyof NotifyForms>(key: K, patch: Partial<NotifyForms[K]>) => {
     setForms((prev) => ({ ...prev, [key]: { ...prev[key], ...patch } }));
@@ -105,11 +114,79 @@ export default function SettingsPage() {
     }
   }, [applySecurity]);
 
+  const fetchHTTPS = useCallback(async () => {
+    setLoadingHTTPS(true);
+    try {
+      setHTTPSSettings(await api<HTTPSSettings>("/settings/https"));
+    } catch (error) {
+      message.error(apiMessage(error) || (lang === "zh" ? "HTTPS 配置加载失败" : "Failed to load HTTPS settings"));
+    } finally {
+      setLoadingHTTPS(false);
+    }
+  }, [lang]);
+
+  const fetchDeveloperSettings = useCallback(async () => {
+    setLoadingDeveloper(true);
+    try {
+      const data = await api<DeveloperSettings>("/settings/developer");
+      setDeveloperSettings(data);
+      setDeviceLimit(data.deviceLimit);
+    } catch (error) {
+      message.error(apiMessage(error) || (lang === "zh" ? "开发者配置加载失败" : "Failed to load developer settings"));
+    } finally {
+      setLoadingDeveloper(false);
+    }
+  }, [lang]);
+
   useEffect(() => {
     void fetchSystemInfo();
     void fetchNotifications();
     void fetchSecurity();
   }, [fetchSystemInfo, fetchNotifications, fetchSecurity]);
+
+  useEffect(() => {
+    if (systemInfo.developer) {
+      void fetchHTTPS();
+      void fetchDeveloperSettings();
+    } else {
+      setHTTPSSettings(null);
+      setDeveloperSettings(null);
+      setDeviceLimit(5);
+    }
+  }, [systemInfo.developer, fetchHTTPS, fetchDeveloperSettings]);
+
+  const onToggleHTTPS = useCallback(async (enabled: boolean) => {
+    setSavingHTTPS(true);
+    try {
+      const data = await api<HTTPSSettings>("/settings/https", { method: "PUT", body: { enabled } });
+      setHTTPSSettings(data);
+      message.success(lang === "zh" ? (enabled ? "HTTPS 已开启，正在切换连接" : "HTTPS 已关闭，正在恢复 HTTP") : (enabled ? "HTTPS enabled; reconnecting" : "HTTPS disabled; returning to HTTP"));
+      const target = enabled ? data.httpsUrl : data.httpUrl;
+      window.setTimeout(() => window.location.replace(target + window.location.pathname + window.location.search + window.location.hash), 700);
+    } catch (error) {
+      message.error(apiMessage(error) || (lang === "zh" ? "HTTPS 配置保存失败" : "Failed to save HTTPS settings"));
+      setSavingHTTPS(false);
+    }
+  }, [lang]);
+
+  const onSaveDeviceLimit = useCallback(async () => {
+    const maximum = developerSettings?.maxDeviceLimit ?? 128;
+    if (!Number.isInteger(deviceLimit) || deviceLimit < 1 || deviceLimit > maximum) {
+      message.error(lang === "zh" ? `设备配额必须是 1 到 ${maximum} 的整数` : `Device quota must be an integer between 1 and ${maximum}`);
+      return;
+    }
+    setSavingDeveloper(true);
+    try {
+      const data = await api<DeveloperSettings>("/settings/developer", { method: "PUT", body: { deviceLimit } });
+      setDeveloperSettings(data);
+      setDeviceLimit(data.deviceLimit);
+      message.success(lang === "zh" ? "设备配额已保存" : "Device quota saved");
+    } catch (error) {
+      message.error(apiMessage(error) || (lang === "zh" ? "设备配额保存失败" : "Failed to save device quota"));
+    } finally {
+      setSavingDeveloper(false);
+    }
+  }, [developerSettings, deviceLimit, lang]);
 
   const onSaveSecurity = useCallback(async () => {
     setSavingSecurity(true);
@@ -313,7 +390,25 @@ export default function SettingsPage() {
           onSave={onSaveSecurity}
         />
 
-        {systemInfo.developer ? <PluginsCard /> : null}
+        {systemInfo.developer ? (
+          <>
+            <HTTPSCard
+              value={httpsSettings}
+              loading={loadingHTTPS}
+              saving={savingHTTPS}
+              onToggle={onToggleHTTPS}
+            />
+            <DeviceQuotaCard
+              value={developerSettings}
+              limit={deviceLimit}
+              loading={loadingDeveloper}
+              saving={savingDeveloper}
+              onLimitChange={setDeviceLimit}
+              onSave={onSaveDeviceLimit}
+            />
+            <PluginsCard />
+          </>
+        ) : null}
 
         <div className="notify-card ui-card group relative overflow-hidden p-8 lg:col-span-2">
           <CardDecor />

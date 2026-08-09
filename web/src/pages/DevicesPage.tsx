@@ -24,6 +24,7 @@ const VALID_TABS = new Set(["overview", "esim", "at", "ussd", "config", "card"])
 const EMPTY_ADD: AddDeviceForm = {
   id: "",
   name: "",
+  deviceType: "",
   interface: "",
   modemImei: "",
   usbPath: "",
@@ -49,7 +50,7 @@ export default function DevicesPage() {
   const [configSnapshot, setConfigSnapshot] = useState("");
   const [saving, setSaving] = useState(false);
   const [deleting, setDeleting] = useState(false);
-  const [rotating, setRotating] = useState(false);
+	const [dataToggling, setDataToggling] = useState(false);
   const [rebooting, setRebooting] = useState(false);
   const [reconnectingVoWiFi, setReconnectingVoWiFi] = useState(false);
   const [rescanning, setRescanning] = useState(false);
@@ -227,33 +228,19 @@ export default function DevicesPage() {
     },
     [setSearchParams],
   );
-  const listRef = useRef(list);
-  listRef.current = list;
-
-  const handleRotateIp = useCallback(async () => {
+  const handleToggleRoamingData = useCallback(async (enabled: boolean) => {
     const id = selectedIdRef.current.trim();
     if (!id) return;
-    const item = listRef.current.find((d) => d.id === id);
-    if (!item?.networkConnected) {
-      message.warning(t("设备网络未连接，请先启动网络"));
-      return;
-    }
-    const ok = await confirmDialog(tf("确定对设备 {id} 执行 IP 轮换？", { id }), t("确认操作"), {
-      confirmText: t("立即轮换"),
-      cancelText: t("取消"),
-      type: "warning",
-    });
-    if (!ok) return;
-    setRotating(true);
+	setDataToggling(true);
     try {
-      await api("/rotateip", { method: "POST", body: { deviceId: id } });
-      message.success(t("轮换请求已发送"));
+	  await api(`/devices/${id}/network`, { method: "PATCH", body: { enabled } });
+	  message.success(enabled ? t("漫游数据已开启，仅供 Export Proxy 使用") : t("漫游数据已关闭"));
       await refreshAll();
       refreshSoon(1500);
     } catch (e) {
-      message.error(apiMessage(e) || t("轮换失败"));
+	  message.error(apiMessage(e) || (enabled ? t("开启漫游数据失败") : t("关闭漫游数据失败")));
     } finally {
-      setRotating(false);
+	  setDataToggling(false);
     }
   }, [refreshAll, refreshSoon]);
 
@@ -406,6 +393,10 @@ export default function DevicesPage() {
         message.warning(t("请选择一个未配置设备"));
         return;
       }
+	  if (!addConfig.deviceType) {
+		message.warning(t("请选择设备类型"));
+		return;
+	  }
       const res = await api<{ warning?: string; started?: boolean }>("/devices", { method: "POST", body: { config: addConfig } });
       if (res?.warning) message.warning(res.warning);
       else if (res?.started === true) message.success(t("设备已添加并开始接管"));
@@ -673,11 +664,11 @@ export default function DevicesPage() {
             <>
               <DeviceDetailHeader
                 device={detail}
-                rotating={rotating}
+				dataToggling={dataToggling}
                 rebooting={rebooting}
                 reconnectingVoWiFi={reconnectingVoWiFi}
                 onCopyText={handleCopyText}
-                onRotateIp={handleRotateIp}
+				onToggleRoamingData={handleToggleRoamingData}
                 onReconnectVowifi={handleReconnectVoWiFi}
                 onRebootModem={handleRebootModem}
                 onOpenSms={handleOpenSms}

@@ -65,6 +65,58 @@ func saveSMSMessage(
 		return SMSMessage{}, fmt.Errorf("normalize SMS extra data: %w", err)
 	}
 	now := time.Now().UTC()
+
+	// Concatenated (long) SMS arrive as one segment per delivery. Ingest points
+	// address the whole message with a stable "concat:" message id and carry the
+	// segment text plus its UDH sequence in Extra. Fold each segment into a single
+	// stored row so history, the web thread, and Telegram show one progressive
+	// message that fills in as the remaining segments arrive.
+	if isConcatSMSMessageID(value.MessageID) {
+		hardwareKey := smsHardwareKey(value.ModemIMEI, value.DeviceID)
+		existing, existingErr := scanSMSMessage(executor.QueryRowContext(
+			ctx,
+			smsMessageSelect+` WHERE
+				COALESCE(NULLIF(modem_imei, ''), 'device:' || device_id) = ?
+				AND message_id = ?`,
+			hardwareKey,
+			value.MessageID,
+		))
+		if existingErr != nil && !errors.Is(existingErr, ErrNotFound) {
+			return SMSMessage{}, fmt.Errorf("read existing concatenated SMS: %w", existingErr)
+		}
+		var existingExtra json.RawMessage
+		if existingErr == nil {
+			existingExtra = existing.Extra
+		}
+		mergedBody, mergedExtra, changed, mergeErr := mergeConcatSegment(existingExtra, value.Body, extra)
+		if mergeErr != nil {
+			return SMSMessage{}, fmt.Errorf("merge concatenated SMS segment: %w", mergeErr)
+		}
+		if existingErr == nil && !changed {
+			// This segment is already folded into the stored row (a periodic modem
+			// rescan redelivers every segment). Leave the row untouched so the
+			// durable id stays put and Telegram does not re-notify.
+			return existing, nil
+		}
+		value.Body = mergedBody
+		extra = mergedExtra
+		if existingErr == nil {
+			// A new segment advanced the message. Replace the stale partial row so
+			// the merged row receives a fresh durable id; the Telegram id-cursor
+			// then surfaces the now-more-complete message exactly once. Carry
+			// forward identity and history fields.
+			if _, delErr := executor.ExecContext(ctx, `DELETE FROM sms_messages WHERE id = ?`, existing.ID); delErr != nil {
+				return SMSMessage{}, fmt.Errorf("replace concatenated SMS: %w", delErr)
+			}
+			value.ID = 0
+			value.CreatedAt = existing.CreatedAt
+			value.Read = value.Read || existing.Read
+			if !existing.Timestamp.IsZero() &&
+				(value.Timestamp.IsZero() || existing.Timestamp.Before(value.Timestamp)) {
+				value.Timestamp = existing.Timestamp
+			}
+		}
+	}
 	if value.Timestamp.IsZero() {
 		value.Timestamp = now
 	}

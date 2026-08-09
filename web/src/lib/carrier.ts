@@ -1,6 +1,7 @@
-// MCC/MNC → carrier lookup. Data is the musalbas/mcc-mnc-table dataset (the same
-// one vohive uses), slimmed to { c: plmn→[name,iso], i: mcc→iso, t: 3-digit-MNC MCCs }.
-// Source: https://raw.githubusercontent.com/musalbas/mcc-mnc-table/master/mcc-mnc-table.json
+// MCC/MNC → carrier lookup. The offline table combines Android's maintained
+// carrier ID database with the legacy global table as a fallback. Refresh it
+// with scripts/update-carriers.py; runtime registration never depends on an
+// external lookup service.
 import table from "./mccmnc.json";
 
 interface MccMncTable {

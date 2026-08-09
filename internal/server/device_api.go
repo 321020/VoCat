@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"vocat/internal/developer"
 	"vocat/internal/device"
 	"vocat/internal/i18n"
 	"vocat/internal/modem"
@@ -38,6 +39,7 @@ type DeviceController interface {
 	SetUSBNetModeByPort(context.Context, string, int) (device.USBNetMode, error)
 	OperatorSelection(context.Context, string) (device.OperatorSelection, error)
 	SetOperatorSelection(context.Context, string, bool, string, *int) (device.OperatorSelection, error)
+	ReRegisterOperator(context.Context, string) (device.OperatorSelection, error)
 	ScanOperators(context.Context, string) (device.OperatorScanResult, error)
 	SendSMS(context.Context, string, string, string) (device.SMSSendResult, error)
 	ListSMS(context.Context, string) ([]device.SMSMessage, error)
@@ -56,6 +58,7 @@ type DeviceController interface {
 type deviceConfigPayload struct {
 	ID                 string `json:"id"`
 	Name               string `json:"name"`
+	DeviceType         string `json:"device_type"`
 	Interface          string `json:"interface"`
 	ControlDevice      string `json:"control_device"`
 	ATPort             string `json:"at_port"`
@@ -86,6 +89,7 @@ func (payload deviceConfigPayload) toStoreDevice() store.Device {
 	return store.Device{
 		ID:                 strings.TrimSpace(payload.ID),
 		Name:               name,
+		DeviceType:         store.NormalizeDeviceType(payload.DeviceType),
 		Interface:          strings.TrimSpace(payload.Interface),
 		ControlDevice:      strings.TrimSpace(payload.ControlDevice),
 		ATPort:             strings.TrimSpace(payload.ATPort),
@@ -170,15 +174,13 @@ func splitAPIPath(value string) []string {
 	return result
 }
 
-// maxDeviceLimit 是设备数量的软上限：达到上限后禁止再添加新设备。
-const maxDeviceLimit = 5
-
 func (s *Server) handleDevices(w http.ResponseWriter, r *http.Request) bool {
+	deviceLimit := developer.DeviceLimit(r.Context(), s.store, s.developerEnabled)
 	switch r.Method {
 	case http.MethodGet:
 		writeJSON(w, http.StatusOK, map[string]any{
 			"data": map[string]any{
-				"device_limit": maxDeviceLimit,
+				"device_limit": deviceLimit,
 				"devices":      s.deviceSummaries(),
 			},
 		})
@@ -203,6 +205,10 @@ func (s *Server) handleDevices(w http.ResponseWriter, r *http.Request) bool {
 			writeError(w, http.StatusBadRequest, "invalid_device_id", "device ID must use 1-64 letters, digits, dots, underscores, or hyphens")
 			return true
 		}
+		if strings.TrimSpace(payload.DeviceType) == "" || store.NormalizeDeviceType(payload.DeviceType) == "" {
+			writeError(w, http.StatusBadRequest, "invalid_device_type", "select a supported device type")
+			return true
+		}
 		if _, err := s.store.Device(r.Context(), payload.ID); err == nil {
 			writeError(w, http.StatusConflict, "device_exists", "a device with this ID already exists")
 			return true
@@ -215,8 +221,8 @@ func (s *Server) handleDevices(w http.ResponseWriter, r *http.Request) bool {
 			s.writeStoreError(w, err)
 			return true
 		}
-		if len(configured) >= maxDeviceLimit {
-			writeError(w, http.StatusConflict, "device_limit_reached", i18n.Tf("设备数量已达上限，最多只能添加 %d 台设备", maxDeviceLimit))
+		if len(configured) >= deviceLimit {
+			writeError(w, http.StatusConflict, "device_limit_reached", i18n.Tf("设备数量已达上限，最多只能添加 %d 台设备", deviceLimit))
 			return true
 		}
 		devices, err := s.devices.Discover(r.Context())
@@ -230,6 +236,9 @@ func (s *Server) handleDevices(w http.ResponseWriter, r *http.Request) bool {
 			return true
 		}
 		config := payload.toStoreDevice()
+		if !s.developerActive(r.Context()) {
+			config.NetworkEnabled = false
+		}
 		fillConfigFromPhysical(&config, *selected)
 		if err := s.store.UpsertDevice(r.Context(), config); err != nil {
 			s.writeStoreError(w, err)
@@ -402,6 +411,9 @@ func (s *Server) handleDevicePath(
 				return true
 			}
 			next := payload.toStoreDevice()
+			if !s.developerActive(r.Context()) {
+				next.NetworkEnabled = false
+			}
 			next.ID = id
 			next.CreatedAt = config.CreatedAt
 			if next.Name == id && strings.TrimSpace(payload.Name) == "" {
@@ -485,12 +497,27 @@ func (s *Server) handleDevicePath(
 			s.writeDeviceError(w, err)
 			return true
 		}
+		s.clearPublicIP(config.ID)
 		writeJSON(w, http.StatusAccepted, map[string]any{"data": map[string]any{"status": "rebooting"}})
 	case "flight-mode":
 		if !s.requirePhysicalDevice(w, physicalPresent) {
 			return true
 		}
 		return s.handleFlightMode(w, r, physicalID)
+	case "network":
+		if !s.requirePhysicalDevice(w, physicalPresent) {
+			return true
+		}
+		return s.handleCellularData(w, r, config, physicalID)
+	case "network/public-ip":
+		if !s.requirePhysicalDevice(w, physicalPresent) {
+			return true
+		}
+		iccid := ""
+		if entry.Snapshot != nil {
+			iccid = entry.Snapshot.ICCID
+		}
+		return s.handleCellularPublicIP(w, r, config, iccid)
 	case "usbnet-mode":
 		if !s.requirePhysicalDevice(w, physicalPresent) {
 			return true
@@ -501,6 +528,11 @@ func (s *Server) handleDevicePath(
 			return true
 		}
 		return s.handleOperatorSelection(w, r, physicalID)
+	case "operator_selection/reregister":
+		if !s.requirePhysicalDevice(w, physicalPresent) {
+			return true
+		}
+		return s.handleOperatorReRegister(w, r, physicalID)
 	case "operator_selection/scan":
 		if !s.requirePhysicalDevice(w, physicalPresent) {
 			return true
@@ -527,6 +559,11 @@ func (s *Server) handleDevicePath(
 			return true
 		}
 		return s.handleCallAction(w, r, config, physicalID, tail[1])
+	case "calls/media":
+		if !s.requirePhysicalDevice(w, physicalPresent) {
+			return true
+		}
+		return s.handleCallMedia(w, r, config)
 	default:
 		return false
 	}
@@ -667,6 +704,21 @@ func (s *Server) handleOperatorSelection(w http.ResponseWriter, r *http.Request,
 	return true
 }
 
+func (s *Server) handleOperatorReRegister(w http.ResponseWriter, r *http.Request, physicalID string) bool {
+	if !requireMethod(w, r, http.MethodPost) {
+		return true
+	}
+	controller := http.NewResponseController(w)
+	_ = controller.SetWriteDeadline(time.Time{})
+	result, err := s.devices.ReRegisterOperator(r.Context(), physicalID)
+	if err != nil {
+		s.writeDeviceError(w, err)
+		return true
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"data": operatorSelectionWire(result)})
+	return true
+}
+
 func (s *Server) handleVoWiFiEnabled(
 	w http.ResponseWriter,
 	r *http.Request,
@@ -689,6 +741,10 @@ func (s *Server) handleVoWiFiEnabled(
 	}
 	if request.Enabled && !physicalPresent {
 		writeError(w, http.StatusServiceUnavailable, "physical_device_missing", "the configured modem is not present on this Linux host")
+		return true
+	}
+	if request.Enabled && config.NetworkEnabled {
+		writeError(w, http.StatusConflict, "cellular_data_active", "disable roaming data before enabling VoWiFi")
 		return true
 	}
 	if request.Enabled {
@@ -943,7 +999,108 @@ func (s *Server) handleFlightMode(w http.ResponseWriter, r *http.Request, id str
 		s.writeDeviceError(w, err)
 		return true
 	}
+	// Unlike VoWiFi, CFUN airplane state is not represented in the device row.
+	// Persist it against the live ICCID so a restart can distinguish an
+	// intentional airplane policy from an interrupted VoWiFi teardown.
+	if entry, getErr := s.devices.Get(id); getErr == nil && entry.Snapshot != nil {
+		iccid := strings.TrimSpace(entry.Snapshot.ICCID)
+		if iccid != "" {
+			policy, policyErr := s.store.CardPolicy(r.Context(), iccid)
+			if errors.Is(policyErr, store.ErrNotFound) {
+				policy = store.CardPolicy{ICCID: iccid, IPVersion: "IPV4V6"}
+				policyErr = nil
+			}
+			if policyErr != nil {
+				s.writeStoreError(w, policyErr)
+				return true
+			}
+			policy.AirplaneEnabled = request.Enabled
+			if request.Enabled {
+				policy.VoWiFiEnabled = false
+			}
+			policy.Source = "manual"
+			if err := s.store.UpsertCardPolicy(r.Context(), policy); err != nil {
+				s.writeStoreError(w, err)
+				return true
+			}
+		}
+	}
 	writeJSON(w, http.StatusOK, map[string]any{"data": result})
+	return true
+}
+
+func (s *Server) handleCellularData(
+	w http.ResponseWriter,
+	r *http.Request,
+	config store.Device,
+	physicalID string,
+) bool {
+	if !s.developerActive(r.Context()) {
+		writeError(w, http.StatusForbidden, "developer_mode_required", "roaming data is available only in developer mode")
+		return true
+	}
+	switch r.Method {
+	case http.MethodGet:
+		writeJSON(w, http.StatusOK, map[string]any{"data": map[string]any{
+			"enabled":           config.NetworkEnabled,
+			"interface":         config.Interface,
+			"apn":               config.APN,
+			"export_proxy_only": true,
+		}})
+	case http.MethodPatch, http.MethodPut:
+		var request struct {
+			Enabled bool   `json:"enabled"`
+			APN     string `json:"apn"`
+		}
+		if err := s.decodeJSON(w, r, &request); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
+			return true
+		}
+		if request.Enabled && config.VoWiFiEnabled {
+			writeError(w, http.StatusConflict, "vowifi_owns_radio", "disable VoWiFi before enabling cellular roaming data")
+			return true
+		}
+		if !request.Enabled && s.exportProxy != nil {
+			if _, active := s.exportProxy.EnabledConfigForDevice(config.ID); active {
+				writeError(w, http.StatusConflict, "export_proxy_active", i18n.T("请先禁用该设备已绑定的导出代理，再关闭漫游数据"))
+				return true
+			}
+		}
+		apn := strings.TrimSpace(request.APN)
+		if apn == "" {
+			apn = strings.TrimSpace(config.APN)
+		}
+		controller := http.NewResponseController(w)
+		_ = controller.SetWriteDeadline(time.Time{})
+		result, err := s.devices.SetNetwork(r.Context(), physicalID, device.NetworkRequest{
+			Enabled: request.Enabled, APN: apn, IPVersion: "IPV4V6",
+		})
+		if err != nil {
+			s.writeDeviceError(w, err)
+			return true
+		}
+		previous := config.NetworkEnabled
+		config.NetworkEnabled = request.Enabled
+		if apn != "" {
+			config.APN = apn
+		}
+		if err := s.store.UpsertDevice(r.Context(), config); err != nil {
+			rollbackContext, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+			_, _ = s.devices.SetNetwork(rollbackContext, physicalID, device.NetworkRequest{
+				Enabled: previous, APN: config.APN, IPVersion: "IPV4V6",
+			})
+			cancel()
+			s.writeStoreError(w, err)
+			return true
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"data": map[string]any{
+			"enabled": result.Enabled, "interface": result.Interface,
+			"backend": result.Backend, "export_proxy_only": true,
+		}})
+	default:
+		w.Header().Set("Allow", "GET, PATCH, PUT")
+		writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed")
+	}
 	return true
 }
 
@@ -1031,6 +1188,7 @@ func (s *Server) dashboardDevices() []map[string]any {
 		result = append(result, map[string]any{
 			"id":                entry["id"],
 			"name":              entry["name"],
+			"device_type":       entry["device_type"],
 			"interface":         entry["interface"],
 			"proxy_port":        entry["proxy_port"],
 			"public_ip":         entry["public_ip"],
@@ -1041,7 +1199,7 @@ func (s *Server) dashboardDevices() []map[string]any {
 			"network_duplex":    modemStatus["network_duplex"],
 			"vowifi_active":     vowifiActive,
 			"vowifi_runtime":    runtime,
-			"network_connected": false,
+			"network_connected": entry["network_connected"],
 			"model":             modemStatus["model"],
 		})
 	}
@@ -1098,24 +1256,50 @@ func (s *Server) configuredDeviceSummary(
 	}
 	result["id"] = config.ID
 	result["name"] = config.Name
+	result["device_type"] = store.NormalizeDeviceType(config.DeviceType)
 	result["interface"] = config.Interface
 	result["proxy_port"] = config.ProxyPort
 	result["esim_transport"] = config.ESIMTransport
 	result["sms_enabled"] = config.SMSEnabled
-	result["network_enabled"] = false
+	result["network_enabled"] = config.NetworkEnabled
+	result["developer_enabled"] = s.developerActive(context.Background())
+	result["network_connected"] = config.NetworkEnabled
+	result["data_connected"] = config.NetworkEnabled
 	result["vowifi_enabled"] = config.VoWiFiEnabled
 	if runtime, err := s.store.VoWiFiRuntime(context.Background(), config.ID); err == nil {
-		runtimeResponse := storedVoWiFiRuntime(runtime)
+		currentICCID := ""
+		var currentSnapshot *device.Snapshot
+		if entry != nil {
+			currentSnapshot = entry.Snapshot
+			if entry.Snapshot != nil {
+				currentICCID = strings.TrimSpace(entry.Snapshot.ICCID)
+			}
+		}
+		runtimeMatchesCard := currentICCID == "" || runtime.ICCID == "" ||
+			strings.EqualFold(currentICCID, strings.TrimSpace(runtime.ICCID))
+		var runtimeResponse map[string]any
+		if runtimeMatchesCard {
+			runtimeResponse = storedVoWiFiRuntime(runtime)
+		} else {
+			// The saved IMS session belongs to a different eSIM profile. Never
+			// project its registration or number onto the currently selected SIM.
+			runtimeResponse = idleVoWiFiRuntime(config.ID, currentSnapshot)
+		}
 		result["vowifi_runtime"] = runtimeResponse
-		result["vowifi_active"] = runtime.TunnelReady
-		if runtime.LocalPhone != "" {
-			// The SIM panel reads the top-level local_phone; keep modem.phone_number
-			// in sync for the summary/overview consumers that read it there.
-			result["local_phone"] = runtime.LocalPhone
-			result["phone_number_source"] = runtime.PhoneNumberSource
-			if modemStatus, ok := result["modem"].(map[string]any); ok {
-				modemStatus["phone_number"] = runtime.LocalPhone
-				modemStatus["phone_number_source"] = runtime.PhoneNumberSource
+		result["vowifi_active"] = config.VoWiFiEnabled && runtimeMatchesCard && runtime.TunnelReady
+	}
+	// Numbers are SIM-owned data. Resolve the association by the live ICCID
+	// instead of reusing the last VoWiFi runtime attached to this device ID.
+	if entry != nil && entry.Snapshot != nil {
+		currentICCID := strings.TrimSpace(entry.Snapshot.ICCID)
+		if currentICCID != "" {
+			if association, err := s.store.PhoneAssociation(context.Background(), currentICCID); err == nil {
+				result["local_phone"] = association.Number
+				result["phone_number_source"] = association.Source
+				if modemStatus, ok := result["modem"].(map[string]any); ok {
+					modemStatus["phone_number"] = association.Number
+					modemStatus["phone_number_source"] = association.Source
+				}
 			}
 		}
 	}
@@ -1127,6 +1311,7 @@ func (s *Server) configuredDeviceOverview(
 	entry device.Device,
 	present bool,
 ) map[string]any {
+	developerActive := s.developerActive(context.Background())
 	var physical *device.Device
 	if present {
 		physical = &entry
@@ -1141,12 +1326,34 @@ func (s *Server) configuredDeviceOverview(
 	result["control_device"] = config.ControlDevice
 	result["esim_transport"] = config.ESIMTransport
 	result["sms_enabled"] = config.SMSEnabled
-	result["network_enabled"] = false
+	result["network_enabled"] = developerActive && config.NetworkEnabled
 	result["vowifi_enabled"] = config.VoWiFiEnabled
 	result["radio_live_ok"] = present && entry.Snapshot != nil && entry.Snapshot.Responsive
-	result["traffic"] = map[string]string{}
-	result["traffic_raw"] = map[string]int64{}
-	result["traffic_meta"] = map[string]any{}
+
+	// Live network state: on-demand sample of the cellular interface counters,
+	// kept warm by the 2s overview SSE cadence. Only meaningful when the modem
+	// data path is enabled and an interface is configured.
+	if developerActive && config.NetworkEnabled && strings.TrimSpace(config.Interface) != "" {
+		live := s.netTraffic.sample(config.ID, config.Interface, time.Now())
+		result["private_ip"] = live.ipv4
+		result["traffic"] = map[string]string{
+			"rx":      formatLiveBytes(float64(live.minuteRx)),
+			"tx":      formatLiveBytes(float64(live.minuteTx)),
+			"rate":    formatLiveBytes(live.rxRate) + "/s",
+			"rate_tx": formatLiveBytes(live.txRate) + "/s",
+		}
+		result["traffic_raw"] = map[string]int64{
+			"rx":      live.minuteRx,
+			"tx":      live.minuteTx,
+			"rate":    int64(live.rxRate),
+			"rate_tx": int64(live.txRate),
+		}
+		result["traffic_meta"] = map[string]any{"status": live.status}
+	} else {
+		result["traffic"] = map[string]string{}
+		result["traffic_raw"] = map[string]int64{}
+		result["traffic_meta"] = map[string]any{}
+	}
 	return result
 }
 
@@ -1167,7 +1374,7 @@ func (s *Server) configuredDeviceStatus(
 	result := map[string]any{
 		"healthy":               summary["healthy"],
 		"public_ip":             summary["public_ip"],
-		"network_connected":     false,
+		"network_connected":     config.NetworkEnabled,
 		"modem":                 summary["modem"],
 		"vowifi":                summary["vowifi_runtime"],
 		"sim_service_table":     map[string]any{},
@@ -1250,7 +1457,7 @@ func deviceSummary(entry device.Device) map[string]any {
 		"physical_present":         entry.Discovered,
 		"worker_running":           entry.Discovered,
 		"data_connected":           false,
-		"radio_registered":         snapshot != nil && snapshot.OperatorName != "",
+		"radio_registered":         snapshot != nil && (snapshot.RegistrationStatus == 1 || snapshot.RegistrationStatus == 5),
 		"lifecycle_phase":          lifecyclePhase(entry),
 		"lifecycle_reason":         entry.LastError,
 		"public_ip":                "",
@@ -1307,6 +1514,7 @@ func storedDeviceConfig(config store.Device) map[string]any {
 	return map[string]any{
 		"id":                   config.ID,
 		"name":                 config.Name,
+		"device_type":          store.NormalizeDeviceType(config.DeviceType),
 		"interface":            config.Interface,
 		"control_device":       config.ControlDevice,
 		"at_port":              config.ATPort,
@@ -1324,7 +1532,7 @@ func storedDeviceConfig(config store.Device) map[string]any {
 		"qmi_use_proxy":        config.QMIUseProxy,
 		"qmi_proxy_path":       config.QMIProxyPath,
 		"qmi_proxy_executable": config.QMIProxyExecutable,
-		"network_enabled":      false,
+		"network_enabled":      config.NetworkEnabled,
 		"sms_enabled":          config.SMSEnabled,
 		"vowifi_enabled":       config.VoWiFiEnabled,
 	}
@@ -1358,61 +1566,64 @@ func fillConfigFromPhysical(config *store.Device, entry device.Device) {
 func modemSummary(snapshot *device.Snapshot, phone string, phoneSource string) map[string]any {
 	if snapshot == nil {
 		return map[string]any{
-			"operator":            "",
-			"native_mcc":          "",
-			"native_mnc":          "",
-			"card_mcc":            "",
-			"card_mnc":            "",
-			"card_country":        "",
-			"service_blocked":     false,
-			"blocked_reason":      "",
-			"network_mode":        "",
-			"radio_band":          "",
-			"radio_channel":       0,
-			"signal_dbm":          0,
-			"signal_sinr":         0,
-			"imei":                "",
-			"iccid":               "",
-			"reg_status":          0,
-			"reg_status_text":     "not refreshed",
-			"sim_inserted":        false,
-			"phone_number":        phone,
-			"phone_number_source": phoneSource,
-			"model":               "",
+			"operator":              "",
+			"native_mcc":            "",
+			"native_mnc":            "",
+			"operator_country_code": "",
+			"card_mcc":              "",
+			"card_mnc":              "",
+			"card_country":          "",
+			"service_blocked":       false,
+			"blocked_reason":        "",
+			"network_mode":          "",
+			"radio_band":            "",
+			"radio_channel":         0,
+			"signal_dbm":            0,
+			"signal_sinr":           0,
+			"imei":                  "",
+			"iccid":                 "",
+			"reg_status":            0,
+			"reg_status_text":       "not refreshed",
+			"sim_inserted":          false,
+			"phone_number":          phone,
+			"phone_number_source":   phoneSource,
+			"model":                 "",
 		}
 	}
 	mcc, mnc := splitPLMN(snapshot.OperatorCode)
+	_, operatorCountryCode, _ := device.CarrierForPLMN(snapshot.OperatorCode)
 	cardMCC, cardMNC := device.CardMCCMNC(snapshot.IMSI)
 	blockedReason := device.RegionBlockReason(snapshot.IMSI)
 	return map[string]any{
-		"operator":            snapshot.OperatorName,
-		"native_mcc":          mcc,
-		"native_mnc":          mnc,
-		"card_mcc":            cardMCC,
-		"card_mnc":            cardMNC,
-		"card_country":        countryNameForMCC(cardMCC),
-		"service_blocked":     blockedReason != "",
-		"blocked_reason":      blockedReason,
-		"network_mode":        snapshot.AccessTech,
-		"network_duplex":      "",
-		"radio_band":          snapshot.Band,
-		"radio_channel":       parseDecimal(snapshot.Channel),
-		"signal_dbm":          pointerInt(snapshot.RSSIDBm),
-		"signal_rsrp":         pointerInt(snapshot.RSRP),
-		"signal_rsrq":         pointerInt(snapshot.RSRQ),
-		"signal_sinr":         pointerInt(snapshot.SINR),
-		"imei":                snapshot.IMEI,
-		"iccid":               snapshot.ICCID,
-		"imsi":                snapshot.IMSI,
-		"firmware":            snapshot.Firmware,
-		"model":               snapshot.Model,
-		"reg_status":          boolInt(snapshot.OperatorName != ""),
-		"reg_status_text":     registrationText(snapshot),
-		"ps_attached":         false,
-		"sim_inserted":        snapshot.SIMStatus != "",
-		"operating_mode":      snapshot.OperatingMode,
-		"phone_number":        phone,
-		"phone_number_source": phoneSource,
+		"operator":              snapshot.OperatorName,
+		"native_mcc":            mcc,
+		"native_mnc":            mnc,
+		"operator_country_code": operatorCountryCode,
+		"card_mcc":              cardMCC,
+		"card_mnc":              cardMNC,
+		"card_country":          countryNameForMCC(cardMCC),
+		"service_blocked":       blockedReason != "",
+		"blocked_reason":        blockedReason,
+		"network_mode":          snapshot.AccessTech,
+		"network_duplex":        "",
+		"radio_band":            snapshot.Band,
+		"radio_channel":         parseDecimal(snapshot.Channel),
+		"signal_dbm":            pointerInt(snapshot.RSSIDBm),
+		"signal_rsrp":           pointerInt(snapshot.RSRP),
+		"signal_rsrq":           pointerInt(snapshot.RSRQ),
+		"signal_sinr":           pointerInt(snapshot.SINR),
+		"imei":                  snapshot.IMEI,
+		"iccid":                 snapshot.ICCID,
+		"imsi":                  snapshot.IMSI,
+		"firmware":              snapshot.Firmware,
+		"model":                 snapshot.Model,
+		"reg_status":            snapshot.RegistrationStatus,
+		"reg_status_text":       registrationText(snapshot),
+		"ps_attached":           snapshot.PSAttached,
+		"sim_inserted":          snapshot.SIMStatus != "",
+		"operating_mode":        snapshot.OperatingMode,
+		"phone_number":          phone,
+		"phone_number_source":   phoneSource,
 	}
 }
 
@@ -1485,17 +1696,39 @@ func lifecyclePhase(entry device.Device) string {
 }
 
 func registrationLabel(snapshot *device.Snapshot) string {
-	if snapshot == nil || snapshot.OperatorName == "" {
+	if snapshot == nil {
 		return "unknown"
 	}
-	return "registered"
+	switch snapshot.RegistrationStatus {
+	case 1, 5:
+		return "registered"
+	case 2:
+		return "searching"
+	case 3:
+		return "denied"
+	default:
+		return "unknown"
+	}
 }
 
 func registrationText(snapshot *device.Snapshot) string {
-	if snapshot.OperatorName != "" {
-		return "registered"
+	if snapshot == nil {
+		return "unknown"
 	}
-	return "unknown"
+	switch snapshot.RegistrationStatus {
+	case 1:
+		return "registered"
+	case 5:
+		return "registered (roaming)"
+	case 2:
+		return "searching"
+	case 3:
+		return "registration denied"
+	case 0:
+		return "not registered"
+	default:
+		return "unknown"
+	}
 }
 
 func splitPLMN(value string) (string, string) {

@@ -24,6 +24,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"vocat/internal/exportproxy"
 )
 
 const maxPackageBytes int64 = 64 << 20
@@ -92,6 +94,10 @@ func (manager *Manager) scan() error {
 		plugin, err := loadPlugin(dir)
 		if err != nil {
 			manager.logger.Warn("skip invalid plugin", "directory", dir, "error", err)
+			continue
+		}
+		if plugin.ID == exportproxy.ReservedID {
+			manager.logger.Info("skip legacy Export Proxy plugin; functionality is built in", "directory", dir)
 			continue
 		}
 		manager.plugins[plugin.ID] = plugin
@@ -200,6 +206,9 @@ func (manager *Manager) Install(reader io.Reader, expectedSHA string) (Plugin, e
 	manifest, err := manifestFromArchive(archive.File)
 	if err != nil {
 		return Plugin{}, err
+	}
+	if manifest.ID == exportproxy.ReservedID {
+		return Plugin{}, errors.New("plugin ID export-proxy is reserved by the built-in Export Proxy feature")
 	}
 	staging, err := os.MkdirTemp(manager.root, ".install-"+manifest.ID+"-")
 	if err != nil {

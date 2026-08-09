@@ -52,13 +52,13 @@ export function Modal({
         role="dialog"
         aria-modal="true"
         className={cx(
-          "glass-modal relative w-full rounded-2xl shadow-2xl animate-[fade-slide-in_0.25s_cubic-bezier(0.4,0,0.2,1)]",
+          "glass-modal relative flex max-h-[calc(100dvh-2rem)] w-full flex-col rounded-2xl shadow-2xl animate-[fade-slide-in_0.25s_cubic-bezier(0.4,0,0.2,1)]",
           width,
           className,
         )}
       >
         {(title || showClose) && (
-          <div className="flex items-center justify-between px-6 pt-5 pb-3">
+          <div className="flex shrink-0 items-center justify-between px-6 pt-5 pb-3">
             <div className="text-base font-bold text-gray-900 dark:text-white">{title}</div>
             {showClose && (
               <button
@@ -72,8 +72,8 @@ export function Modal({
             )}
           </div>
         )}
-        <div className={cx("px-6 pb-5", !title && "pt-5", bodyClassName)}>{children}</div>
-        {footer && <div className="flex items-center justify-end gap-3 px-6 pb-5">{footer}</div>}
+        <div className={cx("min-h-0 flex-1 overflow-y-auto px-6 pb-5", !title && "pt-5", bodyClassName)}>{children}</div>
+        {footer && <div className="flex shrink-0 items-center justify-end gap-3 px-6 pb-5">{footer}</div>}
       </div>
     </div>
   );

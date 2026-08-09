@@ -83,6 +83,8 @@ type SecurityAudit struct {
 // exists. Neither is proof of IMS registration.
 type State struct {
 	DeviceID           string        `json:"device_id"`
+	ICCID              string        `json:"iccid,omitempty"`
+	IMSI               string        `json:"imsi,omitempty"`
 	Phase              Phase         `json:"phase"`
 	Enabled            bool          `json:"enabled"`
 	Active             bool          `json:"active"`
@@ -365,26 +367,42 @@ type SMSSender interface {
 	SendSMS(context.Context, SMSSubmitRequest) (SMSSubmitResult, error)
 }
 
-// Call describes one signalling-only IMS call. VoCat intentionally does not
-// open, capture, or relay an RTP media stream for extension call tests.
+// Call describes one IMS call and reports whether an RTP media stream is
+// available to an authenticated extension.
 type Call struct {
-	ID        string     `json:"id"`
-	Number    string     `json:"number"`
-	Direction string     `json:"direction"`
-	State     string     `json:"state"`
-	StartedAt time.Time  `json:"started_at"`
-	SIPCode   int        `json:"sip_code,omitempty"`
-	Reason    string     `json:"reason,omitempty"`
-	EndedAt   *time.Time `json:"ended_at,omitempty"`
+	ID         string     `json:"id"`
+	Number     string     `json:"number"`
+	Direction  string     `json:"direction"`
+	State      string     `json:"state"`
+	StartedAt  time.Time  `json:"started_at"`
+	SIPCode    int        `json:"sip_code,omitempty"`
+	Reason     string     `json:"reason,omitempty"`
+	MediaReady bool       `json:"media_ready,omitempty"`
+	Codec      string     `json:"codec,omitempty"`
+	EndedAt    *time.Time `json:"ended_at,omitempty"`
 }
 
-// CallController is an optional capability of an IMS session. Implementations
-// manage SIP signalling only; audio handling is explicitly outside this API.
+// CallController is an optional capability of an IMS session. Media remains a
+// separate optional interface so call signalling does not depend on a codec.
 type CallController interface {
 	Calls() []Call
 	DialCall(context.Context, string) (Call, error)
 	AnswerCall(context.Context, string) (Call, error)
 	HangupCall(context.Context, string) error
+}
+
+// CallMedia is a narrow, codec-independent bridge between an IMS RTP stream
+// and a trusted local extension. Samples are signed 16-bit mono PCM at 8 kHz.
+type CallMedia interface {
+	Codec() string
+	ReadPCM(context.Context) ([]int16, error)
+	WritePCM([]int16) error
+}
+
+// CallMediaController is optional so signalling-only IMS implementations stay
+// compatible. Media is only exposed for a specific active call.
+type CallMediaController interface {
+	CallMedia(context.Context, string) (CallMedia, error)
 }
 
 // PhoneStore persists a number only after it was explicitly associated by IMS.

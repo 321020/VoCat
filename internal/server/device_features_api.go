@@ -2,6 +2,7 @@ package server
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"time"
@@ -9,6 +10,10 @@ import (
 	"vocat/internal/device"
 	"vocat/internal/store"
 )
+
+// overviewStreamInterval is the cadence at which the overview SSE stream pushes
+// a fresh snapshot. It is a package var so tests can shorten it.
+var overviewStreamInterval = 2 * time.Second
 
 // beginSSE prepares a response for Server-Sent Events and returns its response
 // controller for explicit flushes.
@@ -50,13 +55,27 @@ func (s *Server) handleOverviewStream(
 	if err := writeSSEEvent(w, controller, "connected", map[string]any{}); err != nil {
 		return true
 	}
-	ticker := time.NewTicker(2 * time.Second)
+	ticker := time.NewTicker(overviewStreamInterval)
 	defer ticker.Stop()
 	for {
 		select {
 		case <-r.Context().Done():
 			return true
 		case <-ticker.C:
+			// The config passed in was read when the stream opened. Re-read it on
+			// every tick so edits made while watching (roaming data, APN, VoWiFi,
+			// name…) take effect; otherwise the stream keeps replaying the stale
+			// snapshot and the UI flaps between SSE-old and REST-new values.
+			fresh, err := s.store.Device(r.Context(), config.ID)
+			if err != nil {
+				if errors.Is(err, store.ErrNotFound) {
+					// The device was deleted while streaming; end the stream.
+					return true
+				}
+				// Transient store hiccup: keep the last known config for this tick.
+			} else {
+				config = fresh
+			}
 			currentEntry, _, present := s.physicalForConfig(config)
 			overview := s.configuredDeviceOverview(config, currentEntry, present)
 			if err := writeSSEEvent(w, controller, "overview", overview); err != nil {
@@ -81,6 +100,7 @@ func operatorCandidateWire(op device.ScannedOperator) map[string]any {
 		"operatorName":     op.Name,
 		"shortName":        op.Short,
 		"plmn":             op.Numeric,
+		"countryCode":      op.Country,
 		"rats":             rats,
 		"includesPcsDigit": false,
 	}

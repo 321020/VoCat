@@ -18,7 +18,9 @@ import (
 	"time"
 
 	"vocat/internal/auth"
+	"vocat/internal/exportproxy"
 	"vocat/internal/extensions"
+	"vocat/internal/httpsmode"
 	"vocat/internal/loghub"
 	"vocat/internal/store"
 	"vocat/internal/update"
@@ -42,9 +44,11 @@ type Options struct {
 	SecureCookies       bool
 	MaxRequestBodyBytes int64
 	Extensions          *extensions.Manager
+	ExportProxy         *exportproxy.Manager
 	DeveloperEnabled    bool
 	UpdateRepository    string
 	UpdateToken         string
+	HTTPS               *httpsmode.Manager
 }
 
 // Server is the single HTTP handler for the JSON API and embedded SPA.
@@ -67,6 +71,7 @@ type Server struct {
 	access              parsedAccessConfig
 	loginLimiter        *loginRateLimiter
 	extensions          *extensions.Manager
+	exportProxy         *exportproxy.Manager
 	developerEnabled    bool
 	updateRepository    string
 	updateToken         string
@@ -75,6 +80,10 @@ type Server struct {
 	updateRestart       func(*slog.Logger) error
 	updateMu            sync.Mutex
 	updateApplying      bool
+	https               *httpsmode.Manager
+	netTraffic          *liveNetTracker
+	publicIPMu          sync.RWMutex
+	publicIPs           map[string]cachedPublicIP
 }
 
 func New(options Options) (*Server, error) {
@@ -117,9 +126,13 @@ func New(options Options) (*Server, error) {
 		websheets:           newWebsheetManager(),
 		loginLimiter:        newLoginRateLimiter(),
 		extensions:          options.Extensions,
+		exportProxy:         options.ExportProxy,
 		developerEnabled:    options.DeveloperEnabled,
 		updateRepository:    strings.TrimSpace(options.UpdateRepository),
 		updateToken:         strings.TrimSpace(options.UpdateToken),
+		https:               options.HTTPS,
+		netTraffic:          newLiveNetTracker(),
+		publicIPs:           make(map[string]cachedPublicIP),
 		updateCheck:         update.CheckLatest,
 		updateApply:         update.ApplyLatest,
 		updateRestart:       update.RestartService,
@@ -158,6 +171,10 @@ type VoWiFiCallController interface {
 	DialCall(context.Context, string, string) (vowifi.Call, error)
 	AnswerCall(context.Context, string, string) (vowifi.Call, error)
 	HangupCall(context.Context, string, string) error
+}
+
+type VoWiFiCallMediaController interface {
+	CallMedia(context.Context, string, string) (vowifi.CallMedia, error)
 }
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -571,7 +588,7 @@ func (s *Server) securityHeaders(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		w.Header().Set("Referrer-Policy", "same-origin")
-		w.Header().Set("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
+		w.Header().Set("Permissions-Policy", "camera=(), microphone=(self), geolocation=()")
 		if strings.HasPrefix(r.URL.Path, "/websheets/") || strings.HasPrefix(r.URL.Path, "/plugin-assets/") {
 			// The self-hosted E911 websheet is embedded in an iframe by the SPA, so
 			// it must be frameable same-origin. Every other route stays DENY.
@@ -593,7 +610,7 @@ func (s *Server) securityHeaders(next http.Handler) http.Handler {
 					"img-src 'self' data:; connect-src 'self'",
 			)
 		}
-		if s.secureCookies {
+		if s.secureCookies && s.https == nil {
 			w.Header().Set("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
 		}
 		next.ServeHTTP(w, r)

@@ -18,6 +18,23 @@ func TestClassifyErrorEAPAuthenticationRejected(t *testing.T) {
 	}
 }
 
+func TestCleanupCallContainsProviderThatIgnoresContext(t *testing.T) {
+	orchestrator := &Orchestrator{options: Options{CleanupTimeout: 20 * time.Millisecond}}
+	release := make(chan struct{})
+	defer close(release)
+	started := time.Now()
+	err := orchestrator.cleanupCall(func(context.Context) error {
+		<-release
+		return nil
+	})
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("cleanupCall() error = %v", err)
+	}
+	if elapsed := time.Since(started); elapsed > 250*time.Millisecond {
+		t.Fatalf("cleanupCall() took %v", elapsed)
+	}
+}
+
 type fakeEnvironment struct {
 	mu sync.Mutex
 

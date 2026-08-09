@@ -1,6 +1,7 @@
 package server
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
@@ -11,7 +12,9 @@ import (
 	"testing"
 	"time"
 
+	"vocat/internal/developer"
 	"vocat/internal/device"
+	"vocat/internal/exportproxy"
 	"vocat/internal/modem"
 	"vocat/internal/store"
 	"vocat/internal/update"
@@ -465,5 +468,232 @@ func TestE911WebsheetRejectsBadToken(t *testing.T) {
 	server.handleWebsheet(recorder, httptest.NewRequest(http.MethodGet, "/websheets/"+session.id+"?token=wrong", nil))
 	if recorder.Code != http.StatusForbidden {
 		t.Fatalf("bad token status = %d, want 403", recorder.Code)
+	}
+}
+
+// readSSEEvent reads one Server-Sent-Events frame ("event:"/"data:" lines
+// terminated by a blank line) and returns the event name and data payload.
+func readSSEEvent(reader *bufio.Reader) (string, []byte, error) {
+	var event string
+	var data []byte
+	for {
+		line, err := reader.ReadString('\n')
+		if err != nil {
+			return "", nil, err
+		}
+		line = strings.TrimRight(line, "\r\n")
+		if line == "" {
+			if event != "" || data != nil {
+				return event, data, nil
+			}
+			continue
+		}
+		if rest, ok := strings.CutPrefix(line, "event: "); ok {
+			event = rest
+		} else if rest, ok := strings.CutPrefix(line, "data: "); ok {
+			data = append(data, rest...)
+		}
+	}
+}
+
+// awaitOverviewNetworkEnabled reads overview SSE events until one reports the
+// requested network_enabled value, or the stream ends / the request times out.
+func awaitOverviewNetworkEnabled(reader *bufio.Reader, want bool) error {
+	for {
+		event, data, err := readSSEEvent(reader)
+		if err != nil {
+			return err
+		}
+		if event != "overview" {
+			continue
+		}
+		var overview struct {
+			NetworkEnabled bool `json:"network_enabled"`
+		}
+		if err := json.Unmarshal(data, &overview); err != nil {
+			return err
+		}
+		if overview.NetworkEnabled == want {
+			return nil
+		}
+	}
+}
+
+// The overview SSE stream must reflect edits made after it opened. Before the
+// fix it rebuilt every tick from the config snapshot captured when the stream
+// opened, so toggling roaming data off was immediately overwritten by the stale
+// "on" snapshot and the switch flapped. This test opens the stream with roaming
+// data on, turns it off in the store, and requires the stream to keep reporting
+// the new "off" state.
+func TestHandleOverviewStreamReflectsConfigChanges(t *testing.T) {
+	previousInterval := overviewStreamInterval
+	overviewStreamInterval = 10 * time.Millisecond
+	t.Cleanup(func() { overviewStreamInterval = previousInterval })
+
+	ctx := context.Background()
+	database, err := store.Open(ctx, ":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = database.Close() })
+	if err := database.UpsertAppSetting(ctx, store.AppSetting{
+		Key:   developer.EnabledSettingKey,
+		Value: []byte(`{"enabled":true}`),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.UpsertDevice(ctx, store.Device{ID: "dev1", Name: "Test device", NetworkEnabled: true}); err != nil {
+		t.Fatal(err)
+	}
+
+	server := &Server{store: database, logger: regionTestLogger(), developerEnabled: true}
+	mux := http.NewServeMux()
+	mux.HandleFunc("/stream", func(w http.ResponseWriter, r *http.Request) {
+		config, err := database.Device(r.Context(), "dev1")
+		if err != nil {
+			writeError(w, http.StatusNotFound, "not_found", err.Error())
+			return
+		}
+		server.handleOverviewStream(w, r, config, device.Device{}, false)
+	})
+	testServer := httptest.NewServer(mux)
+	t.Cleanup(testServer.Close)
+
+	requestCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	t.Cleanup(cancel)
+	request, err := http.NewRequestWithContext(requestCtx, http.MethodGet, testServer.URL+"/stream", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = response.Body.Close() })
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("stream status = %d", response.StatusCode)
+	}
+	reader := bufio.NewReader(response.Body)
+
+	// The stream opens with roaming data enabled.
+	if err := awaitOverviewNetworkEnabled(reader, true); err != nil {
+		t.Fatalf("initial overview never reported network_enabled=true: %v", err)
+	}
+
+	// Turn roaming data off; the very next ticks must report the new state
+	// instead of replaying the stale enabled snapshot.
+	config, err := database.Device(ctx, "dev1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	config.NetworkEnabled = false
+	if err := database.UpsertDevice(ctx, config); err != nil {
+		t.Fatal(err)
+	}
+	if err := awaitOverviewNetworkEnabled(reader, false); err != nil {
+		t.Fatalf("overview kept replaying stale network_enabled=true after the edit: %v", err)
+	}
+}
+
+// Turning roaming data off must be refused while an enabled export proxy is
+// bound to the device; the user has to disable that binding first.
+func TestHandleCellularDataRejectsDisableWhileExportProxyActive(t *testing.T) {
+	ctx := context.Background()
+	database, err := store.Open(ctx, ":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = database.Close() })
+	if err := database.UpsertAppSetting(ctx, store.AppSetting{
+		Key: developer.EnabledSettingKey, Value: json.RawMessage(`{"enabled":true}`),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	deviceConfig := store.Device{ID: "modem-1", Name: "modem-1", Interface: "wwan0", NetworkEnabled: true}
+	if err := database.UpsertDevice(ctx, deviceConfig); err != nil {
+		t.Fatal(err)
+	}
+	// Seed an already-enabled export proxy bound to the device. New only logs a
+	// warning when the Linux-only listener cannot start on this platform, so the
+	// enabled config still loads and the interlock sees it.
+	seeded, err := json.Marshal([]exportproxy.Config{{
+		ID: "proxy-1", Name: "proxy-1", DeviceID: "modem-1", Interface: "wwan0",
+		Mode: "socks5", ListenHost: "127.0.0.1", ListenPort: 1080, Enabled: true,
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := database.UpsertAppSetting(ctx, store.AppSetting{Key: exportproxy.SettingKey, Value: seeded, Sensitive: true}); err != nil {
+		t.Fatal(err)
+	}
+	proxyManager, err := exportproxy.New(ctx, database, regionTestLogger(), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = proxyManager.Close() })
+	server := &Server{
+		store:               database,
+		logger:              regionTestLogger(),
+		developerEnabled:    true,
+		exportProxy:         proxyManager,
+		devices:             fakeDeviceController{},
+		maxRequestBodyBytes: 1 << 20,
+	}
+
+	patchOff := func() *httptest.ResponseRecorder {
+		recorder := httptest.NewRecorder()
+		request := httptest.NewRequest(http.MethodPatch, "/api/devices/modem-1/cellular-data", strings.NewReader(`{"enabled":false}`))
+		request.Header.Set("Content-Type", "application/json")
+		if !server.handleCellularData(recorder, request, deviceConfig, "physical-1") {
+			t.Fatal("handleCellularData did not handle the request")
+		}
+		return recorder
+	}
+
+	// While the export proxy is enabled, turning roaming data off is rejected and
+	// the stored config keeps roaming data on.
+	recorder := patchOff()
+	if recorder.Code != http.StatusConflict {
+		t.Fatalf("disable with active proxy status = %d, body = %s", recorder.Code, recorder.Body)
+	}
+	var failure struct {
+		Error struct {
+			Code string `json:"code"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &failure); err != nil {
+		t.Fatal(err)
+	}
+	if failure.Error.Code != "export_proxy_active" {
+		t.Fatalf("error code = %q, body = %s", failure.Error.Code, recorder.Body)
+	}
+	stored, err := database.Device(ctx, "modem-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !stored.NetworkEnabled {
+		t.Fatal("roaming data was turned off despite the active export proxy")
+	}
+
+	// Once the binding is disabled, the same request goes through.
+	proxies, err := proxyManager.Configs()
+	if err != nil || len(proxies) != 1 {
+		t.Fatalf("configs = %+v, %v", proxies, err)
+	}
+	disabled := proxies[0]
+	disabled.Enabled = false
+	if _, err := proxyManager.Update(ctx, disabled.ID, disabled); err != nil {
+		t.Fatal(err)
+	}
+	recorder = patchOff()
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("disable after proxy off status = %d, body = %s", recorder.Code, recorder.Body)
+	}
+	stored, err = database.Device(ctx, "modem-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.NetworkEnabled {
+		t.Fatal("roaming data was not turned off after the export proxy was disabled")
 	}
 }

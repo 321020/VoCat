@@ -2,10 +2,12 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -18,8 +20,11 @@ import (
 
 	"vocat/internal/auth"
 	"vocat/internal/config"
+	"vocat/internal/developer"
 	"vocat/internal/device"
+	"vocat/internal/exportproxy"
 	"vocat/internal/extensions"
+	"vocat/internal/httpsmode"
 	"vocat/internal/loghub"
 	"vocat/internal/server"
 	"vocat/internal/store"
@@ -119,16 +124,41 @@ func run(logger *slog.Logger, logs *loghub.Hub) error {
 		return err
 	}
 	defer database.Close()
+	developerEnabled := isDeveloperEnabled(startupContext, database)
+	pluginRoot := filepath.Join(filepath.Dir(cfg.DatabasePath), "plugins")
+	legacyExportProxyConfig := filepath.Join(pluginRoot, exportproxy.ReservedID, "data", "configs.json")
+	if !developerEnabled {
+		if err := developer.ResetExperimental(startupContext, database); err != nil {
+			return fmt.Errorf("reset disabled developer settings: %w", err)
+		}
+		if err := exportproxy.RemoveLegacyConfig(legacyExportProxyConfig); err != nil {
+			return fmt.Errorf("remove legacy export proxy configuration: %w", err)
+		}
+	}
+	httpsManager, err := httpsmode.New(
+		startupContext,
+		database,
+		filepath.Join(filepath.Dir(cfg.DatabasePath), "tls"),
+		cfg.Address,
+	)
+	if err != nil {
+		return fmt.Errorf("configure self-signed HTTPS: %w", err)
+	}
 
 	// The plugin/extension system is gated behind a hidden developer-mode flag.
 	// When off (the default) the manager is never created and the server receives
 	// a nil Extensions handle, so every /extensions* and /plugin-assets/* route
 	// returns 503/404 and the SPA hides the plugin surface.
-	developerEnabled := isDeveloperEnabled(startupContext, database)
 	var extensionManager *extensions.Manager
+	var exportProxyManager *exportproxy.Manager
 	if developerEnabled {
+		exportProxyManager, err = exportproxy.New(startupContext, database, logger, legacyExportProxyConfig)
+		if err != nil {
+			return fmt.Errorf("create built-in export proxy: %w", err)
+		}
+		defer exportProxyManager.Close()
 		extensionManager, err = extensions.NewManager(
-			filepath.Join(filepath.Dir(cfg.DatabasePath), "plugins"),
+			pluginRoot,
 			logger,
 		)
 		if err != nil {
@@ -163,6 +193,7 @@ func run(logger *slog.Logger, logs *loghub.Hub) error {
 	if err := provisionDiscoveredDevices(startupContext, database, deviceManager); err != nil {
 		logger.Warn("automatic first-run device provisioning failed", "error", err)
 	}
+	restoreDefaultCellularRadios(startupContext, logger, database, deviceManager)
 	defer func() {
 		stopContext, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
@@ -173,7 +204,14 @@ func run(logger *slog.Logger, logs *loghub.Hub) error {
 	pollContext, cancelPolling := context.WithCancel(context.Background())
 	defer cancelPolling()
 	go pollDeviceSnapshots(pollContext, logger, database, deviceManager)
+	go restoreConfiguredCellularData(pollContext, logger, database, deviceManager)
+	go collectCellularTraffic(pollContext, logger, database)
 	go persistLogsToStore(pollContext, logger, logs, database)
+	if !developerEnabled {
+		go disableAllDeveloperCellularData(pollContext, logger, database, deviceManager)
+	} else {
+		go watchDeveloperDisable(pollContext, logger, database, deviceManager, exportProxyManager, legacyExportProxyConfig)
+	}
 
 	vowifiManager, err := configureVoWiFiRuntime(
 		startupContext,
@@ -203,9 +241,11 @@ func run(logger *slog.Logger, logs *loghub.Hub) error {
 		SecureCookies:       cfg.SecureCookies,
 		MaxRequestBodyBytes: cfg.MaxRequestBodyBytes,
 		Extensions:          extensionManager,
+		ExportProxy:         exportProxyManager,
 		DeveloperEnabled:    developerEnabled,
 		UpdateRepository:    strings.TrimSpace(os.Getenv("VOCAT_REPO")),
 		UpdateToken:         strings.TrimSpace(os.Getenv("GITHUB_TOKEN")),
+		HTTPS:               httpsManager,
 	})
 	if err != nil {
 		return err
@@ -215,15 +255,35 @@ func run(logger *slog.Logger, logs *loghub.Hub) error {
 	handler.StartTelegramBot(pollContext)
 	handler.StartSMSNotificationDispatchers(pollContext)
 
-	httpServer := &http.Server{
-		Addr:              cfg.Address,
-		Handler:           handler,
-		ReadHeaderTimeout: 5 * time.Second,
-		ReadTimeout:       15 * time.Second,
-		WriteTimeout:      30 * time.Second,
-		IdleTimeout:       90 * time.Second,
-		MaxHeaderBytes:    1 << 20,
+	serverConfig := func(handler http.Handler) *http.Server {
+		return &http.Server{
+			Addr:              cfg.Address,
+			Handler:           handler,
+			ReadHeaderTimeout: 5 * time.Second,
+			ReadTimeout:       15 * time.Second,
+			WriteTimeout:      30 * time.Second,
+			IdleTimeout:       90 * time.Second,
+			MaxHeaderBytes:    1 << 20,
+		}
 	}
+	plainHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if httpsManager.Enabled() {
+			host := strings.TrimSpace(r.Host)
+			if host == "" {
+				host = cfg.Address
+			}
+			http.Redirect(w, r, "https://"+host+r.URL.RequestURI(), http.StatusPermanentRedirect)
+			return
+		}
+		handler.ServeHTTP(w, r)
+	})
+	plainServer := serverConfig(plainHandler)
+	tlsServer := serverConfig(handler)
+	baseListener, err := net.Listen("tcp", cfg.Address)
+	if err != nil {
+		return fmt.Errorf("listen on %s: %w", cfg.Address, err)
+	}
+	protocolMux := httpsmode.NewMultiplexer(baseListener, httpsManager)
 
 	signalContext, stopSignals := signal.NotifyContext(
 		context.Background(),
@@ -232,10 +292,17 @@ func run(logger *slog.Logger, logs *loghub.Hub) error {
 	)
 	defer stopSignals()
 
-	serverError := make(chan error, 1)
+	serverError := make(chan error, 2)
 	go func() {
-		logger.Info("HTTP server listening", "address", cfg.Address)
-		err := httpServer.ListenAndServe()
+		logger.Info("HTTP server listening", "address", cfg.Address, "self_signed_https", httpsManager.Enabled())
+		err := plainServer.Serve(protocolMux.Plain())
+		if errors.Is(err, http.ErrServerClosed) {
+			err = nil
+		}
+		serverError <- err
+	}()
+	go func() {
+		err := tlsServer.Serve(tls.NewListener(protocolMux.TLS(), httpsManager.TLSConfig()))
 		if errors.Is(err, http.ErrServerClosed) {
 			err = nil
 		}
@@ -244,6 +311,7 @@ func run(logger *slog.Logger, logs *loghub.Hub) error {
 
 	select {
 	case err := <-serverError:
+		_ = protocolMux.Close()
 		return err
 	case <-signalContext.Done():
 		logger.Info("shutdown signal received")
@@ -258,11 +326,161 @@ func run(logger *slog.Logger, logs *loghub.Hub) error {
 		cfg.ShutdownTimeout,
 	)
 	defer cancelShutdown()
-	if err := httpServer.Shutdown(shutdownContext); err != nil {
-		_ = httpServer.Close()
-		return fmt.Errorf("graceful HTTP shutdown: %w", err)
+	shutdownErrors := make(chan error, 2)
+	go func() { shutdownErrors <- plainServer.Shutdown(shutdownContext) }()
+	go func() { shutdownErrors <- tlsServer.Shutdown(shutdownContext) }()
+	time.Sleep(10 * time.Millisecond)
+	_ = protocolMux.Close()
+	for range 2 {
+		if err := <-shutdownErrors; err != nil {
+			_ = plainServer.Close()
+			_ = tlsServer.Close()
+			return fmt.Errorf("graceful HTTP shutdown: %w", err)
+		}
 	}
-	return <-serverError
+	return nil
+}
+
+// restoreDefaultCellularRadios repairs an interrupted VoWiFi teardown. CFUN=4
+// survives process restarts, while the in-memory radio checkpoint does not. If
+// VoWiFi is disabled and the current SIM has no explicit airplane policy, the
+// automatic/default policy is cellular service and the modem must return to
+// CFUN=1.
+func restoreDefaultCellularRadios(
+	ctx context.Context,
+	logger *slog.Logger,
+	database *store.Store,
+	manager *device.Manager,
+) {
+	configs, err := database.ListDevices(ctx)
+	if err != nil {
+		logger.Warn("startup cellular recovery: list devices", "error", err)
+		return
+	}
+	mapper := integration.ATMapper{Store: database, Devices: manager}
+	for _, config := range configs {
+		if config.VoWiFiEnabled {
+			continue
+		}
+		entry, err := mapper.Get(config.ID)
+		if err != nil || entry.Snapshot == nil || !entry.Snapshot.FlightMode {
+			continue
+		}
+		iccid := strings.TrimSpace(entry.Snapshot.ICCID)
+		if iccid != "" {
+			policy, policyErr := database.CardPolicy(ctx, iccid)
+			switch {
+			case policyErr == nil && policy.AirplaneEnabled:
+				continue
+			case policyErr != nil && !errors.Is(policyErr, store.ErrNotFound):
+				logger.Warn("startup cellular recovery: read card policy", "device_id", config.ID, "error", policyErr)
+				continue
+			}
+		}
+		restoreContext, cancel := context.WithTimeout(ctx, 10*time.Second)
+		_, err = manager.SetFlight(restoreContext, entry.ID, false)
+		cancel()
+		if err != nil {
+			logger.Warn("startup cellular recovery failed", "device_id", config.ID, "error", err)
+			continue
+		}
+		logger.Info("restored cellular radio after disabled VoWiFi", "device_id", config.ID, "iccid", iccid)
+	}
+}
+
+func restoreConfiguredCellularData(
+	ctx context.Context,
+	logger *slog.Logger,
+	database *store.Store,
+	manager *device.Manager,
+) {
+	configs, err := database.ListDevices(ctx)
+	if err != nil {
+		logger.Warn("startup cellular data recovery: list devices", "error", err)
+		return
+	}
+	mapper := integration.ATMapper{Store: database, Devices: manager}
+	for _, config := range configs {
+		if !config.NetworkEnabled || config.VoWiFiEnabled {
+			continue
+		}
+		entry, err := mapper.Get(config.ID)
+		if err != nil {
+			continue
+		}
+		dataContext, cancel := context.WithTimeout(ctx, 60*time.Second)
+		_, err = manager.SetNetwork(dataContext, entry.ID, device.NetworkRequest{
+			Enabled: true, APN: config.APN, IPVersion: "IPV4V6",
+		})
+		cancel()
+		if err != nil {
+			logger.Warn("startup cellular data recovery failed", "device_id", config.ID, "error", err)
+			continue
+		}
+		logger.Info("restored protected cellular data route", "device_id", config.ID, "interface", config.Interface)
+	}
+}
+
+func disableAllDeveloperCellularData(
+	ctx context.Context,
+	logger *slog.Logger,
+	database *store.Store,
+	manager *device.Manager,
+) {
+	configs, err := database.ListDevices(ctx)
+	if err != nil {
+		logger.Warn("developer cleanup: list devices", "error", err)
+		return
+	}
+	mapper := integration.ATMapper{Store: database, Devices: manager}
+	for _, config := range configs {
+		entry, err := mapper.Get(config.ID)
+		if err != nil {
+			continue
+		}
+		disableContext, cancel := context.WithTimeout(ctx, 30*time.Second)
+		_, err = manager.SetNetwork(disableContext, entry.ID, device.NetworkRequest{Enabled: false})
+		cancel()
+		if err != nil && ctx.Err() == nil {
+			logger.Warn("developer cleanup: stop cellular data", "device_id", config.ID, "error", err)
+		}
+	}
+}
+
+func watchDeveloperDisable(
+	ctx context.Context,
+	logger *slog.Logger,
+	database *store.Store,
+	manager *device.Manager,
+	exportProxy *exportproxy.Manager,
+	legacyConfigPath string,
+) {
+	ticker := time.NewTicker(2 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			if developer.Enabled(ctx, database) {
+				continue
+			}
+			if exportProxy != nil {
+				if err := exportProxy.DeleteAllAndDisable(ctx); err != nil && ctx.Err() == nil {
+					logger.Warn("developer cleanup: delete export proxies", "error", err)
+				}
+			}
+			if err := exportproxy.RemoveLegacyConfig(legacyConfigPath); err != nil {
+				logger.Warn("developer cleanup: remove legacy export proxy configuration", "error", err)
+			}
+			if err := developer.ResetExperimental(ctx, database); err != nil && ctx.Err() == nil {
+				logger.Warn("developer cleanup: reset settings", "error", err)
+			}
+			disableAllDeveloperCellularData(ctx, logger, database, manager)
+			logger.Info("developer mode disabled; roaming data and export proxies were removed")
+			return
+		}
+	}
 }
 
 func configureVoWiFiRuntime(
@@ -355,8 +573,18 @@ func newVoWiFiOrchestrator(
 			if message.Concat != nil && message.Concat.Total > 0 {
 				partsTotal = message.Concat.Total
 			}
+			messageID := message.MessageID
+			if message.Concat != nil && message.Concat.Total > 1 {
+				// A segment of a carrier-split long SMS over IMS. Address the whole
+				// message with a stable id so SaveSMSMessage folds every segment
+				// into one progressively merged row instead of one row per segment.
+				messageID = store.StableConcatMessageID(
+					"ims", deviceConfig.ModemIMEI, message.DeviceID, message.From,
+					message.Concat.Reference, message.Concat.Total,
+				)
+			}
 			_, saveErr := database.SaveSMSMessage(ctx, store.SMSMessage{
-				MessageID:  message.MessageID,
+				MessageID:  messageID,
 				DeviceID:   message.DeviceID,
 				ModemIMEI:  deviceConfig.ModemIMEI,
 				IMSI:       message.IMSI,

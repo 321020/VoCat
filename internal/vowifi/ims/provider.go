@@ -1141,10 +1141,20 @@ func (session *Session) Close(ctx context.Context) error {
 	session.smsContactConfirmed = false
 	session.clearAuthentication()
 	session.mu.Unlock()
+	session.callMu.Lock()
+	for _, call := range session.calls {
+		if call.media != nil {
+			_ = call.media.Close()
+		}
+	}
+	session.callMu.Unlock()
 	var cleanupErrors []error
 	if unregisterErr != nil {
 		cleanupErrors = append(cleanupErrors, unregisterErr)
 	}
+	// Runtime receive loops block in Read/Accept. Close every socket before
+	// waiting for those goroutines; waiting first deadlocks VoWiFi shutdown and
+	// leaves the modem permanently in CFUN=4.
 	if err := session.conn.Close(); err != nil {
 		cleanupErrors = append(cleanupErrors, err)
 	}

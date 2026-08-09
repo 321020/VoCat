@@ -8,7 +8,7 @@ import (
 	"vocat/internal/vowifi"
 )
 
-func TestIncomingCallCanRingAndAnswerWithoutAudio(t *testing.T) {
+func TestIncomingCallCanRingAndAnswerWithMediaOffer(t *testing.T) {
 	session := &Session{fromTag: "local-tag", calls: make(map[string]*imsCall)}
 	packet, err := parseSIPPacket([]byte(strings.Join([]string{
 		"INVITE sip:subscriber@example.test SIP/2.0",
@@ -38,7 +38,7 @@ func TestIncomingCallCanRingAndAnswerWithoutAudio(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if answered.State != "active" || len(responses) != 2 || !strings.Contains(string(responses[1]), "a=inactive") {
+	if answered.State != "active" || len(responses) != 2 || !strings.Contains(string(responses[1]), "a=sendrecv") {
 		t.Fatalf("answered = %#v, response = %q", answered, responses[1])
 	}
 }

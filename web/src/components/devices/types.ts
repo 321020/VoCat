@@ -1,4 +1,4 @@
-import type { DeviceOverview, ModemSummary } from "../../types";
+import type { DeviceOverview, DeviceType, ModemSummary } from "../../types";
 
 // PNN record read from the modem (opl/pnn drive the SIM operator display).
 export interface ModemPnn {
@@ -22,9 +22,9 @@ export interface DeviceModem extends ModemSummary {
 // Device detail (`/devices/:id/overview` -> devices[0]) with the extra fields
 // the reference page reads. All camelCase (api auto-converts).
 export interface DeviceDetail extends Omit<DeviceOverview, "modem" | "traffic"> {
+  developerEnabled?: boolean;
   modem: DeviceModem;
   localPhone?: string;
-  privateIpv6?: string;
   publicIpv6?: string;
   e911SetupAvailable?: boolean;
   activeEsimProfileName?: string;
@@ -36,6 +36,7 @@ export interface DeviceDetail extends Omit<DeviceOverview, "modem" | "traffic"> 
 export interface AddDeviceForm {
   id: string;
   name: string;
+  deviceType: DeviceType | "";
   interface: string;
   modemImei: string;
   usbPath: string;
@@ -57,6 +58,7 @@ export interface OperatorCandidate {
   plmn?: string;
   operatorName?: string;
   shortName?: string;
+  countryCode?: string;
   status?: string;
   rats?: Array<string | null>;
   includesPcsDigit?: boolean;

@@ -13,7 +13,7 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-const schemaVersion = 7
+const schemaVersion = 8
 
 var ErrNotFound = errors.New("store: not found")
 
@@ -118,11 +118,11 @@ func migrate(ctx context.Context, db *sql.DB) error {
 		for _, statement := range migrationStatements(nextVersion) {
 			if _, err := tx.ExecContext(ctx, statement); err != nil {
 				// A database whose user_version was repaired or rolled back may
-				// already contain this additive v7 column. The remaining v7 data
-				// backfill and indexes are still safe and must be applied.
-				if nextVersion == 7 &&
-					strings.Contains(statement, "ADD COLUMN modem_imei") &&
-					strings.Contains(strings.ToLower(err.Error()), "duplicate column name") {
+				// already contain an additive column. Remaining statements in the
+				// migration are still safe and must be applied.
+				duplicateAdditiveColumn := (nextVersion == 7 && strings.Contains(statement, "ADD COLUMN modem_imei")) ||
+					(nextVersion == 8 && strings.Contains(statement, "ADD COLUMN device_type"))
+				if duplicateAdditiveColumn && strings.Contains(strings.ToLower(err.Error()), "duplicate column name") {
 					continue
 				}
 				_ = tx.Rollback()

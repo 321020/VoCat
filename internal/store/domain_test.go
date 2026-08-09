@@ -105,6 +105,41 @@ func TestMigration7BackfillsSMSModemIMEI(t *testing.T) {
 	}
 }
 
+func TestMigration8DefaultsExistingDevicesToPCIeType(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "device-type.db")
+	raw, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for version := 1; version <= 7; version++ {
+		for _, statement := range migrationStatements(version) {
+			if _, err := raw.ExecContext(ctx, statement); err != nil {
+				t.Fatalf("create v%d schema: %v", version, err)
+			}
+		}
+	}
+	if _, err := raw.ExecContext(ctx, `
+		INSERT INTO devices (id, name, created_at, updated_at)
+		VALUES ('legacy', 'Legacy modem', 100, 100);
+		PRAGMA user_version = 7;
+	`); err != nil {
+		t.Fatal(err)
+	}
+	if err := raw.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	database := openTestStore(t, path)
+	got, err := database.Device(ctx, "legacy")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.DeviceType != DeviceTypePCIeEC20EC25 {
+		t.Fatalf("legacy device type = %q", got.DeviceType)
+	}
+}
+
 func TestMigration4PreservesIMSRedeliveryAndUsesReceiptTime(t *testing.T) {
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "ims-redelivery.db")
@@ -170,6 +205,7 @@ func TestDeviceStateRoundTripAndCascade(t *testing.T) {
 	device := Device{
 		ID:             "ec20-1",
 		Name:           "EC20 一号",
+		DeviceType:     DeviceTypeDJI4G,
 		Interface:      "wwan0",
 		ControlDevice:  "/dev/cdc-wdm0",
 		ATPort:         "/dev/ttyUSB2",
@@ -219,7 +255,7 @@ func TestDeviceStateRoundTripAndCascade(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if gotDevice.BaudRate != 115200 || gotDevice.DataBits != 8 ||
+	if gotDevice.DeviceType != DeviceTypeDJI4G || gotDevice.BaudRate != 115200 || gotDevice.DataBits != 8 ||
 		gotDevice.StopBits != 1 || gotDevice.DeviceBackend != "at" {
 		t.Fatalf("device defaults not applied: %+v", gotDevice)
 	}

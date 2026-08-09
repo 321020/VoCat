@@ -5,6 +5,7 @@ import { isQmiControl } from "./shared";
 import type { DeviceConfig } from "../../types";
 import type { DeviceDetail } from "./types";
 import { useI18n } from "../../lib/i18n";
+import { DEVICE_TYPES, deviceTypeImage } from "../../lib/deviceTypes";
 
 export interface DeviceConfigTabProps {
   editConfig: DeviceConfig | null;
@@ -77,6 +78,18 @@ export function DeviceConfigTab({ editConfig, deviceStatus, saving, deleting, on
           </Field>
           <Field label={t("名称")}>
             <Input value={editConfig.name} onChange={(e) => onEditConfig({ ...editConfig, name: e.target.value })} placeholder={t("显示名称")} />
+          </Field>
+          <Field label={t("设备类型")}>
+            <div className="flex items-center gap-3">
+              <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-xl border border-gray-200 bg-white p-1.5 dark:border-white/10 dark:bg-white/5">
+                <img src={deviceTypeImage(editConfig.deviceType)} alt="" className="h-full w-full object-contain" />
+              </div>
+              <Select
+                value={editConfig.deviceType}
+                onChange={(v) => onEditConfig({ ...editConfig, deviceType: v as DeviceConfig["deviceType"] })}
+                options={DEVICE_TYPES.map((item) => ({ value: item.value, label: t(item.label) }))}
+              />
+            </div>
           </Field>
           <Field label={t("IMEI 绑定")}>
             <Input value={editConfig.modemImei || ""} disabled placeholder={t("自动识别（添加时绑定）")} />

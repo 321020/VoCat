@@ -167,15 +167,18 @@ export function isQmiControl(controlDevice?: string): boolean {
 
 /* ---------------------------------------------------------------------------
  * Signal helpers (5-bar overview variant).
+ * Thresholds are RSSI-calibrated (AT+CSQ style dBm, range ~-113..-51), NOT
+ * RSRP — RSSI runs ~20 dB hotter than RSRP on LTE, so RSRP-scaled thresholds
+ * peg near-full for any real signal and the bars never move with strength.
  * ------------------------------------------------------------------------- */
 export function signalValid(dbm?: number | null): boolean {
   return typeof dbm === "number" && Number.isFinite(dbm) && dbm !== 0 && dbm !== -999;
 }
-// 0..5 bars
+// 0..5 bars. RSSI dBm bands: ≥-70 excellent · -70..-85 good · -85..-100 fair · -100..-110 poor · <-110 edge
 export function signalLevel(dbm?: number | null): number {
   if (!signalValid(dbm)) return 0;
   const d = dbm as number;
-  return d >= -75 ? 5 : d >= -85 ? 4 : d >= -95 ? 3 : d >= -105 ? 2 : 1;
+  return d >= -70 ? 5 : d >= -85 ? 4 : d >= -100 ? 3 : d >= -110 ? 2 : 1;
 }
 export type SignalTone = "green" | "amber" | "red" | "gray";
 export function signalTone(dbm?: number | null): SignalTone {

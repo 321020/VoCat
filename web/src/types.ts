@@ -1,5 +1,7 @@
 export type ApiStatus = "ok" | "error";
 
+export type DeviceType = "wifi_410" | "dji_4g" | "pcie_ec20_ec25";
+
 export interface Session {
   authenticated: boolean;
   username: string;
@@ -55,6 +57,7 @@ export interface ModemSummary {
   operator: string;
   nativeMcc: string;
   nativeMnc: string;
+  operatorCountryCode?: string;
   nativeSpn?: string;
   cardMcc?: string;
   cardMnc?: string;
@@ -86,6 +89,7 @@ export interface ModemSummary {
 export interface DeviceListItem {
   id: string;
   name: string;
+  deviceType: DeviceType;
   running: boolean;
   healthy: boolean;
   controlOnline: boolean;
@@ -100,6 +104,7 @@ export interface DeviceListItem {
   interface: string;
   esimTransport: string;
   smsEnabled: boolean;
+	  networkEnabled: boolean;
   vowifiEnabled: boolean;
   vowifiActive?: boolean;
   vowifiRuntime: VoWiFiRuntime;
@@ -117,6 +122,7 @@ export interface DevicesResponse {
 export interface DashboardDevice {
   id: string;
   name: string;
+  deviceType: DeviceType;
   interface: string;
   proxyPort: number;
   publicIp: string;
@@ -181,6 +187,7 @@ export interface DiscoveredDevice {
 export interface DeviceConfig {
   id: string;
   name: string;
+  deviceType: DeviceType;
   interface: string;
   controlDevice: string;
   atPort: string;
@@ -380,6 +387,20 @@ export interface SystemInfo {
   architecture?: string;
   uptime?: string;
   developer?: boolean;
+}
+
+export interface HTTPSSettings {
+  enabled: boolean;
+  httpUrl: string;
+  httpsUrl: string;
+  fingerprint?: string;
+  notAfter?: string;
+}
+
+export interface DeveloperSettings {
+  deviceLimit: number;
+  defaultDeviceLimit: number;
+  maxDeviceLimit: number;
 }
 
 export type Notice = {

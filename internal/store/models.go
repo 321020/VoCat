@@ -17,6 +17,7 @@ const SecretMask = "********"
 type Device struct {
 	ID                 string
 	Name               string
+	DeviceType         string
 	Interface          string
 	ControlDevice      string
 	ATPort             string

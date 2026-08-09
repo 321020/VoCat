@@ -1,9 +1,10 @@
 import {
   Cellular3GRegular, Cellular4GRegular, Cellular5GRegular, CellularData1Regular,
-  RouterRegular, Wifi1Regular,
+  Wifi1Regular,
 } from "@fluentui/react-icons";
 import type { DashboardDevice } from "../types";
-import { cx, signalBars, signalColor, isEC20Model } from "../lib/utils";
+import { cx, signalBars, signalColor } from "../lib/utils";
+import { deviceTypeImage } from "../lib/deviceTypes";
 import { StatusDot } from "./ui/StatusDot";
 import { useI18n } from "../lib/i18n";
 
@@ -29,7 +30,6 @@ export function DeviceCard({ device, onOpen }: { device: DashboardDevice; onOpen
   const second = words.length > 1 ? words[1] : words[0] || "";
   const isLte = second.toUpperCase() === "LTE";
   const bars = signalBars(device.signalDbm);
-  const brandImg = isEC20Model(device.model);
 
   return (
     <button
@@ -41,13 +41,7 @@ export function DeviceCard({ device, onOpen }: { device: DashboardDevice; onOpen
       <div className="relative z-10 p-6">
         <div className="mb-6 flex items-start justify-between">
           <div className="flex items-center gap-3">
-            {brandImg ? (
-              <img src="/ec20.png" alt="" className="h-10 w-10 flex-shrink-0 object-contain" />
-            ) : (
-              <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-gray-50 text-indigo-600 shadow-inner dark:bg-white/5 dark:text-indigo-400">
-                <RouterRegular className="h-5 w-5" />
-              </div>
-            )}
+            <img src={deviceTypeImage(device.deviceType)} alt="" className="h-10 w-10 flex-shrink-0 object-contain" />
             <div>
               <h3 className="text-base font-bold text-gray-800 dark:text-gray-100">{device.name || device.id}</h3>
               <div className="mt-0.5 flex items-center gap-1.5">

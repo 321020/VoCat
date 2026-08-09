@@ -13,6 +13,27 @@ type contextExecer interface {
 	ExecContext(context.Context, string, ...any) (sql.Result, error)
 }
 
+const (
+	DeviceTypeWiFi410      = "wifi_410"
+	DeviceTypeDJI4G        = "dji_4g"
+	DeviceTypePCIeEC20EC25 = "pcie_ec20_ec25"
+)
+
+// NormalizeDeviceType returns a stable persisted device type identifier.
+// Empty values use the legacy EC20/EC25 type for backwards compatibility.
+func NormalizeDeviceType(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case DeviceTypeWiFi410:
+		return DeviceTypeWiFi410
+	case DeviceTypeDJI4G:
+		return DeviceTypeDJI4G
+	case "", DeviceTypePCIeEC20EC25:
+		return DeviceTypePCIeEC20EC25
+	default:
+		return ""
+	}
+}
+
 func (s *Store) UpsertDevice(ctx context.Context, value Device) error {
 	return upsertDevice(ctx, s.db, value)
 }
@@ -72,6 +93,10 @@ func upsertDevice(ctx context.Context, executor contextExecer, value Device) err
 	}
 	if value.Name == "" {
 		return errors.New("device name is required")
+	}
+	value.DeviceType = NormalizeDeviceType(value.DeviceType)
+	if value.DeviceType == "" {
+		return errors.New("unsupported device type")
 	}
 	if value.ProxyPort < 0 || value.ProxyPort > 65535 {
 		return errors.New("device proxy port must be between 0 and 65535")
@@ -133,15 +158,16 @@ func upsertDevice(ctx context.Context, executor contextExecer, value Device) err
 
 	_, err = executor.ExecContext(ctx, `
 		INSERT INTO devices (
-			id, name, interface, control_device, at_port, usb_path,
+			id, name, device_type, interface, control_device, at_port, usb_path,
 			audio_device, modem_imei, apn, proxy_port, baud_rate,
 			data_bits, stop_bits, parity, device_backend, esim_transport,
 			qmi_use_proxy, qmi_proxy_path, qmi_proxy_executable,
 			network_enabled, sms_enabled, vowifi_enabled, extra_json,
 			created_at, updated_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(id) DO UPDATE SET
 			name = excluded.name,
+			device_type = excluded.device_type,
 			interface = excluded.interface,
 			control_device = excluded.control_device,
 			at_port = excluded.at_port,
@@ -165,7 +191,7 @@ func upsertDevice(ctx context.Context, executor contextExecer, value Device) err
 			extra_json = excluded.extra_json,
 			updated_at = excluded.updated_at
 	`,
-		value.ID, value.Name, value.Interface, value.ControlDevice, value.ATPort,
+		value.ID, value.Name, value.DeviceType, value.Interface, value.ControlDevice, value.ATPort,
 		value.USBPath, value.AudioDevice, value.ModemIMEI, value.APN,
 		value.ProxyPort, value.BaudRate, value.DataBits, value.StopBits,
 		value.Parity, value.DeviceBackend, value.ESIMTransport,
@@ -255,7 +281,7 @@ func (s *Store) DeleteDevice(ctx context.Context, id string) error {
 }
 
 const deviceSelect = `
-	SELECT id, name, interface, control_device, at_port, usb_path,
+	SELECT id, name, device_type, interface, control_device, at_port, usb_path,
 		audio_device, modem_imei, apn, proxy_port, baud_rate, data_bits,
 		stop_bits, parity, device_backend, esim_transport, qmi_use_proxy,
 		qmi_proxy_path, qmi_proxy_executable, network_enabled, sms_enabled,
@@ -268,7 +294,7 @@ func scanDevice(row rowScanner) (Device, error) {
 	var extra string
 	var createdAt, updatedAt int64
 	err := row.Scan(
-		&value.ID, &value.Name, &value.Interface, &value.ControlDevice,
+		&value.ID, &value.Name, &value.DeviceType, &value.Interface, &value.ControlDevice,
 		&value.ATPort, &value.USBPath, &value.AudioDevice, &value.ModemIMEI,
 		&value.APN, &value.ProxyPort, &value.BaudRate, &value.DataBits,
 		&value.StopBits, &value.Parity, &value.DeviceBackend,
@@ -286,6 +312,7 @@ func scanDevice(row rowScanner) (Device, error) {
 	value.NetworkEnabled = networkEnabled != 0
 	value.SMSEnabled = smsEnabled != 0
 	value.VoWiFiEnabled = vowifiEnabled != 0
+	value.DeviceType = NormalizeDeviceType(value.DeviceType)
 	value.Extra = []byte(extra)
 	value.CreatedAt = time.Unix(createdAt, 0).UTC()
 	value.UpdatedAt = time.Unix(updatedAt, 0).UTC()

@@ -45,6 +45,9 @@ RUN mkdir -p /opt/vocat/bin /opt/vocat/data && \
 
 COPY --from=go-builder /out/vocat /opt/vocat/bin/vocat
 
+# Symlink into /usr/local/bin so `docker exec <ctr> vocat ...` finds it via $PATH.
+RUN ln -s /opt/vocat/bin/vocat /usr/local/bin/vocat
+
 USER vocat
 VOLUME ["/opt/vocat/data"]
 EXPOSE 7575

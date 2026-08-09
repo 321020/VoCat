@@ -27,6 +27,7 @@ func TestManagerRefreshBuildsEC20Snapshot(t *testing.T) {
 			),
 		},
 		{command: "AT+COPS?", response: okResponse(`+COPS: 0,0,"China Mobile",7`)},
+		{command: "AT+CEREG?", response: okResponse(`+CEREG: 0,5`)},
 		{command: "AT+CGSN", response: okResponse("867123456789012")},
 		{
 			command:  "AT+CCID",
@@ -66,7 +67,9 @@ func TestManagerRefreshBuildsEC20Snapshot(t *testing.T) {
 		t.Fatalf("signal metrics = %#v", snapshot)
 	}
 	if snapshot.AccessTech != "LTE" || snapshot.Band != "B3" ||
-		snapshot.Channel != "1650" || snapshot.OperatorName != "China Mobile" {
+		snapshot.Channel != "1650" || snapshot.OperatorName != "China Unicom" ||
+		snapshot.OperatorCode != "46001" ||
+		snapshot.RegistrationStatus != 5 || snapshot.RegistrationSource != "CEREG" {
 		t.Fatalf("network = %#v", snapshot)
 	}
 	if snapshot.IMEI != "867123456789012" ||

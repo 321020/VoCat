@@ -14,6 +14,7 @@ type ScannedOperator struct {
 	Name    string `json:"name"`
 	Short   string `json:"shortName,omitempty"`
 	Numeric string `json:"numeric"`
+	Country string `json:"countryCode,omitempty"`
 	Act     string `json:"act,omitempty"`
 }
 
@@ -75,11 +76,19 @@ func parseOperatorScan(response modem.Response) []ScannedOperator {
 			if len(fields) < 4 {
 				continue
 			}
+			name, country, _ := CarrierForPLMN(fields[3])
+			if name == "" {
+				name = strings.TrimSpace(fields[1])
+			}
+			if name == "" {
+				name = strings.TrimSpace(fields[3])
+			}
 			operator := ScannedOperator{
 				Status:  operatorScanStatus(fields[0]),
-				Name:    fields[1],
+				Name:    name,
 				Short:   fields[2],
 				Numeric: fields[3],
+				Country: country,
 			}
 			if len(fields) >= 5 {
 				operator.Act = accessTechnology(fields[4])
@@ -88,6 +97,20 @@ func parseOperatorScan(response modem.Response) []ScannedOperator {
 		}
 	}
 	return operators
+}
+
+// carrierNameForPLMN resolves the numeric serving PLMN through the bundled
+// global carrier database. Some EC20 firmware returns an empty, localized, or
+// stale long name even though the MCC/MNC is correct. The numeric identity is
+// the authoritative value used for network selection.
+func carrierNameForPLMN(plmn, fallback string) string {
+	if name, _, ok := CarrierForPLMN(plmn); ok {
+		return name
+	}
+	if fallback = strings.TrimSpace(fallback); fallback != "" {
+		return fallback
+	}
+	return strings.TrimSpace(plmn)
 }
 
 // extractScanTuples returns the contents of each top-level parenthesised group,

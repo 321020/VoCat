@@ -186,6 +186,41 @@ func TestStateProjectorPreservesConcreteDataplaneMode(t *testing.T) {
 	}
 }
 
+func TestStateProjectorDoesNotAttachOldSessionNumberToNewLiveSIM(t *testing.T) {
+	database := testStore(t)
+	if err := database.UpsertDevice(context.Background(), store.Device{ID: "ec20", Name: "EC20"}); err != nil {
+		t.Fatal(err)
+	}
+	projector := StateProjector{
+		Store: database,
+		Devices: staticDeviceReader{
+			iccid: "89104100000028106378",
+			imsi:  "310380500712483",
+		},
+	}
+	if err := projector.Save(context.Background(), vowifi.State{
+		DeviceID:          "ec20",
+		ICCID:             "89441000400128014257",
+		IMSI:              "234159608751160",
+		Phase:             vowifi.PhaseStopping,
+		PhoneNumber:       "+447386083638",
+		PhoneNumberSource: vowifi.PhoneSourcePAssociatedURI,
+		UpdatedAt:         time.Now().UTC(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	runtime, err := database.VoWiFiRuntime(context.Background(), "ec20")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if runtime.ICCID != "89441000400128014257" || runtime.IMSI != "234159608751160" {
+		t.Fatalf("runtime identity = %q/%q", runtime.ICCID, runtime.IMSI)
+	}
+	if runtime.LocalPhone != "+447386083638" {
+		t.Fatalf("runtime phone = %q", runtime.LocalPhone)
+	}
+}
+
 type staticDeviceReader struct {
 	iccid string
 	imsi  string

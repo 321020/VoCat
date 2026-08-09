@@ -23,7 +23,7 @@ func (manager *Manager) SetNetwork(
 		return NetworkResult{}, err
 	}
 	apn := strings.TrimSpace(request.APN)
-	if request.Enabled && !apnPattern.MatchString(apn) {
+	if request.Enabled && apn != "" && !apnPattern.MatchString(apn) {
 		return NetworkResult{}, ErrInvalidNetworkAPN
 	}
 	ipVersion := normalizeIPVersion(request.IPVersion)
@@ -225,7 +225,7 @@ func (manager *Manager) SetOperatorSelection(
 	accessTechnologyValue *int,
 ) (OperatorSelection, error) {
 	result := OperatorSelection{Mode: 0}
-	command := "AT+COPS=0"
+	command := ""
 	if !automatic {
 		plmn = strings.TrimSpace(plmn)
 		if len(plmn) < 5 || len(plmn) > 6 || strings.IndexFunc(plmn, func(r rune) bool { return r < '0' || r > '9' }) >= 0 {
@@ -265,28 +265,187 @@ func (manager *Manager) SetOperatorSelection(
 	// the lock is not aborted while registration is still in progress.
 	lockCtx, cancel := manager.withTimeout(ctx, manager.scanTimeout)
 	defer cancel()
-	if _, err := client.Execute(lockCtx, command); err != nil {
-		manager.setResult(id, state, nil, errors.New("operator selection command failed"))
+	if automatic {
+		result, err = restoreAutomaticOperatorSelection(lockCtx, client)
+		manager.setResult(id, state, nil, err)
+		return result, err
+	}
+	response, err := client.Execute(lockCtx, command)
+	if err != nil || !response.OK() {
+		if err == nil {
+			err = &modem.CommandError{Command: response.Command, Final: response.Final, Lines: response.Lines}
+		}
+		rollbackOperatorSelection(manager, client)
+		wrapped := fmt.Errorf("manual operator selection failed and automatic selection was restored: %w", err)
+		manager.setResult(id, state, nil, wrapped)
+		return OperatorSelection{}, wrapped
+	}
+	actual, err := queryOperatorSelection(lockCtx, client)
+	if err != nil {
+		rollbackOperatorSelection(manager, client)
+		manager.setResult(id, state, nil, err)
+		return OperatorSelection{}, fmt.Errorf("verify manual operator selection: %w", err)
+	}
+	if actual.Mode != 1 || actual.Operator != plmn {
+		rollbackOperatorSelection(manager, client)
+		err := fmt.Errorf("network %s did not accept registration; automatic selection was restored (modem reported mode=%d operator=%q)", plmn, actual.Mode, actual.Operator)
+		manager.setResult(id, state, nil, err)
 		return OperatorSelection{}, err
 	}
-	if !automatic {
-		response, err := client.Execute(lockCtx, "AT+COPS?")
-		if err != nil {
-			manager.setResult(id, state, nil, err)
-			return OperatorSelection{}, fmt.Errorf("verify manual operator selection: %w", err)
-		}
-		actual, err := parseOperatorSelection(response)
-		if err != nil {
-			manager.setResult(id, state, nil, err)
-			return OperatorSelection{}, err
-		}
-		if actual.Mode != 1 || actual.Operator != plmn {
-			err := fmt.Errorf("network %s did not accept registration; modem reports mode=%d operator=%q", plmn, actual.Mode, actual.Operator)
-			manager.setResult(id, state, nil, err)
-			return OperatorSelection{}, err
-		}
-		result = actual
-	}
+	result = actual
 	manager.setResult(id, state, nil, nil)
 	return result, nil
+}
+
+func queryOperatorSelection(ctx context.Context, client modem.Client) (OperatorSelection, error) {
+	response, err := client.Execute(ctx, "AT+COPS?")
+	if err != nil {
+		return OperatorSelection{}, err
+	}
+	if !response.OK() {
+		return OperatorSelection{}, &modem.CommandError{Command: response.Command, Final: response.Final, Lines: response.Lines}
+	}
+	return parseOperatorSelection(response)
+}
+
+// restoreAutomaticOperatorSelection clears both a manual PLMN latch and an
+// old RAT-only scan restriction. The latter is important on EC20 modules:
+// COPS=0 alone can remain effectively LTE-only after an earlier lock, unlike a
+// phone's normal automatic GSM/WCDMA/LTE acquisition policy.
+func restoreAutomaticOperatorSelection(ctx context.Context, client modem.Client) (OperatorSelection, error) {
+	// Older firmware may not implement nwscanmode; COPS auto is still useful in
+	// that case, so this compatibility reset is best effort.
+	_, _ = client.Execute(ctx, `AT+QCFG="nwscanmode",0,1`)
+	_, _ = client.Execute(ctx, "AT+COPS=2")
+	response, err := client.Execute(ctx, "AT+COPS=0")
+	if err != nil {
+		return OperatorSelection{}, err
+	}
+	if !response.OK() {
+		return OperatorSelection{}, &modem.CommandError{Command: response.Command, Final: response.Final, Lines: response.Lines}
+	}
+	actual, err := queryOperatorSelection(ctx, client)
+	if err != nil {
+		return OperatorSelection{}, fmt.Errorf("verify automatic operator selection: %w", err)
+	}
+	if actual.Mode != 0 {
+		return OperatorSelection{}, fmt.Errorf("modem did not enter automatic operator selection (mode=%d operator=%q)", actual.Mode, actual.Operator)
+	}
+	return actual, nil
+}
+
+func rollbackOperatorSelection(manager *Manager, client modem.Client) {
+	rollbackCtx, cancel := context.WithTimeout(context.Background(), manager.longTimeout)
+	defer cancel()
+	_, _ = restoreAutomaticOperatorSelection(rollbackCtx, client)
+}
+
+// ReRegisterOperator detaches from the network and reapplies the modem's
+// current automatic/manual selection. This is intentionally different from a
+// passive refresh: it forces a new registration attempt without changing the
+// user's lock policy.
+func (manager *Manager) ReRegisterOperator(ctx context.Context, id string) (OperatorSelection, error) {
+	state, err := manager.lookup(id)
+	if err != nil {
+		return OperatorSelection{}, err
+	}
+	state.opMu.Lock()
+	defer state.opMu.Unlock()
+	if err := manager.validateActive(id, state); err != nil {
+		return OperatorSelection{}, err
+	}
+	client, err := manager.clientLocked(ctx, state, manager.candidateFor(state))
+	if err != nil {
+		manager.setResult(id, state, nil, err)
+		return OperatorSelection{}, err
+	}
+	longCtx, cancel := manager.withTimeout(ctx, manager.scanTimeout)
+	defer cancel()
+
+	current, err := queryOperatorSelection(longCtx, client)
+	if err != nil {
+		manager.setResult(id, state, nil, err)
+		return OperatorSelection{}, err
+	}
+	manual := current.Mode == 1 || current.Mode == 4
+	if manual && !decimalPLMN(current.Operator) {
+		response, formatErr := client.Execute(longCtx, "AT+COPS=3,2")
+		if formatErr != nil || !response.OK() {
+			if formatErr == nil {
+				formatErr = &modem.CommandError{Command: response.Command, Final: response.Final, Lines: response.Lines}
+			}
+			manager.setResult(id, state, nil, formatErr)
+			return OperatorSelection{}, formatErr
+		}
+		current, err = queryOperatorSelection(longCtx, client)
+		if err != nil {
+			manager.setResult(id, state, nil, err)
+			return OperatorSelection{}, err
+		}
+		manual = current.Mode == 1 || current.Mode == 4
+	}
+
+	if !manual {
+		result, restoreErr := restoreAutomaticOperatorSelection(longCtx, client)
+		manager.setResult(id, state, nil, restoreErr)
+		return result, restoreErr
+	}
+	desired := ""
+	if manual {
+		if !decimalPLMN(current.Operator) {
+			return OperatorSelection{}, errors.New("current manual operator is not available as a numeric PLMN")
+		}
+		desired = fmt.Sprintf(`AT+COPS=1,2,"%s"`, current.Operator)
+		if code, ok := accessTechnologyCode(current.AccessTechnology); ok {
+			desired += fmt.Sprintf(",%d", code)
+		}
+	}
+	for _, command := range []string{"AT+COPS=2", desired} {
+		response, executeErr := client.Execute(longCtx, command)
+		if executeErr != nil {
+			manager.setResult(id, state, nil, executeErr)
+			return OperatorSelection{}, executeErr
+		}
+		if !response.OK() {
+			executeErr = &modem.CommandError{Command: response.Command, Final: response.Final, Lines: response.Lines}
+			manager.setResult(id, state, nil, executeErr)
+			return OperatorSelection{}, executeErr
+		}
+	}
+	result, err := queryOperatorSelection(longCtx, client)
+	manager.setResult(id, state, nil, err)
+	if err != nil {
+		return OperatorSelection{}, err
+	}
+	return result, nil
+}
+
+func decimalPLMN(value string) bool {
+	value = strings.TrimSpace(value)
+	return (len(value) == 5 || len(value) == 6) && strings.IndexFunc(value, func(r rune) bool {
+		return r < '0' || r > '9'
+	}) < 0
+}
+
+func accessTechnologyCode(name string) (int, bool) {
+	switch strings.ToUpper(strings.TrimSpace(name)) {
+	case "GSM":
+		return 0, true
+	case "UTRAN":
+		return 2, true
+	case "EDGE":
+		return 3, true
+	case "HSDPA":
+		return 4, true
+	case "HSUPA":
+		return 5, true
+	case "HSPA":
+		return 6, true
+	case "LTE":
+		return 7, true
+	case "NR5G":
+		return 9, true
+	default:
+		return 0, false
+	}
 }

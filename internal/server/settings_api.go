@@ -21,6 +21,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"vocat/internal/store"
@@ -932,18 +933,77 @@ func dialRestricted(
 	if err != nil {
 		return nil, err
 	}
-	dialer := net.Dialer{Timeout: clampNotificationTimeout(timeout)}
-	var failures []error
-	for _, ip := range addresses {
-		connection, err := dialer.DialContext(
-			ctx,
-			network,
-			net.JoinHostPort(ip.String(), port),
-		)
-		if err == nil {
-			return connection, nil
+	perAddress := clampNotificationTimeout(timeout)
+	stagger := 300 * time.Millisecond
+	if perAddress < stagger {
+		stagger = perAddress / 2
+	}
+
+	raceContext, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	type attempt struct {
+		conn net.Conn
+		err  error
+	}
+	resultCh := make(chan attempt, len(addresses))
+	var wg sync.WaitGroup
+
+	launcher := time.NewTicker(stagger)
+	defer launcher.Stop()
+	for index, ip := range addresses {
+		if index > 0 {
+			select {
+			case <-raceContext.Done():
+				break
+			case <-launcher.C:
+			}
 		}
-		failures = append(failures, err)
+		if raceContext.Err() != nil {
+			break
+		}
+		ip := ip
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			dialer := net.Dialer{Timeout: perAddress}
+			connection, dialErr := dialer.DialContext(
+				raceContext,
+				network,
+				net.JoinHostPort(ip.String(), port),
+			)
+			if dialErr != nil {
+				resultCh <- attempt{err: dialErr}
+				return
+			}
+			if raceContext.Err() != nil {
+				connection.Close()
+				resultCh <- attempt{err: raceContext.Err()}
+				return
+			}
+			resultCh <- attempt{conn: connection}
+		}()
+	}
+	go func() {
+		wg.Wait()
+		close(resultCh)
+	}()
+
+	var failures []error
+	for result := range resultCh {
+		if result.conn != nil {
+			cancel()
+			return result.conn, nil
+		}
+		if result.err != nil && !errors.Is(result.err, context.Canceled) {
+			failures = append(failures, result.err)
+		}
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+	}
+	if len(failures) == 0 {
+		return nil, ctx.Err()
 	}
 	return nil, fmt.Errorf("dial public notification destination: %w", errors.Join(failures...))
 }
@@ -1257,6 +1317,10 @@ func cardPolicyResponse(policy store.CardPolicy) map[string]any {
 
 func (s *Server) handleTrafficAnalysis(w http.ResponseWriter, r *http.Request) {
 	if !requireMethod(w, r, http.MethodGet) {
+		return
+	}
+	if !s.developerActive(r.Context()) {
+		writeError(w, http.StatusForbidden, "developer_mode_required", "traffic analysis is available only in developer mode")
 		return
 	}
 	rangeName := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("range")))

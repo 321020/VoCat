@@ -1,0 +1,60 @@
+# VoCat Docker Compose deployment.
+#
+# First-time setup:
+#   cp .env.example .env        # then edit VOCAT_ADMIN_PASSWORD
+#   docker compose pull         # fetch the prebuilt GHCR image
+#   docker compose up -d        # start
+#
+# Build locally from this repo instead of using the GHCR image:
+#   docker compose up -d --build
+#
+# In-container binary self-update is intentionally disabled (VOCAT_CONTAINER=docker
+# makes the server return 409 on the apply endpoint). Update by pulling a new
+# image and recreating the container:
+#   docker compose pull && docker compose up -d
+
+services:
+  vocat:
+    # Use the prebuilt multi-arch image from GHCR. Override with
+    # --build to compile from the local Dockerfile instead.
+    image: ghcr.io/mengmengcode/vocat:latest
+    pull_policy: missing
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: vocat
+    restart: unless-stopped
+
+    # Host network mode: the export-proxy plugin uses SO_BINDTODEVICE to pin
+    # outbound proxy traffic to the modem interface (wwan0) so roaming data
+    # egresses only the module — never the host's default route. That syscall
+    # needs the host network namespace visible inside the container, which
+    # network_mode: host provides directly. Port publishing is therefore
+    # meaningless (the container shares the host stack and vocat binds
+    # 0.0.0.0:7575 itself); proxy ports opened by the plugin are likewise
+    # reachable on the host IP without explicit mapping.
+    network_mode: host
+
+    # VoWiFi / eSIM / IMS paths need raw sockets (IPsec, netlink). The systemd
+    # unit grants CAP_NET_ADMIN + CAP_NET_RAW; mirror that here.
+    cap_add:
+      - NET_ADMIN
+      - NET_RAW
+
+    environment:
+      # Marks the process as containerized: the web UI then advertises
+      # "pull new image" instead of attempting an in-place binary update.
+      VOCAT_CONTAINER: docker
+      # VOCAT_ADDR / VOCAT_DATABASE_PATH are set in the Dockerfile; override
+      # only if you want non-default values. Sensitive values come from .env.
+      VOCAT_ADMIN_PASSWORD: ${VOCAT_ADMIN_PASSWORD:?set VOCAT_ADMIN_PASSWORD in .env}
+
+    volumes:
+      # SQLite database + persistent state. Named volume (not a bind mount)
+      # because the container runs as uid 1000 (vocat) while a bind-mounted
+      # host dir would be root-owned and unwritable. Docker gives the named
+      # volume the image's uid 1000 ownership automatically.
+      - vocat-data:/opt/vocat/data
+
+volumes:
+  vocat-data:

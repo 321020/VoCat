@@ -124,6 +124,26 @@ export function OperatorSelectionDialog({ open, deviceId, scanBlockedReason = ""
     }
   }
 
+  async function reRegister() {
+	const controller = new AbortController();
+	registerAbortRef.current = controller;
+	setRegistering(t("正在按当前选网配置重新驻网，请稍候..."));
+	setBusy(true);
+	try {
+	  await api(`/devices/${deviceId}/operator_selection/reregister`, { method: "POST", signal: controller.signal });
+	  message.success(t("已重新发起驻网"));
+	  onUpdated();
+	  await loadCurrent();
+	} catch (e) {
+	  if (controller.signal.aborted) message.info(t("已取消"));
+	  else message.error(apiMessage(e) || t("重新驻网失败"));
+	} finally {
+	  setRegistering(null);
+	  registerAbortRef.current = null;
+	  setBusy(false);
+	}
+  }
+
   async function lock(c: OperatorCandidate) {
     const controller = new AbortController();
     registerAbortRef.current = controller;
@@ -203,9 +223,12 @@ export function OperatorSelectionDialog({ open, deviceId, scanBlockedReason = ""
             </div>
           ) : null}
         </div>
-        <div className="mb-4 flex gap-3">
+        <div className="mb-4 grid grid-cols-1 gap-3 sm:grid-cols-3">
           <Button variant="primary" plain onClick={startStream} loading={scanning} disabled={busy || !!scanBlockedReason} className="flex-1">
             {scanning ? t("扫描中...") : t("扫描可用网络")}
+          </Button>
+          <Button onClick={reRegister} disabled={busy} className="flex-1">
+            {t("重新驻网")}
           </Button>
           <Button onClick={restoreAuto} disabled={busy || current?.mode === "automatic"} className="flex-1">
             {t("恢复自动选网")}
@@ -239,7 +262,7 @@ export function OperatorSelectionDialog({ open, deviceId, scanBlockedReason = ""
           </div>
         ) : null}
         {candidates.length > 0 ? (
-          <div className={cx("max-h-[300px] divide-y divide-gray-200 overflow-y-auto rounded-lg border border-gray-200 dark:divide-white/10 dark:border-white/10", (!!registering || busy) && "pointer-events-none opacity-60")}>
+          <div className={cx("max-h-[min(55vh,440px)] divide-y divide-gray-200 overflow-y-auto rounded-lg border border-gray-200 dark:divide-white/10 dark:border-white/10", (!!registering || busy) && "pointer-events-none opacity-60")}>
             {candidates.map((c) => (
               <CandidateRow key={`${c.plmn}-${ratsText(c)}`} candidate={c} onLock={lock} />
             ))}

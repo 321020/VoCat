@@ -74,7 +74,10 @@ func TestOperatorSelectionManualAndAutomatic(t *testing.T) {
 	client := &transcriptClient{steps: []clientStep{
 		{command: `AT+COPS=1,2,"46000",7`, response: okResponse()},
 		{command: "AT+COPS?", response: okResponse(`+COPS: 1,2,"46000",7`)},
+		{command: `AT+QCFG="nwscanmode",0,1`, response: okResponse()},
+		{command: "AT+COPS=2", response: okResponse()},
 		{command: "AT+COPS=0", response: okResponse()},
+		{command: "AT+COPS?", response: okResponse(`+COPS: 0,2,"46001",7`)},
 	}}
 	manager, id := newStartedTestManager(t, client)
 	act := 7
@@ -89,7 +92,7 @@ func TestOperatorSelectionManualAndAutomatic(t *testing.T) {
 	if err != nil {
 		t.Fatalf("automatic selection: %v", err)
 	}
-	if selection.Mode != 0 || selection.Operator != "" {
+	if selection.Mode != 0 || selection.Operator != "46001" {
 		t.Fatalf("automatic selection = %#v", selection)
 	}
 	client.assertDone(t)
@@ -99,11 +102,89 @@ func TestOperatorSelectionRejectsAutomaticFallbackAsSuccess(t *testing.T) {
 	client := &transcriptClient{steps: []clientStep{
 		{command: `AT+COPS=1,2,"46000",7`, response: okResponse()},
 		{command: "AT+COPS?", response: okResponse("+COPS: 0")},
+		{command: `AT+QCFG="nwscanmode",0,1`, response: okResponse()},
+		{command: "AT+COPS=2", response: okResponse()},
+		{command: "AT+COPS=0", response: okResponse()},
+		{command: "AT+COPS?", response: okResponse(`+COPS: 0,2,"46001",7`)},
 	}}
 	manager, id := newStartedTestManager(t, client)
 	act := 7
 	if _, err := manager.SetOperatorSelection(context.Background(), id, false, "46000", &act); err == nil {
 		t.Fatal("manual selection must fail when readback returned automatic mode")
+	}
+	client.assertDone(t)
+}
+
+func TestOperatorSelectionCommandFailureRestoresAutomaticMode(t *testing.T) {
+	selectionErr := errors.New("+CME ERROR: 30")
+	client := &transcriptClient{steps: []clientStep{
+		{command: `AT+COPS=1,2,"46000",7`, err: selectionErr},
+		{command: `AT+QCFG="nwscanmode",0,1`, response: okResponse()},
+		{command: "AT+COPS=2", response: okResponse()},
+		{command: "AT+COPS=0", response: okResponse()},
+		{command: "AT+COPS?", response: okResponse(`+COPS: 0,2,"46001",7`)},
+	}}
+	manager, id := newStartedTestManager(t, client)
+	act := 7
+	_, err := manager.SetOperatorSelection(context.Background(), id, false, "46000", &act)
+	if !errors.Is(err, selectionErr) {
+		t.Fatalf("error = %v, want wrapped selection error", err)
+	}
+	client.assertDone(t)
+}
+
+func TestReRegisterOperatorReappliesAutomaticMode(t *testing.T) {
+	client := &transcriptClient{steps: []clientStep{
+		{command: "AT+COPS?", response: okResponse(`+COPS: 0,2,"46001",7`)},
+		{command: `AT+QCFG="nwscanmode",0,1`, response: okResponse()},
+		{command: "AT+COPS=2", response: okResponse()},
+		{command: "AT+COPS=0", response: okResponse()},
+		{command: "AT+COPS?", response: okResponse(`+COPS: 0,2,"46001",7`)},
+	}}
+	manager, id := newStartedTestManager(t, client)
+	selection, err := manager.ReRegisterOperator(context.Background(), id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if selection.Mode != 0 || selection.Operator != "46001" {
+		t.Fatalf("selection = %#v", selection)
+	}
+	client.assertDone(t)
+}
+
+func TestReRegisterOperatorPreservesManualLock(t *testing.T) {
+	client := &transcriptClient{steps: []clientStep{
+		{command: "AT+COPS?", response: okResponse(`+COPS: 1,2,"46003",7`)},
+		{command: "AT+COPS=2", response: okResponse()},
+		{command: `AT+COPS=1,2,"46003",7`, response: okResponse()},
+		{command: "AT+COPS?", response: okResponse(`+COPS: 1,2,"46003",7`)},
+	}}
+	manager, id := newStartedTestManager(t, client)
+	selection, err := manager.ReRegisterOperator(context.Background(), id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if selection.Mode != 1 || selection.Operator != "46003" || selection.AccessTechnology != "LTE" {
+		t.Fatalf("selection = %#v", selection)
+	}
+	client.assertDone(t)
+}
+
+func TestReRegisterOperatorRecoversDeregisteredModeWithAutomaticSelection(t *testing.T) {
+	client := &transcriptClient{steps: []clientStep{
+		{command: "AT+COPS?", response: okResponse(`+COPS: 2`)},
+		{command: `AT+QCFG="nwscanmode",0,1`, response: okResponse()},
+		{command: "AT+COPS=2", response: okResponse()},
+		{command: "AT+COPS=0", response: okResponse()},
+		{command: "AT+COPS?", response: okResponse(`+COPS: 0,2,"46001",7`)},
+	}}
+	manager, id := newStartedTestManager(t, client)
+	selection, err := manager.ReRegisterOperator(context.Background(), id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if selection.Mode != 0 || selection.Operator != "46001" {
+		t.Fatalf("selection = %#v", selection)
 	}
 	client.assertDone(t)
 }

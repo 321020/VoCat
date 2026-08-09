@@ -204,6 +204,8 @@ func (orchestrator *Orchestrator) Enable(ctx context.Context) (State, error) {
 	}
 	orchestrator.mutate(func(state *State) {
 		state.Phase = PhaseSIMReady
+		state.ICCID = strings.TrimSpace(identity.ICCID)
+		state.IMSI = strings.TrimSpace(identity.IMSI)
 		state.SIMReady = true
 		state.HomeMCC = strings.TrimSpace(identity.HomeMCC)
 		state.HomeMNC = strings.TrimSpace(identity.HomeMNC)
@@ -404,6 +406,14 @@ func (orchestrator *Orchestrator) Disable(ctx context.Context) (State, error) {
 	orchestrator.mutate(func(state *State) {
 		state.Phase = PhaseStopping
 		state.Enabled = false
+		// Stop advertising readiness as soon as disable is accepted. Network
+		// cleanup is best-effort and can take several seconds, but callers must
+		// not continue to present the old IMS registration as usable.
+		state.Active = false
+		state.TunnelReady = false
+		state.IMSReady = false
+		state.SMSReady = false
+		state.IMSRegistration = ""
 		state.LastReason = "disable_requested"
 	})
 	if resources != nil && resources.cancel != nil {
@@ -546,6 +556,21 @@ func (orchestrator *Orchestrator) HangupCall(ctx context.Context, id string) err
 	return err
 }
 
+func (orchestrator *Orchestrator) CallMedia(ctx context.Context, id string) (CallMedia, error) {
+	orchestrator.mu.Lock()
+	resources := orchestrator.resources
+	ready := orchestrator.state.IMSReady
+	orchestrator.mu.Unlock()
+	if resources == nil || resources.ims == nil || !ready {
+		return nil, ErrNotRunning
+	}
+	controller, ok := resources.ims.(CallMediaController)
+	if !ok {
+		return nil, ErrNotRunning
+	}
+	return controller.CallMedia(ctx, id)
+}
+
 func (orchestrator *Orchestrator) callAction(
 	ctx context.Context,
 	action func(CallController) (Call, error),
@@ -684,7 +709,17 @@ func (orchestrator *Orchestrator) cleanup(resources *runtimeResources) []string 
 func (orchestrator *Orchestrator) cleanupCall(call func(context.Context) error) error {
 	ctx, cancel := context.WithTimeout(context.Background(), orchestrator.options.CleanupTimeout)
 	defer cancel()
-	return call(ctx)
+	done := make(chan error, 1)
+	go func() { done <- call(ctx) }()
+	select {
+	case err := <-done:
+		return err
+	case <-ctx.Done():
+		// Providers receive the same deadline and should normally return on it.
+		// The outer select is a final containment boundary: a defective network
+		// close must never prevent the following tunnel/radio cleanup.
+		return ctx.Err()
+	}
 }
 
 func (orchestrator *Orchestrator) cancelCurrentRuntime() {

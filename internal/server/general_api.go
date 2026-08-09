@@ -15,6 +15,7 @@ import (
 
 	"vocat/internal/auth"
 	"vocat/internal/buildinfo"
+	"vocat/internal/developer"
 	"vocat/internal/i18n"
 	"vocat/internal/loghub"
 	"vocat/internal/store"
@@ -24,6 +25,9 @@ import (
 func (s *Server) routeGeneralAPI(w http.ResponseWriter, r *http.Request) bool {
 	cleanPath := strings.Trim(strings.TrimPrefix(r.URL.Path, "/api"), "/")
 	if s.routeExtensionAPI(w, r, cleanPath) {
+		return true
+	}
+	if s.routeExportProxyAPI(w, r, cleanPath) {
 		return true
 	}
 	if s.routeSMSAPI(w, r, cleanPath) {
@@ -50,6 +54,12 @@ func (s *Server) routeGeneralAPI(w http.ResponseWriter, r *http.Request) bool {
 		s.handlePasswordChange(w, r)
 	case "settings/preferences":
 		s.handleUIPreferences(w, r)
+	case "settings/https":
+		s.handleHTTPSSettings(w, r)
+	case "settings/https/certificate":
+		s.handleHTTPSCertificate(w, r)
+	case "settings/developer":
+		s.handleDeveloperSettings(w, r)
 	default:
 		return false
 	}
@@ -314,9 +324,13 @@ func (s *Server) handleSystemInfo(w http.ResponseWriter, r *http.Request) {
 			"os":           runtime.GOOS,
 			"architecture": runtime.GOARCH,
 			"uptime":       formatDuration(time.Since(s.startedAt)),
-			"developer":    s.developerEnabled,
+			"developer":    s.developerActive(r.Context()),
 		},
 	})
+}
+
+func (s *Server) developerActive(ctx context.Context) bool {
+	return s.developerEnabled && developer.Enabled(ctx, s.store)
 }
 
 func (s *Server) handleUpdateCheck(w http.ResponseWriter, r *http.Request) {

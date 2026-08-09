@@ -5,6 +5,7 @@ import { FieldRow } from "./FieldRow";
 import { isDeviceOnline, isRegistered, isRecoveringPhase, lifecycleLabel, signalLevel, signalTone } from "./shared";
 import type { DeviceDetail } from "./types";
 import { useI18n } from "../../lib/i18n";
+import { flagEmoji } from "../../lib/carrier";
 
 const BAR_HEIGHTS = ["h-[28%]", "h-[46%]", "h-[64%]", "h-[82%]", "h-full"];
 const TEXT_TONE = {
@@ -25,7 +26,9 @@ export function OverviewNetworkCard({ device, onOpenOperatorSelection }: { devic
   const modem = device.modem;
   const online = isDeviceOnline(device);
 	const cellularRegistered = isRegistered(device);
-	const vowifiRegistered = !!(device.vowifiActive || device.vowifiRuntime?.smsReady);
+	// A persisted runtime may briefly describe the old session while disable is
+	// being cleaned up. Desired policy is authoritative for the overview badge.
+	const vowifiRegistered = !!device.vowifiEnabled && !!(device.vowifiActive || device.vowifiRuntime?.smsReady);
 	const registered = cellularRegistered || vowifiRegistered;
 	const radioOffForVowifi = vowifiRegistered && (modem?.operatingMode === 0 || modem?.operatingMode === 4 || device.flightMode);
 	const tone = isRecoveringPhase(device.lifecyclePhase) ? "warning" : online ? (registered ? "success" : "warning") : "danger";
@@ -45,7 +48,16 @@ export function OverviewNetworkCard({ device, onOpenOperatorSelection }: { devic
 
   const level = signalLevel(modem?.signalDbm);
   const sigTone = signalTone(modem?.signalDbm);
-  const netMode = [modem?.networkDuplex, modem?.networkMode].filter(Boolean).join(" ");
+	const netMode = [modem?.networkDuplex, modem?.networkMode].filter(Boolean).join(" ");
+	const cellularRegistrationText = modem?.regStatus === 5
+	  ? t("已驻网（漫游）")
+	  : modem?.regStatus === 1
+		? t("已驻网")
+		: device.registrationStateLabel === "searching"
+		  ? t("正在搜索网络")
+		  : device.registrationStateLabel === "denied"
+			? t("驻网被拒")
+			: t("未驻网");
 
   return (
     <>
@@ -71,7 +83,7 @@ export function OverviewNetworkCard({ device, onOpenOperatorSelection }: { devic
 			  <>{t("WiFi Calling 已注册")}</>
 			) : registered ? (
               <>
-                {modem?.operator || "--"}{" "}
+                {modem?.operatorCountryCode ? `${flagEmoji(modem.operatorCountryCode)} ` : ""}{modem?.operator || "--"}{" "}
                 {modem?.networkMode ? <span className="opacity-70">· {netMode}</span> : null}
               </>
             ) : (
@@ -116,7 +128,7 @@ export function OverviewNetworkCard({ device, onOpenOperatorSelection }: { devic
         <FieldRow label={t("网络模式")} value={netMode || "--"} monospace />
         <FieldRow label={t("频段")} value={modem?.radioBand || "--"} monospace />
         <FieldRow label={t("信道")} value={modem?.radioChannel ? String(modem.radioChannel) : "--"} monospace />
-		<FieldRow label={t("注册状态")} value={vowifiRegistered ? t("WiFi Calling 已注册") : (modem?.regStatusText || "--")} monospace />
+		<FieldRow label={t("注册状态")} value={vowifiRegistered ? t("WiFi Calling 已注册") : cellularRegistrationText} monospace />
       </div>
     </>
   );

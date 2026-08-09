@@ -34,6 +34,7 @@ type imsCall struct {
 	remoteTag  string
 	routes     []string
 	terminated bool
+	media      *rtpMedia
 }
 
 func (session *Session) Calls() []vowifi.Call {
@@ -73,7 +74,11 @@ func (session *Session) DialCall(ctx context.Context, number string) (vowifi.Cal
 	routes := append([]string(nil), session.evidence.ServiceRoute...)
 	securityHeaders := runtimeSecurityHeaders(session.securityActive, session.securityAgreement.verifyValue)
 	session.mu.Unlock()
-	body := session.inactiveSDP()
+	media, err := newRTPMedia(session.localMediaIP())
+	if err != nil {
+		return vowifi.Call{}, err
+	}
+	body := media.offerSDP(session.localMediaIP())
 	transportUpper := strings.ToUpper(session.transport)
 	from := "<" + session.identity.public + ">;tag=" + session.fromTag
 	to := "<" + target + ">"
@@ -108,6 +113,7 @@ func (session *Session) DialCall(ctx context.Context, number string) (vowifi.Cal
 	session.transactionsMu.Lock()
 	if _, duplicate := session.transactions[key]; duplicate {
 		session.transactionsMu.Unlock()
+		_ = media.Close()
 		return vowifi.Call{}, errors.New("ims: duplicate call transaction")
 	}
 	session.transactions[key] = responses
@@ -115,7 +121,7 @@ func (session *Session) DialCall(ctx context.Context, number string) (vowifi.Cal
 	call := &imsCall{
 		public: vowifi.Call{ID: callID, Number: number, Direction: "outgoing", State: "dialing", StartedAt: time.Now().UTC()},
 		callID: callID, target: target, from: from, to: to, branch: branch, cseq: cseq, responses: responses,
-		routes: routes,
+		routes: routes, media: media,
 	}
 	session.callMu.Lock()
 	session.calls[callID] = call
@@ -124,6 +130,7 @@ func (session *Session) DialCall(ctx context.Context, number string) (vowifi.Cal
 	_, err = session.conn.Write(request)
 	session.writeMu.Unlock()
 	if err != nil {
+		_ = media.Close()
 		session.transactionsMu.Lock()
 		delete(session.transactions, key)
 		session.transactionsMu.Unlock()
@@ -173,7 +180,18 @@ func (session *Session) watchOutgoingCall(call *imsCall, key sipTransactionKey) 
 					call.routes = reverseStrings(recordRoutes)
 				}
 				session.callMu.Unlock()
+				mediaErr := call.media.configureRemote(response.Body)
 				_ = session.sendACK(call)
+				if mediaErr != nil {
+					session.finishCall(call.callID, "failed", response.StatusCode, mediaErr.Error())
+					go func() {
+						ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+						defer cancel()
+						_ = session.sendDialogRequest(ctx, call, "BYE")
+					}()
+					return
+				}
+				session.setCallMediaReady(call.callID)
 				session.setCallState(call.callID, "active")
 			} else {
 				session.finishCall(call.callID, "failed", response.StatusCode, response.Reason)
@@ -196,7 +214,7 @@ func (session *Session) AnswerCall(_ context.Context, id string) (vowifi.Call, e
 	}
 	request, respond := call.invite, call.respond
 	session.callMu.Unlock()
-	response, err := buildSIPResponseWithBody(request, 200, session.fromTag, session.inactiveSDP())
+	response, err := buildSIPResponseWithBody(request, 200, session.fromTag, call.media.answerSDP(session.localMediaIP()))
 	if err != nil {
 		return vowifi.Call{}, err
 	}
@@ -204,6 +222,9 @@ func (session *Session) AnswerCall(_ context.Context, id string) (vowifi.Call, e
 		return vowifi.Call{}, err
 	}
 	session.setCallState(id, "active")
+	if call.media.ready() {
+		session.setCallMediaReady(id)
+	}
 	session.callMu.Lock()
 	result := call.public
 	session.callMu.Unlock()
@@ -255,10 +276,26 @@ func (session *Session) handleCallRequest(request *sipRequest, respond func([]by
 		if target == "" {
 			target = request.URI
 		}
+		media, err := newRTPMedia(session.localMediaIP())
+		if err != nil {
+			if response, buildErr := buildSIPResponseWithBody(request, 488, session.fromTag, nil); buildErr == nil {
+				_ = respond(response)
+			}
+			return true
+		}
+		if len(request.Body) > 0 {
+			if err := media.configureRemote(request.Body); err != nil {
+				_ = media.Close()
+				if response, buildErr := buildSIPResponseWithBody(request, 488, session.fromTag, nil); buildErr == nil {
+					_ = respond(response)
+				}
+				return true
+			}
+		}
 		call := &imsCall{
 			public: vowifi.Call{ID: callID, Number: number, Direction: "incoming", State: "ringing", StartedAt: time.Now().UTC()},
 			callID: callID, target: target, from: request.value("To") + ";tag=" + session.fromTag,
-			to: request.value("From"), invite: request, respond: respond, routes: request.values("Record-Route"),
+			to: request.value("From"), invite: request, respond: respond, routes: request.values("Record-Route"), media: media,
 		}
 		session.callMu.Lock()
 		session.calls[callID] = call
@@ -269,6 +306,17 @@ func (session *Session) handleCallRequest(request *sipRequest, respond func([]by
 		}
 		return true
 	case "ACK":
+		callID := strings.TrimSpace(request.value("Call-ID"))
+		session.callMu.Lock()
+		call := session.calls[callID]
+		session.callMu.Unlock()
+		if call != nil && call.media != nil && !call.media.ready() && len(request.Body) > 0 {
+			if err := call.media.configureRemote(request.Body); err != nil {
+				session.finishCall(callID, "failed", 0, err.Error())
+			} else {
+				session.setCallMediaReady(callID)
+			}
+		}
 		return true
 	case "CANCEL", "BYE":
 		response, err := buildSIPResponseWithBody(request, 200, session.fromTag, nil)
@@ -353,25 +401,16 @@ func (session *Session) buildDialogRequest(call *imsCall, method string, cseq ui
 	return []byte(strings.Join(lines, "\r\n"))
 }
 
-func (session *Session) inactiveSDP() []byte {
+func (session *Session) localMediaIP() net.IP {
 	var localAddress net.Addr
 	if session.conn != nil {
 		localAddress = session.conn.LocalAddr()
 	}
-	local := addressIP(localAddress)
-	if local == nil {
-		local = net.IPv4zero
-	}
-	family := "IP4"
-	if local.To4() == nil {
-		family = "IP6"
-	}
-	text := fmt.Sprintf("v=0\r\no=- %d %d IN %s %s\r\ns=VoCat Calling Test\r\nc=IN %s %s\r\nt=0 0\r\nm=audio 9 RTP/AVP 0 8\r\na=inactive\r\n", time.Now().Unix(), time.Now().Unix(), family, local.String(), family, local.String())
-	return []byte(text)
+	return addressIP(localAddress)
 }
 
 func buildSIPResponseWithBody(request *sipRequest, status int, tag string, body []byte) ([]byte, error) {
-	reasons := map[int]string{180: "Ringing", 200: "OK", 486: "Busy Here", 487: "Request Terminated"}
+	reasons := map[int]string{180: "Ringing", 200: "OK", 486: "Busy Here", 487: "Request Terminated", 488: "Not Acceptable Here"}
 	reason := reasons[status]
 	if reason == "" {
 		return nil, errors.New("ims: unsupported call response status")
@@ -417,10 +456,34 @@ func (session *Session) setCallDiagnostic(id string, code int, reason string) {
 	session.callMu.Unlock()
 }
 
+func (session *Session) setCallMediaReady(id string) {
+	session.callMu.Lock()
+	if call := session.calls[id]; call != nil && call.media != nil {
+		call.public.MediaReady = call.media.ready()
+		call.public.Codec = call.media.Codec()
+	}
+	session.callMu.Unlock()
+}
+
+func (session *Session) CallMedia(_ context.Context, id string) (vowifi.CallMedia, error) {
+	session.callMu.Lock()
+	defer session.callMu.Unlock()
+	call := session.calls[id]
+	if call == nil {
+		return nil, ErrCallNotFound
+	}
+	if call.public.State != "active" || call.media == nil || !call.media.ready() {
+		return nil, ErrCallState
+	}
+	return call.media, nil
+}
+
 func (session *Session) finishCall(id, state string, code int, reason string) {
 	now := time.Now().UTC()
+	var media *rtpMedia
 	session.callMu.Lock()
 	if call := session.calls[id]; call != nil {
+		media = call.media
 		call.public.State = state
 		if code != 0 {
 			call.public.SIPCode = code
@@ -431,6 +494,9 @@ func (session *Session) finishCall(id, state string, code int, reason string) {
 		call.public.EndedAt = &now
 	}
 	session.callMu.Unlock()
+	if media != nil {
+		_ = media.Close()
+	}
 }
 
 func validCallNumber(value string) bool {
@@ -500,3 +566,4 @@ func reverseStrings(values []string) []string {
 }
 
 var _ vowifi.CallController = (*Session)(nil)
+var _ vowifi.CallMediaController = (*Session)(nil)

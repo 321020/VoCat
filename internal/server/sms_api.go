@@ -581,6 +581,15 @@ func (s *Server) syncModemSMS(ctx context.Context, onlyDevice string) {
 				message.Index,
 				hex.EncodeToString(digest[:8]),
 			)
+			if message.Concat != nil && message.Concat.Total > 1 {
+				// A segment of a carrier-split long SMS. Address the whole message
+				// with a stable id so SaveSMSMessage folds every segment into one
+				// progressively merged row instead of one row per segment.
+				messageID = store.StableConcatMessageID(
+					"cellular_at", modemIMEI, config.ID, peer,
+					message.Concat.Reference, message.Concat.Total,
+				)
+			}
 			extra, _ := json.Marshal(map[string]any{
 				"modem_index":        message.Index,
 				"storage":            message.Storage,

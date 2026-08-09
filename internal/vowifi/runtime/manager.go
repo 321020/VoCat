@@ -320,6 +320,19 @@ func (manager *Manager) HangupCall(ctx context.Context, deviceID, id string) err
 	return item.orchestrator.HangupCall(ctx, id)
 }
 
+func (manager *Manager) CallMedia(ctx context.Context, deviceID, id string) (vowifi.CallMedia, error) {
+	if err := manager.Ensure(ctx, deviceID); err != nil {
+		return nil, err
+	}
+	manager.mu.Lock()
+	item := manager.entries[deviceID]
+	manager.mu.Unlock()
+	if item == nil {
+		return nil, ErrNotRegistered
+	}
+	return item.orchestrator.CallMedia(ctx, id)
+}
+
 func (manager *Manager) startOperation(
 	deviceID string,
 	coalesceReconnect bool,

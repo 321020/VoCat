@@ -106,6 +106,11 @@ func migrationStatements(version int) []string {
 			`CREATE INDEX IF NOT EXISTS sms_messages_hardware_thread_idx
 				ON sms_messages(modem_imei, imsi, peer, message_time DESC, id DESC)`,
 		}
+	case 8:
+		return []string{
+			`ALTER TABLE devices
+				ADD COLUMN device_type TEXT NOT NULL DEFAULT 'pcie_ec20_ec25'`,
+		}
 	default:
 		return nil
 	}

@@ -50,8 +50,10 @@ func (manager *Manager) readSnapshot(
 	if response, ok := optional("AT+CSQ"); ok {
 		snapshot.SignalRaw, snapshot.SignalPercent, snapshot.RSSIDBm = parseCSQ(response)
 	}
+	servingPLMN := ""
 	if response, ok := optional(`AT+QENG="servingcell"`); ok {
 		metrics := parseQENG(response)
+		servingPLMN = metrics.PLMN
 		snapshot.AccessTech = metrics.AccessTech
 		snapshot.Band = metrics.Band
 		snapshot.Channel = metrics.Channel
@@ -64,11 +66,41 @@ func (manager *Manager) readSnapshot(
 	}
 	if response, ok := optional("AT+COPS?"); ok {
 		operator := parseCOPS(response)
-		snapshot.OperatorName = operator.Name
-		snapshot.OperatorCode = operator.Code
+		if operator.Code != "" {
+			snapshot.OperatorCode = operator.Code
+		} else {
+			snapshot.OperatorCode = servingPLMN
+		}
+		snapshot.OperatorName = carrierNameForPLMN(snapshot.OperatorCode, operator.Name)
 		if snapshot.AccessTech == "" {
 			snapshot.AccessTech = operator.AccessTech
 		}
+	}
+	for _, command := range []string{"AT+CEREG?", "AT+CGREG?", "AT+CREG?"} {
+		response, registrationErr := manager.command(ctx, client, command)
+		if registrationErr != nil {
+			continue
+		}
+		if status, found := parseRegistrationStatus(response); found {
+			snapshot.RegistrationStatus = status
+			snapshot.RegistrationSource = strings.TrimSuffix(strings.TrimPrefix(command, "AT+"), "?")
+			break
+		}
+	}
+	if registration, found := readPlatformRegistration(ctx, candidate); found {
+		snapshot.RegistrationStatus = registration.Status
+		snapshot.RegistrationSource = "QMI NAS"
+		snapshot.PSAttached = registration.PSAttached
+		if registration.PLMN != "" {
+			snapshot.OperatorCode = registration.PLMN
+			snapshot.OperatorName = carrierNameForPLMN(registration.PLMN, registration.Name)
+		}
+	}
+	if snapshot.RegistrationSource == "" && (snapshot.OperatorName != "" || snapshot.OperatorCode != "") {
+		// Older firmware can omit registration queries while COPS still proves
+		// that an operator is selected.
+		snapshot.RegistrationStatus = 1
+		snapshot.RegistrationSource = "COPS"
 	}
 	if response, ok := optional("AT+CGSN"); ok {
 		snapshot.IMEI = parseIdentifier(
@@ -105,6 +137,25 @@ func (manager *Manager) readSnapshot(
 	snapshot.Warnings = append(snapshot.Warnings, warnings...)
 	snapshot.UpdatedAt = time.Now().UTC()
 	return snapshot, nil
+}
+
+func parseRegistrationStatus(response modem.Response) (int, bool) {
+	for _, prefix := range []string{"+CEREG:", "+CGREG:", "+CREG:"} {
+		values := csvValues(valueAfterPrefix(response, prefix))
+		if len(values) == 0 {
+			continue
+		}
+		index := 0
+		// Query responses are <n>,<stat>; unsolicited responses are <stat>.
+		if len(values) >= 2 {
+			index = 1
+		}
+		status, err := strconv.Atoi(strings.TrimSpace(values[index]))
+		if err == nil && status >= 0 && status <= 10 {
+			return status, true
+		}
+	}
+	return 0, false
 }
 
 func parseATI(lines []string) (manufacturer, model, firmware string) {
@@ -159,6 +210,7 @@ func parseCSQ(response modem.Response) (raw, percent, dbm *int) {
 }
 
 type qengMetrics struct {
+	PLMN       string
 	AccessTech string
 	Band       string
 	Channel    string
@@ -179,6 +231,9 @@ func parseQENG(response modem.Response) qengMetrics {
 		}
 		result := qengMetrics{AccessTech: strings.ToUpper(values[2])}
 		if strings.EqualFold(values[2], "LTE") && len(values) >= 17 {
+			if decimalDigits(values[4], 3, 3) && decimalDigits(values[5], 2, 3) {
+				result.PLMN = values[4] + values[5]
+			}
 			result.Channel = values[8]
 			if values[9] != "" {
 				result.Band = "B" + values[9]
@@ -191,6 +246,13 @@ func parseQENG(response modem.Response) qengMetrics {
 		return result
 	}
 	return qengMetrics{}
+}
+
+func decimalDigits(value string, minimum, maximum int) bool {
+	value = strings.TrimSpace(value)
+	return len(value) >= minimum && len(value) <= maximum && strings.IndexFunc(value, func(character rune) bool {
+		return character < '0' || character > '9'
+	}) < 0
 }
 
 type operatorInfo struct {

@@ -106,6 +106,8 @@ func (projector StateProjector) Save(
 	}
 	runtime := store.VoWiFiRuntime{
 		DeviceID:          state.DeviceID,
+		ICCID:             strings.TrimSpace(state.ICCID),
+		IMSI:              strings.TrimSpace(state.IMSI),
 		Phase:             string(state.Phase),
 		DataplaneMode:     dataplaneMode(state),
 		SIMReady:          state.SIMReady,
@@ -125,8 +127,15 @@ func (projector StateProjector) Save(
 	}
 	if projector.Devices != nil {
 		if entry, err := projector.Devices.Get(state.DeviceID); err == nil && entry.Snapshot != nil {
-			runtime.ICCID = strings.TrimSpace(entry.Snapshot.ICCID)
-			runtime.IMSI = strings.TrimSpace(entry.Snapshot.IMSI)
+			// An active VoWiFi session belongs to the identity captured when it
+			// was established. Do not relabel its phone number with a newly
+			// selected eSIM profile while teardown is still in progress.
+			if runtime.ICCID == "" {
+				runtime.ICCID = strings.TrimSpace(entry.Snapshot.ICCID)
+			}
+			if runtime.IMSI == "" {
+				runtime.IMSI = strings.TrimSpace(entry.Snapshot.IMSI)
+			}
 		}
 	}
 	if runtime.LocalPhone == "" && runtime.ICCID != "" {

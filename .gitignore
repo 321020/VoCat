@@ -15,6 +15,9 @@
 vc.jar
 *.cookies
 *.session
+.env
+.env.*
+!.env.example
 
 # ---- Frontend build products ----
 web/dist/

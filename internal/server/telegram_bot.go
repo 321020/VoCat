@@ -902,6 +902,15 @@ func (bot *telegramBot) notifyInboundSMS(ctx context.Context) {
 				bot.warn("list Telegram SMS notifications", listErr)
 			} else {
 				for _, message := range messages {
+					if !store.ConcatSMSReadyToNotify(message.MessageID, message.Extra) {
+						// A carrier-split long SMS still waiting for segments. Hold
+						// the notification but advance the cursor so the partial row
+						// is not reconsidered every poll; when the final segment
+						// merges, the row re-enters with a fresh id and is pushed
+						// here as one complete message.
+						cursor = message.ID
+						continue
+					}
 					text := fmt.Sprintf("📩 新短信\n设备：%s\n来自：%s\n时间：%s\n\n%s", message.DeviceID, message.Peer, message.Timestamp.Local().Format("2006-01-02 15:04:05"), message.Body)
 					if sendErr := bot.sendText(ctx, config, 0, text, nil); sendErr != nil {
 						bot.warn("send Telegram SMS notification", sendErr)

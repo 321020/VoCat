@@ -2,6 +2,7 @@ import type { DeviceListItem } from "../../types";
 import { cx } from "../../lib/utils";
 import { Tag, StatusDot } from "../ui";
 import { deviceStatusMeta } from "./shared";
+import { deviceTypeImage } from "../../lib/deviceTypes";
 
 export interface DeviceListItemCardProps {
   device: DeviceListItem;
@@ -25,7 +26,8 @@ export function DeviceListItemCard({ device, selected, statusText, onSelect }: D
         )}
       >
         <div className="flex items-start justify-between gap-2">
-          <div className="min-w-0">
+          <img src={deviceTypeImage(device.deviceType)} alt="" className="h-10 w-10 shrink-0 object-contain" />
+          <div className="min-w-0 flex-1">
             <div className="truncate font-bold text-gray-800 dark:text-gray-100">{device.name || device.id}</div>
             <div className="mt-0.5 truncate text-xs text-gray-500">
               {device.id} · {device.interface || "--"}

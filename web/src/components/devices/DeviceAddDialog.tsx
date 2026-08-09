@@ -7,6 +7,7 @@ import { DiscoveredDeviceRow } from "./DiscoveredDeviceRow";
 import type { DiscoveredDevice } from "../../types";
 import type { AddDeviceForm } from "./types";
 import { useI18n } from "../../lib/i18n";
+import { DEVICE_TYPES, deviceTypeImage } from "../../lib/deviceTypes";
 
 export interface DeviceAddDialogProps {
   open: boolean;
@@ -123,6 +124,22 @@ export function DeviceAddDialog(props: DeviceAddDialogProps) {
         </div>
       ) : null}
       <div className="mt-4 grid grid-cols-1 gap-4 sm:grid-cols-2">
+        <div className="sm:col-span-2">
+          <Field label={t("设备类型")}>
+            <div className="flex items-center gap-3">
+              <div className="flex h-14 w-14 shrink-0 items-center justify-center rounded-xl border border-gray-200 bg-white p-1.5">
+                {addConfig.deviceType ? <img src={deviceTypeImage(addConfig.deviceType)} alt="" className="h-full w-full object-contain" /> : null}
+              </div>
+              <Select
+                value={addConfig.deviceType}
+                onChange={(v) => set({ deviceType: v as AddDeviceForm["deviceType"] })}
+                placeholder={t("请选择设备类型")}
+                size="large"
+                options={DEVICE_TYPES.map((item) => ({ value: item.value, label: t(item.label) }))}
+              />
+            </div>
+          </Field>
+        </div>
         <Field label="ID">
           <Input value={addConfig.id} onChange={(e) => set({ id: e.target.value })} placeholder={t("例如 ec20_3")} />
         </Field>

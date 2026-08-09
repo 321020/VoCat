@@ -76,6 +76,10 @@ func (f fakeDeviceController) OperatorSelection(context.Context, string) (device
 func (f fakeDeviceController) SetOperatorSelection(context.Context, string, bool, string, *int) (device.OperatorSelection, error) {
 	return device.OperatorSelection{}, nil
 }
+
+func (f fakeDeviceController) ReRegisterOperator(context.Context, string) (device.OperatorSelection, error) {
+	return device.OperatorSelection{}, nil
+}
 func (f fakeDeviceController) ScanOperators(context.Context, string) (device.OperatorScanResult, error) {
 	return f.scanResult, f.scanErr
 }

@@ -234,7 +234,7 @@ ProtectControlGroups=true
 # The web/CLI self-updater verifies a release in this directory and atomically
 # renames it over the running binary. Keep the rest of the host read-only.
 ReadWritePaths=/opt/vocat/data /opt/vocat/bin
-RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK AF_PACKET
 RestrictRealtime=true
 LockPersonality=true
 MemoryDenyWriteExecute=true

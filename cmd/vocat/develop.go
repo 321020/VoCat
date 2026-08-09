@@ -6,11 +6,11 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"os"
 	"strings"
 	"time"
 
 	"vocat/internal/config"
+	"vocat/internal/developer"
 	"vocat/internal/store"
 )
 
@@ -18,7 +18,7 @@ import (
 // plugin/extension system. When absent the developer mode defaults to off, so
 // a fresh install exposes no plugin surface until an operator explicitly turns
 // it on with `vocat develop on` and restarts the service.
-const developerEnabledSettingKey = "developer.enabled"
+const developerEnabledSettingKey = developer.EnabledSettingKey
 
 // runDevelop handles the hidden `vocat develop on|off` subcommand. It is
 // intentionally excluded from printUsage and the interactive menu: the plugin
@@ -65,6 +65,11 @@ func runDevelop(args []string, logger *slog.Logger) error {
 	}); err != nil {
 		return fmt.Errorf("persist developer flag: %w", err)
 	}
+	if !enabled {
+		if err := developer.ResetExperimental(ctx, database); err != nil {
+			return fmt.Errorf("reset developer settings: %w", err)
+		}
+	}
 
 	if enabled {
 		fmt.Printf("开发者模式已开启。重启 vocat 服务后插件功能生效。\n数据库：%s\n", cfg.DatabasePath)
@@ -91,18 +96,5 @@ func parseDevelopArg(arg string) (bool, bool) {
 // or an unparseable value resolves to false — the system defaults closed, so
 // any read failure keeps plugins off rather than exposing them by accident.
 func isDeveloperEnabled(ctx context.Context, database *store.Store) bool {
-	setting, err := database.AppSetting(ctx, developerEnabledSettingKey)
-	if err != nil {
-		if !errors.Is(err, store.ErrNotFound) {
-			fmt.Fprintf(os.Stderr, "vocat: read developer flag failed; plugin system stays off: %v\n", err)
-		}
-		return false
-	}
-	var document struct {
-		Enabled bool `json:"enabled"`
-	}
-	if err := json.Unmarshal(setting.Value, &document); err != nil {
-		return false
-	}
-	return document.Enabled
+	return developer.Enabled(ctx, database)
 }
