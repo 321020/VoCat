@@ -186,6 +186,16 @@ func migrationStatements(version int) []string {
 			`CREATE INDEX IF NOT EXISTS automatic_task_runs_task_idx ON automatic_task_runs(task_id, id DESC)`,
 			`CREATE INDEX IF NOT EXISTS automatic_task_runs_status_idx ON automatic_task_runs(status, id)`,
 		}
+	case 11:
+		return []string{
+			`CREATE TABLE IF NOT EXISTS sms_send_attempts (
+				id INTEGER PRIMARY KEY AUTOINCREMENT,
+				device_id TEXT NOT NULL DEFAULT '',
+				created_at INTEGER NOT NULL
+			)`,
+			`CREATE INDEX IF NOT EXISTS sms_send_attempts_created_idx
+				ON sms_send_attempts(created_at, id)`,
+		}
 	default:
 		return nil
 	}

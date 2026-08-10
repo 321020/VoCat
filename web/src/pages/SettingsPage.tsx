@@ -24,6 +24,7 @@ import { BarkTab, EmailTab, WebhookTab } from "../components/settings/PushTabs";
 import { PluginsCard } from "../components/settings/PluginsCard";
 import { HTTPSCard } from "../components/settings/HTTPSCard";
 import { DeviceQuotaCard } from "../components/settings/DeviceQuotaCard";
+import { SMSRateLimitCard } from "../components/settings/SMSRateLimitCard";
 
 const EMPTY_PASSWORD: PasswordForm = { oldPassword: "", newPassword: "", confirmPassword: "" };
 
@@ -38,7 +39,6 @@ const NOTIFY_TABS = [
 const EMPTY_SYSTEM_INFO: SystemInfo = { version: "", buildTime: "", config: "" };
 
 const EMPTY_SECURITY: NetworkAccessForm = { mode: "internal", allowedCidrs: [], trustProxyHeaders: false };
-
 export default function SettingsPage() {
   const { refresh } = useAuth();
   const { t, lang } = useI18n();
@@ -65,8 +65,10 @@ export default function SettingsPage() {
   const [savingHTTPS, setSavingHTTPS] = useState(false);
   const [developerSettings, setDeveloperSettings] = useState<DeveloperSettings | null>(null);
   const [deviceLimit, setDeviceLimit] = useState(5);
+  const [smsHourlyLimit, setSMSHourlyLimit] = useState(10);
   const [loadingDeveloper, setLoadingDeveloper] = useState(false);
   const [savingDeveloper, setSavingDeveloper] = useState(false);
+  const [savingSMSLimit, setSavingSMSLimit] = useState(false);
 
   const updateChannel = useCallback(<K extends keyof NotifyForms>(key: K, patch: Partial<NotifyForms[K]>) => {
     setForms((prev) => ({ ...prev, [key]: { ...prev[key], ...patch } }));
@@ -131,6 +133,7 @@ export default function SettingsPage() {
       const data = await api<DeveloperSettings>("/settings/developer");
       setDeveloperSettings(data);
       setDeviceLimit(data.deviceLimit);
+      setSMSHourlyLimit(data.smsHourlyLimit);
     } catch (error) {
       message.error(apiMessage(error) || (lang === "zh" ? "设备配额配置加载失败" : "Failed to load device quota settings"));
     } finally {
@@ -152,6 +155,7 @@ export default function SettingsPage() {
       setHTTPSSettings(null);
       setDeveloperSettings(null);
       setDeviceLimit(5);
+      setSMSHourlyLimit(10);
     }
   }, [systemInfo.developer, fetchHTTPS, fetchDeveloperSettings]);
 
@@ -187,6 +191,25 @@ export default function SettingsPage() {
       setSavingDeveloper(false);
     }
   }, [developerSettings, deviceLimit, lang]);
+
+  const onSaveSMSHourlyLimit = useCallback(async () => {
+    const maximum = developerSettings?.maxSmsHourlyLimit ?? 1000;
+    if (!Number.isInteger(smsHourlyLimit) || smsHourlyLimit < 1 || smsHourlyLimit > maximum) {
+      message.error(lang === "zh" ? `短信发送限制必须是 1 到 ${maximum} 的整数` : `SMS limit must be an integer between 1 and ${maximum}`);
+      return;
+    }
+    setSavingSMSLimit(true);
+    try {
+      const data = await api<DeveloperSettings>("/settings/developer", { method: "PUT", body: { smsHourlyLimit } });
+      setDeveloperSettings(data);
+      setSMSHourlyLimit(data.smsHourlyLimit);
+      message.success(lang === "zh" ? "短信发送速率限制已保存" : "SMS rate limit saved");
+    } catch (error) {
+      message.error(apiMessage(error) || (lang === "zh" ? "短信发送速率限制保存失败" : "Failed to save SMS rate limit"));
+    } finally {
+      setSavingSMSLimit(false);
+    }
+  }, [developerSettings, smsHourlyLimit, lang]);
 
   const onSaveSecurity = useCallback(async () => {
     setSavingSecurity(true);
@@ -405,6 +428,14 @@ export default function SettingsPage() {
               saving={savingDeveloper}
               onLimitChange={setDeviceLimit}
               onSave={onSaveDeviceLimit}
+            />
+            <SMSRateLimitCard
+              value={developerSettings}
+              limit={smsHourlyLimit}
+              loading={loadingDeveloper}
+              saving={savingSMSLimit}
+              onLimitChange={setSMSHourlyLimit}
+              onSave={onSaveSMSHourlyLimit}
             />
             <PluginsCard />
           </>

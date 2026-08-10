@@ -59,6 +59,7 @@ func TestMigrationFromAuthenticationSchema(t *testing.T) {
 		"device_proxy_bindings",
 		"notification_settings", "app_settings", "audit_events",
 		"log_events", "card_policies", "traffic_buckets",
+		"sms_send_attempts",
 	} {
 		var found string
 		err := database.db.QueryRowContext(ctx, `

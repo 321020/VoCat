@@ -5,9 +5,12 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
+	"vocat/internal/developer"
+	"vocat/internal/device"
 	"vocat/internal/store"
 )
 
@@ -153,5 +156,54 @@ func TestBlockedSMSDestination(t *testing.T) {
 				t.Fatalf("blockedSMSDestination(%q) blocked = %v, want %v", test.phone, blocked, test.block)
 			}
 		})
+	}
+}
+
+func TestHandleSMSSendEnforcesGlobalHourlyLimit(t *testing.T) {
+	ctx := context.Background()
+	database, err := store.Open(ctx, ":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = database.Close() })
+	if err := developer.SetSMSHourlyLimit(ctx, database, 1); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.UpsertDevice(ctx, store.Device{ID: "ec20_1", Name: "EC20"}); err != nil {
+		t.Fatal(err)
+	}
+	if reservation, err := database.ReserveSMSSend(ctx, "another-device", 1, time.Now().UTC()); err != nil || !reservation.Allowed {
+		t.Fatalf("seed global SMS reservation = %+v, %v", reservation, err)
+	}
+	server := &Server{
+		store:               database,
+		logger:              regionTestLogger(),
+		maxRequestBodyBytes: 4096,
+		devices: fakeDeviceController{entry: device.Device{
+			ID:         "ec20_1",
+			Discovered: true,
+			Snapshot:   &device.Snapshot{DeviceID: "ec20_1"},
+		}},
+	}
+	request := httptest.NewRequest(
+		http.MethodPost,
+		"/api/sms/send",
+		strings.NewReader(`{"device_id":"ec20_1","phone":"+447700900123","message":"hello"}`),
+	)
+	request.Header.Set("Content-Type", "application/json")
+	response := httptest.NewRecorder()
+	server.handleSMSSend(response, request)
+	if response.Code != http.StatusTooManyRequests {
+		t.Fatalf("status = %d, want 429; body=%s", response.Code, response.Body.String())
+	}
+	if response.Header().Get("Retry-After") == "" {
+		t.Fatal("Retry-After header is missing")
+	}
+	var envelope errorEnvelope
+	if err := json.Unmarshal(response.Body.Bytes(), &envelope); err != nil {
+		t.Fatal(err)
+	}
+	if envelope.Error.Code != "sms_rate_limited" {
+		t.Fatalf("error code = %q, want sms_rate_limited", envelope.Error.Code)
 	}
 }

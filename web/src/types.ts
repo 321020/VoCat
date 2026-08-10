@@ -403,6 +403,9 @@ export interface DeveloperSettings {
   deviceLimit: number;
   defaultDeviceLimit: number;
   maxDeviceLimit: number;
+  smsHourlyLimit: number;
+  defaultSmsHourlyLimit: number;
+  maxSmsHourlyLimit: number;
 }
 
 export type Notice = {

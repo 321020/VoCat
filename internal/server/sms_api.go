@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"vocat/internal/developer"
 	"vocat/internal/device"
 	"vocat/internal/store"
 	"vocat/internal/vowifi"
@@ -224,6 +225,12 @@ func (s *Server) handleSMSSend(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "blocked_destination", reason)
 		return
 	}
+	// Validate the logical message before consuming a global send slot. Both
+	// cellular AT and VoWiFi IMS use this same encoder/validator.
+	if _, err := device.PrepareSMSSubmitTPDUs(request.Phone, request.Message); err != nil {
+		s.writeDeviceError(w, err)
+		return
+	}
 	config, err := s.store.Device(r.Context(), request.DeviceID)
 	if err != nil {
 		s.writeStoreError(w, err)
@@ -231,6 +238,33 @@ func (s *Server) handleSMSSend(w http.ResponseWriter, r *http.Request) {
 	}
 	entry, physicalID, present := s.physicalForConfig(config)
 	if !s.requirePhysicalDevice(w, present) {
+		return
+	}
+	limit := developer.SMSHourlyLimit(r.Context(), s.store)
+	reservation, err := s.store.ReserveSMSSend(r.Context(), request.DeviceID, limit, time.Now().UTC())
+	if err != nil {
+		s.writeStoreError(w, err)
+		return
+	}
+	if !reservation.Allowed {
+		retryAfter := time.Until(reservation.ResetAt)
+		if retryAfter < time.Second {
+			retryAfter = time.Second
+		}
+		w.Header().Set("Retry-After", strconv.FormatInt(int64((retryAfter+time.Second-1)/time.Second), 10))
+		writeJSON(w, http.StatusTooManyRequests, map[string]any{
+			"error": apiError{
+				Code:    "sms_rate_limited",
+				Message: fmt.Sprintf("Global SMS limit reached: at most %d messages may be submitted in a rolling one-hour window.", reservation.Limit),
+			},
+			"data": map[string]any{
+				"limit":       reservation.Limit,
+				"used":        reservation.Used,
+				"remaining":   reservation.Remaining,
+				"reset_at":    reservation.ResetAt,
+				"retry_after": int64((retryAfter + time.Second - 1) / time.Second),
+			},
+		})
 		return
 	}
 	if config.VoWiFiEnabled && s.vowifi != nil {

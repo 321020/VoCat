@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net"
 	"os"
 	"os/exec"
@@ -21,6 +20,8 @@ import (
 
 const userspaceTunnelMTU = 1380
 
+const userspaceTunnelPollInterval = 100 * time.Millisecond
+
 type linuxUserspaceInstaller struct {
 	ipCommand string
 }
@@ -30,6 +31,7 @@ type linuxUserspaceHandle struct {
 	config    ChildSAConfig
 	tunnel    *espTunnel
 	tun       *os.File
+	tunFD     int
 	relay     NATTPacketRelay
 
 	runContext context.Context
@@ -93,6 +95,7 @@ func (installer linuxUserspaceInstaller) Install(
 		config:     cloneChildSAConfig(config),
 		tunnel:     tunnel,
 		tun:        tun,
+		tunFD:      int(tun.Fd()),
 		relay:      config.Relay,
 		runContext: runContext,
 		cancel:     cancel,
@@ -127,6 +130,15 @@ func openLinuxTUN(name string) (*os.File, string, error) {
 	if err := unix.IoctlIfreq(descriptor, unix.TUNSETIFF, request); err != nil {
 		_ = unix.Close(descriptor)
 		return nil, "", fmt.Errorf("ike: create TUN interface: %w", err)
+	}
+	// A blocking TUN read is not guaranteed to wake when another goroutine
+	// closes the descriptor on Linux. Keep the descriptor non-blocking and use
+	// poll below so cancellation can always drain the data-plane workers before
+	// the interface is released. Without this, a failed session can retain the
+	// TUN forever and every automatic reconnect fails with EBUSY.
+	if err := unix.SetNonblock(descriptor, true); err != nil {
+		_ = unix.Close(descriptor)
+		return nil, "", fmt.Errorf("ike: make TUN interface cancellable: %w", err)
 	}
 	file := os.NewFile(uintptr(descriptor), "/dev/net/tun:"+request.Name())
 	if file == nil {
@@ -475,7 +487,7 @@ func (handle *linuxUserspaceHandle) copyTUNToRelay() {
 	defer handle.wait.Done()
 	buffer := make([]byte, 65535)
 	for {
-		count, err := handle.tun.Read(buffer)
+		count, err := readTUNPacket(handle.runContext, handle.tunFD, buffer)
 		if err != nil {
 			if handle.runContext.Err() == nil && !errors.Is(err, os.ErrClosed) {
 				handle.fail(fmt.Errorf("ike: read TUN packet: %w", err))
@@ -520,7 +532,7 @@ func (handle *linuxUserspaceHandle) copyRelayToTUN() {
 			// without allowing a forged datagram to tear down the CHILD_SA.
 			continue
 		}
-		if err := writeFull(handle.tun, cleartext); err != nil {
+		if err := writeTUNPacket(handle.runContext, handle.tunFD, cleartext); err != nil {
 			if handle.runContext.Err() == nil && !errors.Is(err, os.ErrClosed) {
 				handle.fail(fmt.Errorf("ike: write TUN packet: %w", err))
 			}
@@ -529,15 +541,72 @@ func (handle *linuxUserspaceHandle) copyRelayToTUN() {
 	}
 }
 
-func writeFull(destination io.Writer, packet []byte) error {
-	count, err := destination.Write(packet)
-	if err != nil {
-		return err
+func readTUNPacket(ctx context.Context, descriptor int, buffer []byte) (int, error) {
+	for {
+		if err := ctx.Err(); err != nil {
+			return 0, err
+		}
+		ready, err := pollTUN(ctx, descriptor, unix.POLLIN)
+		if err != nil {
+			return 0, err
+		}
+		if !ready {
+			continue
+		}
+		count, err := unix.Read(descriptor, buffer)
+		if errors.Is(err, unix.EINTR) || errors.Is(err, unix.EAGAIN) || errors.Is(err, unix.EWOULDBLOCK) {
+			continue
+		}
+		return count, err
 	}
-	if count != len(packet) {
-		return io.ErrShortWrite
+}
+
+func writeTUNPacket(ctx context.Context, descriptor int, packet []byte) error {
+	for written := 0; written < len(packet); {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		ready, err := pollTUN(ctx, descriptor, unix.POLLOUT)
+		if err != nil {
+			return err
+		}
+		if !ready {
+			continue
+		}
+		count, err := unix.Write(descriptor, packet[written:])
+		if errors.Is(err, unix.EINTR) || errors.Is(err, unix.EAGAIN) || errors.Is(err, unix.EWOULDBLOCK) {
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		if count == 0 {
+			return errors.New("ike: zero-length TUN write")
+		}
+		written += count
 	}
 	return nil
+}
+
+func pollTUN(ctx context.Context, descriptor int, events int16) (bool, error) {
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+	poll := []unix.PollFd{{Fd: int32(descriptor), Events: events}}
+	count, err := unix.Poll(poll, int(userspaceTunnelPollInterval/time.Millisecond))
+	if errors.Is(err, unix.EINTR) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	if count == 0 {
+		return false, nil
+	}
+	if poll[0].Revents&(unix.POLLERR|unix.POLLHUP|unix.POLLNVAL) != 0 {
+		return false, os.ErrClosed
+	}
+	return poll[0].Revents&events != 0, nil
 }
 
 func (handle *linuxUserspaceHandle) fail(err error) {
@@ -583,9 +652,12 @@ func (handle *linuxUserspaceHandle) Close(ctx context.Context) error {
 	handle.mu.Unlock()
 
 	handle.cancelRun()
+	// Workers use a non-blocking, polled TUN descriptor and therefore leave on
+	// cancellation without requiring a cross-goroutine close. Wait first so no
+	// blocked syscall can retain the interface after Close returns.
+	handle.wait.Wait()
 	cleanupErr := handle.cleanupNetwork(ctx)
 	handle.closeTUN()
-	handle.wait.Wait()
 	// A terminal data-plane error is delivered exactly once through Failures.
 	// Close reports only teardown errors so the orchestrator does not record
 	// the same runtime cause again as a cleanup failure.
