@@ -305,6 +305,14 @@ cd web && npm run build
 - [Linux.do](https://linux.do) — An inspiring tech community
 - [iniwex5](https://github.com/iniwex5) - Style and Functionality Guidelines
 
+## Buy me a coffee
+
+| Network | Address |
+| ------- | ------- |
+| USDT-TRON (TRC20) | `TQQAbboBoU8h5xX4YCA1rqWJU2WjK3seSg` |
+| USDT-BSC (BEP20) | `0xdbfcd4a462550d6ff06d09cbd89026c6b145d9c4` |
+| USDT-Polygon | `0xdbfcd4a462550d6ff06d09cbd89026c6b145d9c4` |
+
 ## License
 
 See [LICENSE](LICENSE).
