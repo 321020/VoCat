@@ -27,6 +27,7 @@ type NetworkRequest struct {
 	Enabled   bool   `json:"enabled"`
 	APN       string `json:"apn"`
 	IPVersion string `json:"ipVersion"`
+	Backend   string `json:"backend,omitempty"`
 }
 
 type NetworkResult struct {
@@ -81,6 +82,7 @@ type Snapshot struct {
 	Firmware           string      `json:"firmware"`
 	SIMStatus          string      `json:"simStatus"`
 	SIMReady           bool        `json:"simReady"`
+	SIMChanged         bool        `json:"simChanged,omitempty"`
 	SignalRaw          *int        `json:"signalRaw,omitempty"`
 	SignalPercent      *int        `json:"signalPercent,omitempty"`
 	RSSIDBm            *int        `json:"rssiDbm,omitempty"`
@@ -98,6 +100,7 @@ type Snapshot struct {
 	IMEI               string      `json:"imei"`
 	ICCID              string      `json:"iccid"`
 	IMSI               string      `json:"imsi"`
+	SPN                string      `json:"spn,omitempty"`
 	OperatingMode      int         `json:"operatingMode"`
 	ModeKnown          bool        `json:"modeKnown"`
 	FlightMode         bool        `json:"flightMode"`

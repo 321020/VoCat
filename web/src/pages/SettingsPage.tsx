@@ -132,7 +132,7 @@ export default function SettingsPage() {
       setDeveloperSettings(data);
       setDeviceLimit(data.deviceLimit);
     } catch (error) {
-      message.error(apiMessage(error) || (lang === "zh" ? "开发者配置加载失败" : "Failed to load developer settings"));
+      message.error(apiMessage(error) || (lang === "zh" ? "设备配额配置加载失败" : "Failed to load device quota settings"));
     } finally {
       setLoadingDeveloper(false);
     }

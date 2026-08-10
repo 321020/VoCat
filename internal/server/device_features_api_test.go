@@ -31,6 +31,28 @@ func decodeData(t *testing.T, recorder *httptest.ResponseRecorder) map[string]an
 	return envelope.Data
 }
 
+type esimAIDCaptureController struct {
+	fakeDeviceController
+	switchAID  string
+	disableAID string
+	renameAID  string
+}
+
+func (controller *esimAIDCaptureController) ESIMSwitchProfile(_ context.Context, _, _, aidHex string) error {
+	controller.switchAID = aidHex
+	return nil
+}
+
+func (controller *esimAIDCaptureController) ESIMDisableProfile(_ context.Context, _, _, aidHex string) error {
+	controller.disableAID = aidHex
+	return nil
+}
+
+func (controller *esimAIDCaptureController) ESIMRenameProfile(_ context.Context, _, _, _, aidHex string) error {
+	controller.renameAID = aidHex
+	return nil
+}
+
 func TestAttachSingleEUICCIdentityFillsProfileGroupMetadataKey(t *testing.T) {
 	groups := []map[string]any{{"eid": "", "aidHex": "", "profiles": []any{}}}
 	chipInfo := map[string]any{
@@ -256,9 +278,18 @@ func TestHandleESIMShapes(t *testing.T) {
 	}
 
 	// Switch happy path: a present device + fake controller switches by ICCID.
-	present := &Server{logger: regionTestLogger(), maxRequestBodyBytes: 4096, devices: fakeDeviceController{}}
+	database, err := store.Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = database.Close() })
+	if err := database.UpsertDevice(context.Background(), store.Device{ID: "dev1", Name: "dev1"}); err != nil {
+		t.Fatal(err)
+	}
+	controller := &esimAIDCaptureController{}
+	present := &Server{store: database, logger: regionTestLogger(), maxRequestBodyBytes: 4096, devices: controller}
 	swOK := httptest.NewRecorder()
-	swReq := httptest.NewRequest(http.MethodPost, "/esim/actions/switch", strings.NewReader(`{"iccid":"8900000000000000001","aid_hex":"A0"}`))
+	swReq := httptest.NewRequest(http.MethodPost, "/esim/actions/switch", strings.NewReader(`{"iccid":"8900000000000000001","aidHex":"A0000005591010FFFFFFFF8900000177"}`))
 	swReq.Header.Set("Content-Type", "application/json")
 	present.handleESIM(swOK, swReq, []string{"actions", "switch"}, "dev1", true)
 	if swOK.Code != http.StatusOK {
@@ -267,10 +298,13 @@ func TestHandleESIMShapes(t *testing.T) {
 	if data := decodeData(t, swOK); data["status"] != "switched" || data["verified"] != true {
 		t.Fatalf("switch data = %v", data)
 	}
+	if controller.switchAID != "A0000005591010FFFFFFFF8900000177" {
+		t.Fatalf("switch AID = %q, want XeSIM camelCase AID", controller.switchAID)
+	}
 
 	// Disable happy path routes the active profile to ES10c DisableProfile.
 	disableOK := httptest.NewRecorder()
-	disableReq := httptest.NewRequest(http.MethodPost, "/esim/actions/disable", strings.NewReader(`{"iccid":"8900000000000000001","aid_hex":"A0000005591010FFFFFFFF8900000100"}`))
+	disableReq := httptest.NewRequest(http.MethodPost, "/esim/actions/disable", strings.NewReader(`{"iccid":"8900000000000000001","aidHex":"A0000005591010FFFFFFFF8900000177"}`))
 	disableReq.Header.Set("Content-Type", "application/json")
 	present.handleESIM(disableOK, disableReq, []string{"actions", "disable"}, "dev1", true)
 	if disableOK.Code != http.StatusOK {
@@ -279,10 +313,13 @@ func TestHandleESIMShapes(t *testing.T) {
 	if data := decodeData(t, disableOK); data["status"] != "disabled" || data["recovering"] != true {
 		t.Fatalf("disable data = %v", data)
 	}
+	if controller.disableAID != "A0000005591010FFFFFFFF8900000177" {
+		t.Fatalf("disable AID = %q, want XeSIM camelCase AID", controller.disableAID)
+	}
 
 	// Rename happy path routes PATCH to ES10c SetNickname support.
 	renameOK := httptest.NewRecorder()
-	renameReq := httptest.NewRequest(http.MethodPatch, "/esim/profiles/8900000000000000001", strings.NewReader(`{"name":"Test profile","aid_hex":"A0000005591010FFFFFFFF8900000100"}`))
+	renameReq := httptest.NewRequest(http.MethodPatch, "/esim/profiles/8900000000000000001", strings.NewReader(`{"name":"Test profile","aidHex":"A0000005591010FFFFFFFF8900000177"}`))
 	renameReq.Header.Set("Content-Type", "application/json")
 	present.handleESIM(renameOK, renameReq, []string{"profiles", "8900000000000000001"}, "dev1", true)
 	if renameOK.Code != http.StatusOK {
@@ -290,6 +327,9 @@ func TestHandleESIMShapes(t *testing.T) {
 	}
 	if data := decodeData(t, renameOK); data["status"] != "renamed" || data["name"] != "Test profile" {
 		t.Fatalf("rename data = %v", data)
+	}
+	if controller.renameAID != "A0000005591010FFFFFFFF8900000177" {
+		t.Fatalf("rename AID = %q, want XeSIM camelCase AID", controller.renameAID)
 	}
 
 	// Download on a present device but with no smdp address reports 400.

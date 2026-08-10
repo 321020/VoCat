@@ -61,7 +61,7 @@ export function CardPolicyPanel({ deviceId, iccid, policy, deviceOnline, onPolic
           <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
             <PolicySwitchCard
               title="VoWiFi"
-              subtitle={t("启用后进飞行模式，不支持国内运营商")}
+              subtitle={t("启用时强制关闭蜂窝射频；关闭 VoWiFi 后仍保持飞行模式")}
               tone="orange"
               checked={local.vowifiEnabled}
               disabled={!operable || toggles.vowifiPending}
@@ -71,7 +71,7 @@ export function CardPolicyPanel({ deviceId, iccid, policy, deviceOnline, onPolic
             />
             <PolicySwitchCard
               title={t("飞行模式")}
-              subtitle={t("射频关闭，断网；VoWiFi 开启时由其接管")}
+              subtitle={t("只有手动关闭此开关才允许设备连接基站")}
               tone="indigo"
               checked={local.airplaneEnabled}
               disabled={!operable || local.vowifiEnabled || toggles.airplanePending}

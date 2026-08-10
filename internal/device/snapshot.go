@@ -3,12 +3,14 @@ package device
 import (
 	"context"
 	"encoding/csv"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"strconv"
 	"strings"
 	"time"
 	"unicode"
+	"unicode/utf16"
 
 	"vocat/internal/modem"
 )
@@ -17,6 +19,8 @@ func (manager *Manager) readSnapshot(
 	ctx context.Context,
 	id string,
 	candidate modem.Candidate,
+	backend string,
+	previousICCID string,
 	client modem.Client,
 ) (Snapshot, error) {
 	snapshot := Snapshot{
@@ -46,6 +50,36 @@ func (manager *Manager) readSnapshot(
 
 	if response, ok := optional("AT+CPIN?"); ok {
 		snapshot.SIMStatus, snapshot.SIMReady = parseCPIN(response)
+	}
+	ccid, ccidErr := manager.command(ctx, client, "AT+CCID")
+	if ccidErr != nil {
+		ccid, ccidErr = manager.command(ctx, client, "AT+QCCID")
+	}
+	if ccidErr != nil {
+		snapshot.Warnings = append(snapshot.Warnings, "read ICCID: "+ccidErr.Error())
+	} else {
+		snapshot.ICCID = parseICCIDIdentifier(ccid, []string{"+CCID:", "+QCCID:"}, 18, 22)
+	}
+	previousICCID = strings.TrimSpace(previousICCID)
+	if previousICCID != "" && snapshot.ICCID != "" && !strings.EqualFold(previousICCID, snapshot.ICCID) {
+		// A different physical SIM must never inherit the previous card's
+		// permission to use cellular RF. Disable RF before reading serving-cell
+		// or operator state; policy reconciliation will then start VoWiFi.
+		if _, err := manager.command(ctx, client, "AT+CFUN=4"); err != nil {
+			return snapshot, fmt.Errorf("protect changed SIM with RF off: %w", err)
+		}
+		snapshot.SIMChanged = true
+	}
+	if response, ok := optional("AT+CIMI"); ok {
+		snapshot.IMSI = parseIdentifier(response, []string{"+CIMI:"}, 10, 18)
+	}
+	// EF_SPN is the SIM-issued brand (for example "Lebara"), which is distinct
+	// from the IMSI sponsor/core PLMN. A Lebara UK subscription may therefore
+	// legitimately carry a Vodafone NL IMSI while still presenting Lebara as
+	// its customer-facing operator. Failure is intentionally silent because
+	// EF_SPN is optional and some physical SIMs deny CRSM access to it.
+	if response, spnErr := manager.command(ctx, client, "AT+CRSM=176,28486,0,0,17"); spnErr == nil {
+		snapshot.SPN = parseSPN(response)
 	}
 	if response, ok := optional("AT+CSQ"); ok {
 		snapshot.SignalRaw, snapshot.SignalPercent, snapshot.RSSIDBm = parseCSQ(response)
@@ -87,13 +121,16 @@ func (manager *Manager) readSnapshot(
 			break
 		}
 	}
-	if registration, found := readPlatformRegistration(ctx, candidate); found {
-		snapshot.RegistrationStatus = registration.Status
-		snapshot.RegistrationSource = "QMI NAS"
-		snapshot.PSAttached = registration.PSAttached
-		if registration.PLMN != "" {
-			snapshot.OperatorCode = registration.PLMN
-			snapshot.OperatorName = carrierNameForPLMN(registration.PLMN, registration.Name)
+	if strings.EqualFold(backend, "qmi") {
+		registration, found := readPlatformRegistration(ctx, candidate)
+		if found {
+			snapshot.RegistrationStatus = registration.Status
+			snapshot.RegistrationSource = "QMI NAS"
+			snapshot.PSAttached = registration.PSAttached
+			if registration.PLMN != "" {
+				snapshot.OperatorCode = registration.PLMN
+				snapshot.OperatorName = carrierNameForPLMN(registration.PLMN, registration.Name)
+			}
 		}
 	}
 	if snapshot.RegistrationSource == "" && (snapshot.OperatorName != "" || snapshot.OperatorCode != "") {
@@ -111,18 +148,6 @@ func (manager *Manager) readSnapshot(
 		)
 	}
 
-	ccid, ccidErr := manager.command(ctx, client, "AT+CCID")
-	if ccidErr != nil {
-		ccid, ccidErr = manager.command(ctx, client, "AT+QCCID")
-	}
-	if ccidErr != nil {
-		snapshot.Warnings = append(snapshot.Warnings, "read ICCID: "+ccidErr.Error())
-	} else {
-		snapshot.ICCID = parseICCIDIdentifier(ccid, []string{"+CCID:", "+QCCID:"}, 18, 22)
-	}
-	if response, ok := optional("AT+CIMI"); ok {
-		snapshot.IMSI = parseIdentifier(response, []string{"+CIMI:"}, 10, 18)
-	}
 	if response, ok := optional("AT+CFUN?"); ok {
 		if mode, found := parseCFUN(response); found {
 			snapshot.OperatingMode = mode
@@ -137,6 +162,53 @@ func (manager *Manager) readSnapshot(
 	snapshot.Warnings = append(snapshot.Warnings, warnings...)
 	snapshot.UpdatedAt = time.Now().UTC()
 	return snapshot, nil
+}
+
+func parseSPN(response modem.Response) string {
+	value := valueAfterPrefix(response, "+CRSM:")
+	fields := csvValues(value)
+	if len(fields) < 3 {
+		return ""
+	}
+	sw1, sw1Err := strconv.Atoi(strings.TrimSpace(fields[0]))
+	sw2, sw2Err := strconv.Atoi(strings.TrimSpace(fields[1]))
+	if sw1Err != nil || sw2Err != nil || (sw1 != 0x90 && sw1 != 0x91 && sw1 != 0x9f) || sw2 < 0 || sw2 > 255 {
+		return ""
+	}
+	raw, err := hex.DecodeString(strings.Trim(strings.TrimSpace(fields[2]), `"`))
+	if err != nil || len(raw) < 2 {
+		return ""
+	}
+	alpha := raw[1:] // byte 0 is the display-condition bit field.
+	for len(alpha) > 0 && (alpha[len(alpha)-1] == 0xff || alpha[len(alpha)-1] == 0x00) {
+		alpha = alpha[:len(alpha)-1]
+	}
+	if len(alpha) == 0 {
+		return ""
+	}
+	if alpha[0] == 0x80 {
+		ucs2 := alpha[1:]
+		if len(ucs2)%2 != 0 {
+			ucs2 = ucs2[:len(ucs2)-1]
+		}
+		units := make([]uint16, 0, len(ucs2)/2)
+		for index := 0; index+1 < len(ucs2); index += 2 {
+			unit := uint16(ucs2[index])<<8 | uint16(ucs2[index+1])
+			if unit != 0xffff && unit != 0 {
+				units = append(units, unit)
+			}
+		}
+		return strings.TrimSpace(string(utf16.Decode(units)))
+	}
+	// EF_SPN uses the unpacked GSM default alphabet. Its printable Latin subset
+	// is byte-compatible with UTF-8/ASCII and covers operator brands in practice.
+	printable := make([]byte, 0, len(alpha))
+	for _, value := range alpha {
+		if value >= 0x20 && value <= 0x7e {
+			printable = append(printable, value)
+		}
+	}
+	return strings.TrimSpace(string(printable))
 }
 
 func parseRegistrationStatus(response modem.Response) (int, bool) {

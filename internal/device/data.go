@@ -43,7 +43,21 @@ func (manager *Manager) SetNetwork(
 		}
 	}
 	candidate := manager.candidateFor(state)
-	if candidate.QMIControl != "" && candidate.NetworkInterface != "" {
+	backend := strings.ToLower(strings.TrimSpace(request.Backend))
+	if backend == "" {
+		if candidate.QMIControl != "" && candidate.NetworkInterface != "" {
+			backend = "qmi"
+		} else {
+			backend = "at"
+		}
+	}
+	if backend != "at" && backend != "qmi" {
+		return NetworkResult{}, fmt.Errorf("unsupported cellular data backend %q", request.Backend)
+	}
+	if backend == "qmi" {
+		if candidate.QMIControl == "" || candidate.NetworkInterface == "" {
+			return NetworkResult{}, fmt.Errorf("%w: QMI control device and network interface are required", ErrDataBackendUnavailable)
+		}
 		return setQMINetwork(ctx, candidate, request.Enabled, apn, ipVersion)
 	}
 

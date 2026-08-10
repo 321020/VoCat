@@ -3,6 +3,7 @@ import { Button, Switch } from "../ui";
 import type { DeviceDetail } from "./types";
 import { useI18n } from "../../lib/i18n";
 import { deviceTypeImage } from "../../lib/deviceTypes";
+import { isVoWiFiInUse } from "./shared";
 
 export interface DeviceDetailHeaderProps {
   device: DeviceDetail;
@@ -19,7 +20,7 @@ export interface DeviceDetailHeaderProps {
 export function DeviceDetailHeader(props: DeviceDetailHeaderProps) {
   const { t } = useI18n();
   const { device } = props;
-	const vowifiInUse = !!device.vowifiEnabled;
+	const vowifiInUse = isVoWiFiInUse(device);
   return (
     <div className="ui-card p-6">
       <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">

@@ -13,6 +13,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -193,6 +194,7 @@ func run(logger *slog.Logger, logs *loghub.Hub) error {
 	if err := provisionDiscoveredDevices(startupContext, database, deviceManager); err != nil {
 		logger.Warn("automatic first-run device provisioning failed", "error", err)
 	}
+	configureDeviceBackends(startupContext, logger, database, deviceManager)
 	restoreDefaultCellularRadios(startupContext, logger, database, deviceManager)
 	defer func() {
 		stopContext, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -222,6 +224,7 @@ func run(logger *slog.Logger, logs *loghub.Hub) error {
 	if err != nil {
 		return fmt.Errorf("configure VoWiFi runtime: %w", err)
 	}
+	go reconcileCardPolicies(pollContext, logger, database, deviceManager, vowifiManager)
 	defer func() {
 		stopContext, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
@@ -254,6 +257,7 @@ func run(logger *slog.Logger, logs *loghub.Hub) error {
 	go handler.StartSMSSyncLoop(pollContext, 15*time.Second)
 	handler.StartTelegramBot(pollContext)
 	handler.StartSMSNotificationDispatchers(pollContext)
+	handler.StartAutomaticTasks(pollContext)
 
 	serverConfig := func(handler http.Handler) *http.Server {
 		return &http.Server{
@@ -341,11 +345,32 @@ func run(logger *slog.Logger, logs *loghub.Hub) error {
 	return nil
 }
 
-// restoreDefaultCellularRadios repairs an interrupted VoWiFi teardown. CFUN=4
-// survives process restarts, while the in-memory radio checkpoint does not. If
-// VoWiFi is disabled and the current SIM has no explicit airplane policy, the
-// automatic/default policy is cellular service and the modem must return to
-// CFUN=1.
+func configureDeviceBackends(
+	ctx context.Context,
+	logger *slog.Logger,
+	database *store.Store,
+	manager *device.Manager,
+) {
+	configs, err := database.ListDevices(ctx)
+	if err != nil {
+		logger.Warn("configure device backends: list devices", "error", err)
+		return
+	}
+	mapper := integration.ATMapper{Store: database, Devices: manager}
+	for _, config := range configs {
+		entry, mapErr := mapper.Get(config.ID)
+		if mapErr != nil {
+			continue
+		}
+		if err := manager.SetBackend(entry.ID, config.DeviceBackend); err != nil {
+			logger.Warn("configure device backend", "device_id", config.ID, "backend", config.DeviceBackend, "error", err)
+		}
+	}
+}
+
+// restoreDefaultCellularRadios applies an explicitly saved cellular policy
+// after restart. Missing policies remain RF-off and are claimed by the safe
+// default policy; there is no automatic cellular fallback.
 func restoreDefaultCellularRadios(
 	ctx context.Context,
 	logger *slog.Logger,
@@ -367,10 +392,15 @@ func restoreDefaultCellularRadios(
 			continue
 		}
 		iccid := strings.TrimSpace(entry.Snapshot.ICCID)
+		if iccid == "" {
+			continue
+		}
 		if iccid != "" {
 			policy, policyErr := database.CardPolicy(ctx, iccid)
 			switch {
 			case policyErr == nil && policy.AirplaneEnabled:
+				continue
+			case errors.Is(policyErr, store.ErrNotFound):
 				continue
 			case policyErr != nil && !errors.Is(policyErr, store.ErrNotFound):
 				logger.Warn("startup cellular recovery: read card policy", "device_id", config.ID, "error", policyErr)
@@ -410,7 +440,7 @@ func restoreConfiguredCellularData(
 		}
 		dataContext, cancel := context.WithTimeout(ctx, 60*time.Second)
 		_, err = manager.SetNetwork(dataContext, entry.ID, device.NetworkRequest{
-			Enabled: true, APN: config.APN, IPVersion: "IPV4V6",
+			Enabled: true, APN: config.APN, IPVersion: "IPV4V6", Backend: config.DeviceBackend,
 		})
 		cancel()
 		if err != nil {
@@ -439,7 +469,7 @@ func disableAllDeveloperCellularData(
 			continue
 		}
 		disableContext, cancel := context.WithTimeout(ctx, 30*time.Second)
-		_, err = manager.SetNetwork(disableContext, entry.ID, device.NetworkRequest{Enabled: false})
+		_, err = manager.SetNetwork(disableContext, entry.ID, device.NetworkRequest{Enabled: false, Backend: config.DeviceBackend})
 		cancel()
 		if err != nil && ctx.Err() == nil {
 			logger.Warn("developer cleanup: stop cellular data", "device_id", config.ID, "error", err)
@@ -497,6 +527,13 @@ func configureVoWiFiRuntime(
 		// The test deployment is deliberately non-cellular. VoWiFi teardown
 		// may restore CFUN, but it must never reactivate a PDP context.
 		RestoreCellularData: false,
+		// VoWiFi is always fail-closed with respect to cellular RF. Its teardown
+		// leaves CFUN=4; only the explicit airplane-mode-off endpoint restores
+		// CFUN=1.
+		PureAirplanePolicy: func(deviceID string) bool {
+			deviceConfig, configErr := database.Device(context.Background(), deviceID)
+			return configErr == nil && deviceConfig.VoWiFiEnabled
+		},
 	})
 	if err != nil {
 		return nil, err
@@ -528,6 +565,15 @@ func configureVoWiFiRuntime(
 			return nil, fmt.Errorf("register device %q VoWiFi runtime: %w", deviceConfig.ID, err)
 		}
 		if deviceConfig.VoWiFiEnabled {
+			if entry, mapErr := mapper.Get(deviceConfig.ID); mapErr == nil {
+				flightContext, cancelFlight := context.WithTimeout(ctx, 10*time.Second)
+				_, flightErr := deviceManager.SetFlight(flightContext, entry.ID, true)
+				cancelFlight()
+				if flightErr != nil {
+					_ = manager.Close(context.Background())
+					return nil, fmt.Errorf("protect device %q before VoWiFi startup: %w", deviceConfig.ID, flightErr)
+				}
+			}
 			if _, err := manager.RequestEnabled(deviceConfig.ID, true); err != nil {
 				_ = manager.Close(context.Background())
 				return nil, fmt.Errorf("start device %q VoWiFi policy: %w", deviceConfig.ID, err)
@@ -694,7 +740,7 @@ func provisionDiscoveredDevices(
 			ESIMTransport:  backend,
 			NetworkEnabled: false,
 			SMSEnabled:     true,
-			VoWiFiEnabled:  false,
+			VoWiFiEnabled:  true,
 		}); err != nil {
 			return err
 		}
@@ -754,20 +800,42 @@ func pollDeviceSnapshots(
 			logger.Debug("periodic modem discovery failed", "error", err)
 			return
 		}
-		for _, entry := range manager.List() {
+		// Hotplug can replace the physical discovery ID. Rebind each configured
+		// device's selected QMI/AT control plane before collecting its snapshot.
+		configureDeviceBackends(ctx, logger, database, manager)
+		entries := manager.List()
+		// Each physical modem owns its own operation lock. Refresh them in
+		// parallel so a slow or wedged EC20 on one hub port cannot delay signal
+		// and identity updates for every other modem by 30 seconds at a time.
+		var refreshGroup sync.WaitGroup
+		refreshSlots := make(chan struct{}, 4)
+		for _, entry := range entries {
 			if !entry.Discovered {
 				continue
 			}
-			refreshContext, cancelRefresh := context.WithTimeout(ctx, 30*time.Second)
-			snapshot, err := manager.Refresh(refreshContext, entry.ID)
-			cancelRefresh()
-			if err != nil && ctx.Err() == nil {
-				logger.Warn("modem snapshot refresh failed", "device_id", entry.ID, "error", err)
-			}
-			if err == nil && ctx.Err() == nil {
-				enforceCardRegion(ctx, logger, database, manager, entry.ID, &snapshot)
-			}
+			entry := entry
+			refreshGroup.Add(1)
+			go func() {
+				defer refreshGroup.Done()
+				select {
+				case refreshSlots <- struct{}{}:
+					defer func() { <-refreshSlots }()
+				case <-ctx.Done():
+					return
+				}
+				refreshContext, cancelRefresh := context.WithTimeout(ctx, 30*time.Second)
+				snapshot, refreshErr := manager.Refresh(refreshContext, entry.ID)
+				cancelRefresh()
+				if refreshErr != nil && ctx.Err() == nil {
+					logger.Warn("modem snapshot refresh failed", "device_id", entry.ID, "error", refreshErr)
+				}
+				if refreshErr == nil && ctx.Err() == nil {
+					enforceCardRegion(ctx, logger, database, manager, entry.ID, &snapshot)
+					enforceDefaultSafeCardPolicy(ctx, logger, database, manager, entry.ID, &snapshot)
+				}
+			}()
 		}
+		refreshGroup.Wait()
 	}
 	refresh()
 	ticker := time.NewTicker(30 * time.Second)
@@ -778,6 +846,158 @@ func pollDeviceSnapshots(
 			return
 		case <-ticker.C:
 			refresh()
+		}
+	}
+}
+
+// enforceDefaultSafeCardPolicy handles a newly inserted physical SIM or a
+// profile that has never had a policy. RF is turned off before the default is
+// persisted; the VoWiFi runtime reconciler then starts service asynchronously.
+func enforceDefaultSafeCardPolicy(
+	ctx context.Context,
+	logger *slog.Logger,
+	database *store.Store,
+	manager *device.Manager,
+	physicalID string,
+	snapshot *device.Snapshot,
+) {
+	if snapshot == nil || !snapshot.SIMReady || strings.TrimSpace(snapshot.ICCID) == "" ||
+		device.RegionBlockReason(snapshot.IMSI) != "" {
+		return
+	}
+	iccid := strings.TrimSpace(snapshot.ICCID)
+	if _, err := database.CardPolicy(ctx, iccid); err == nil && !snapshot.SIMChanged {
+		return
+	} else if !errors.Is(err, store.ErrNotFound) {
+		logger.Warn("default card policy: read policy", "iccid", iccid, "error", err)
+		return
+	}
+	flightContext, cancel := context.WithTimeout(ctx, 10*time.Second)
+	_, err := manager.SetFlight(flightContext, physicalID, true)
+	cancel()
+	if err != nil {
+		logger.Warn("default card policy: failed to establish airplane mode", "device_id", physicalID, "iccid", iccid, "error", err)
+		return
+	}
+	if err := database.UpsertCardPolicy(ctx, store.CardPolicy{
+		ICCID: iccid, VoWiFiEnabled: true, AirplaneEnabled: true,
+		IPVersion: "IPV4V6", Source: "default",
+	}); err != nil {
+		logger.Warn("default card policy: persist policy", "iccid", iccid, "error", err)
+		return
+	}
+	mapper := integration.ATMapper{Store: database, Devices: manager}
+	configs, err := database.ListDevices(ctx)
+	if err != nil {
+		return
+	}
+	for _, config := range configs {
+		entry, mapErr := mapper.Get(config.ID)
+		if mapErr != nil || entry.ID != physicalID {
+			continue
+		}
+		config.NetworkEnabled = false
+		config.VoWiFiEnabled = true
+		if err := database.UpsertDevice(ctx, config); err != nil {
+			logger.Warn("default card policy: update device policy", "device_id", config.ID, "error", err)
+		}
+		break
+	}
+	logger.Info("new SIM protected by default VoWiFi/airplane policy", "device_id", physicalID, "iccid", iccid)
+}
+
+func reconcileCardPolicies(
+	ctx context.Context,
+	logger *slog.Logger,
+	database *store.Store,
+	manager *device.Manager,
+	vowifiManager *vowifiruntime.Manager,
+) {
+	reconcile := func() {
+		policies, policyListErr := database.ListCardPolicies(ctx)
+		if policyListErr == nil {
+			for _, policy := range policies {
+				if !policy.VoWiFiEnabled || (policy.AirplaneEnabled && !policy.NetworkEnabled) {
+					continue
+				}
+				policy.AirplaneEnabled = true
+				policy.NetworkEnabled = false
+				if err := database.UpsertCardPolicy(ctx, policy); err != nil {
+					logger.Warn("reconcile card policy: normalize stored RF-safe VoWiFi policy", "iccid", policy.ICCID, "error", err)
+				}
+			}
+		}
+		configs, err := database.ListDevices(ctx)
+		if err != nil {
+			return
+		}
+		mapper := integration.ATMapper{Store: database, Devices: manager}
+		for _, config := range configs {
+			entry, mapErr := mapper.Get(config.ID)
+			if mapErr != nil || entry.Snapshot == nil {
+				continue
+			}
+			iccid := strings.TrimSpace(entry.Snapshot.ICCID)
+			if iccid == "" {
+				continue
+			}
+			policy, policyErr := database.CardPolicy(ctx, iccid)
+			if policyErr != nil {
+				continue
+			}
+			if policy.VoWiFiEnabled && (!policy.AirplaneEnabled || policy.NetworkEnabled) {
+				policy.AirplaneEnabled = true
+				policy.NetworkEnabled = false
+				if err := database.UpsertCardPolicy(ctx, policy); err != nil {
+					logger.Warn("reconcile card policy: normalize RF-safe VoWiFi policy", "device_id", config.ID, "iccid", iccid, "error", err)
+					continue
+				}
+			}
+			if config.VoWiFiEnabled != policy.VoWiFiEnabled || (policy.VoWiFiEnabled && config.NetworkEnabled) {
+				config.VoWiFiEnabled = policy.VoWiFiEnabled
+				if policy.VoWiFiEnabled {
+					config.NetworkEnabled = false
+				}
+				if err := database.UpsertDevice(ctx, config); err != nil {
+					logger.Warn("reconcile card policy: update device", "device_id", config.ID, "error", err)
+					continue
+				}
+			}
+			state, stateErr := vowifiManager.State(config.ID)
+			if policy.VoWiFiEnabled {
+				if !entry.Snapshot.FlightMode {
+					flightContext, cancel := context.WithTimeout(ctx, 10*time.Second)
+					_, _ = manager.SetFlight(flightContext, entry.ID, true)
+					cancel()
+				}
+				switch {
+				case stateErr != nil || !state.Enabled:
+					_, _ = vowifiManager.RequestEnabled(config.ID, true)
+				case state.ICCID != "" && !strings.EqualFold(strings.TrimSpace(state.ICCID), iccid):
+					_, _ = vowifiManager.RequestReconnect(config.ID)
+				}
+				continue
+			}
+			if stateErr == nil && state.Enabled {
+				_, _ = vowifiManager.RequestEnabled(config.ID, false)
+				continue
+			}
+			if policy.AirplaneEnabled != entry.Snapshot.FlightMode {
+				flightContext, cancel := context.WithTimeout(ctx, 10*time.Second)
+				_, _ = manager.SetFlight(flightContext, entry.ID, policy.AirplaneEnabled)
+				cancel()
+			}
+		}
+	}
+	reconcile()
+	ticker := time.NewTicker(5 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			reconcile()
 		}
 	}
 }
@@ -848,10 +1068,10 @@ func enforceCardRegion(
 	liftCardRegionBlock(ctx, logger, database, manager, id, snapshot)
 }
 
-// liftCardRegionBlock reverses an automatic region block once the current SIM
-// is positively confirmed to be allowed. It restores the radio only when an
-// outstanding auto-forced block exists, so it never overrides a flight mode the
-// user enabled deliberately.
+// liftCardRegionBlock removes the regional marker once an allowed SIM is
+// confirmed. It deliberately does not restore RF: the replacement SIM is
+// picked up by enforceDefaultSafeCardPolicy and remains in airplane/VoWiFi
+// mode until an explicit user action.
 func liftCardRegionBlock(
 	ctx context.Context,
 	logger *slog.Logger,
@@ -876,18 +1096,6 @@ func liftCardRegionBlock(
 	if len(outstanding) == 0 {
 		return
 	}
-	if snapshot.FlightMode {
-		flightContext, cancelFlight := context.WithTimeout(ctx, 30*time.Second)
-		_, err := manager.SetFlight(flightContext, id, false)
-		cancelFlight()
-		if err != nil && ctx.Err() == nil {
-			logger.Warn(
-				"region block: failed to restore radio",
-				"device_id", id, "error", err,
-			)
-			return
-		}
-	}
 	for _, policy := range outstanding {
 		if err := database.DeleteCardPolicy(ctx, policy.ICCID); err != nil && ctx.Err() == nil {
 			logger.Warn(
@@ -897,7 +1105,7 @@ func liftCardRegionBlock(
 		}
 	}
 	logger.Info(
-		"region block lifted; SIM is allowed",
+		"region marker removed; allowed SIM remains RF protected",
 		"device_id", id, "iccid", snapshot.ICCID, "imsi", snapshot.IMSI,
 	)
 }

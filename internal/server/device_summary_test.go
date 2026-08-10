@@ -7,6 +7,7 @@ import (
 
 	"vocat/internal/device"
 	"vocat/internal/store"
+	"vocat/internal/vowifi"
 )
 
 func TestConfiguredDeviceSummaryIgnoresVoWiFiRuntimeFromPreviousSIM(t *testing.T) {
@@ -47,5 +48,70 @@ func TestConfiguredDeviceSummaryIgnoresVoWiFiRuntimeFromPreviousSIM(t *testing.T
 	runtime, ok := got["vowifi_runtime"].(map[string]any)
 	if !ok || runtime["phase"] != "idle" || runtime["iccid"] != "89104100000028106378" {
 		t.Fatalf("runtime = %#v", got["vowifi_runtime"])
+	}
+}
+
+func TestConfiguredDeviceSummaryPrefersLiveVoWiFiStateOverStoredShutdownState(t *testing.T) {
+	database, err := store.Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = database.Close() })
+	if err := database.UpsertDevice(context.Background(), store.Device{ID: "ec20_1", Name: "EC20"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.UpsertVoWiFiRuntime(context.Background(), store.VoWiFiRuntime{
+		DeviceID:   "ec20_1",
+		Phase:      "idle",
+		ICCID:      "89104100000028106378",
+		LastReason: "disabled",
+		UpdatedAt:  time.Now().UTC(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	live := vowifi.State{
+		DeviceID:    "ec20_1",
+		Phase:       vowifi.PhaseTunnelReady,
+		Enabled:     true,
+		Active:      true,
+		ICCID:       "89104100000028106378",
+		SIMReady:    true,
+		AccessReady: true,
+		TunnelReady: true,
+		LastReason:  "ipsec_tunnel_ready",
+		UpdatedAt:   time.Now().UTC(),
+	}
+	s := &Server{store: database, vowifi: &fakeVoWiFiController{state: live}}
+	entry := &device.Device{ID: "physical", Snapshot: &device.Snapshot{ICCID: live.ICCID}}
+	got := s.configuredDeviceSummary(store.Device{ID: "ec20_1", VoWiFiEnabled: true}, entry)
+	runtime, ok := got["vowifi_runtime"].(map[string]any)
+	if !ok || runtime["phase"] != string(vowifi.PhaseTunnelReady) || runtime["enabled"] != true {
+		t.Fatalf("runtime = %#v", got["vowifi_runtime"])
+	}
+	if got["vowifi_active"] != true {
+		t.Fatalf("vowifi_active = %#v", got["vowifi_active"])
+	}
+}
+
+func TestConfiguredDeviceSummaryMarksIdleRuntimeAsNotInUse(t *testing.T) {
+	database, err := store.Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = database.Close() })
+	s := &Server{
+		store: database,
+		vowifi: &fakeVoWiFiController{state: vowifi.State{
+			DeviceID:   "ec20_1",
+			Phase:      vowifi.PhaseIdle,
+			Enabled:    false,
+			LastReason: "disabled",
+			UpdatedAt:  time.Now().UTC(),
+		}},
+	}
+	got := s.configuredDeviceSummary(store.Device{ID: "ec20_1", VoWiFiEnabled: true}, nil)
+	runtime := got["vowifi_runtime"].(map[string]any)
+	if runtime["enabled"] != false || got["vowifi_active"] != false {
+		t.Fatalf("summary = %#v", got)
 	}
 }

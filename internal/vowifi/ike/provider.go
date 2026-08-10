@@ -110,7 +110,7 @@ func (provider *Provider) Start(ctx context.Context, request vowifi.TunnelReques
 	}()
 
 	group := uint16(dhMODP2048)
-	legacyFirst := request.Identity.HomeMCC == "234" && request.Identity.HomeMNC == "15"
+	legacyFirst := legacyIKEProfile(request.Identity.HomeMCC, request.Identity.HomeMNC)
 	if legacyFirst {
 		group = dhMODP1024
 	}
@@ -542,6 +542,15 @@ func (provider *Provider) Start(ctx context.Context, request vowifi.TunnelReques
 	}
 	closeTransport = false
 	return session, nil
+}
+
+func legacyIKEProfile(mcc, mnc string) bool {
+	// Vodafone's UK and Netherlands ePDGs use the legacy group-2/SHA-1-first
+	// proposal ordering. Some Lebara UK subscriptions carry a 204-04 IMSI from
+	// that Vodafone NL core; treating them as a generic modern network causes
+	// IKE_SA_INIT to fail before EAP-AKA even begins.
+	plmn := strings.TrimSpace(mcc) + strings.TrimLeft(strings.TrimSpace(mnc), "0")
+	return plmn == "23415" || plmn == "2044"
 }
 
 func buildInitialEAPOnlyAuth(

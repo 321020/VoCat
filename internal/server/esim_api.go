@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"vocat/internal/device"
+	"vocat/internal/store"
 )
 
 func esimUnavailable(w http.ResponseWriter) {
@@ -15,7 +16,11 @@ func esimUnavailable(w http.ResponseWriter) {
 }
 
 // handleESIM routes every /devices/{id}/esim* path.
-func (s *Server) handleESIM(w http.ResponseWriter, r *http.Request, rest []string, physicalID string, physicalPresent bool) bool {
+func (s *Server) handleESIM(w http.ResponseWriter, r *http.Request, rest []string, physicalID string, physicalPresent bool, configuredIDs ...string) bool {
+	configuredID := physicalID
+	if len(configuredIDs) > 0 && strings.TrimSpace(configuredIDs[0]) != "" {
+		configuredID = strings.TrimSpace(configuredIDs[0])
+	}
 	if len(rest) == 0 || (len(rest) == 1 && strings.TrimSpace(rest[0]) == "") {
 		if !requireMethod(w, r, http.MethodGet) {
 			return true
@@ -60,7 +65,7 @@ func (s *Server) handleESIM(w http.ResponseWriter, r *http.Request, rest []strin
 			if !requireMethod(w, r, http.MethodPost) {
 				return true
 			}
-			s.handleEsimSwitch(w, r, physicalID, physicalPresent)
+			s.handleEsimSwitch(w, r, configuredID, physicalID, physicalPresent)
 			return true
 		}
 		if len(rest) == 2 && rest[1] == "disable" {
@@ -295,8 +300,9 @@ func (s *Server) handleEsimRename(w http.ResponseWriter, r *http.Request, physic
 		return
 	}
 	var request struct {
-		Name   string `json:"name"`
-		AIDHex string `json:"aid_hex"` // accepted for the multi-eUICC SPA contract; ICCID addresses the profile
+		Name        string `json:"name"`
+		AIDHex      string `json:"aid_hex"`
+		AIDHexCamel string `json:"aidHex"`
 	}
 	if err := s.decodeJSON(w, r, &request); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
@@ -307,7 +313,8 @@ func (s *Server) handleEsimRename(w http.ResponseWriter, r *http.Request, physic
 		writeError(w, http.StatusBadRequest, "invalid_request", "profile nickname is required")
 		return
 	}
-	if err := s.devices.ESIMRenameProfile(r.Context(), physicalID, iccid, nickname, request.AIDHex); err != nil {
+	aidHex := firstNonEmpty(request.AIDHex, request.AIDHexCamel)
+	if err := s.devices.ESIMRenameProfile(r.Context(), physicalID, iccid, nickname, aidHex); err != nil {
 		s.writeDeviceError(w, err)
 		return
 	}
@@ -316,7 +323,7 @@ func (s *Server) handleEsimRename(w http.ResponseWriter, r *http.Request, physic
 
 // handleEsimSwitch enables one already-installed profile by ICCID (切卡). The
 // eUICC EnableProfile command needs no authentication key.
-func (s *Server) handleEsimSwitch(w http.ResponseWriter, r *http.Request, physicalID string, physicalPresent bool) {
+func (s *Server) handleEsimSwitch(w http.ResponseWriter, r *http.Request, configuredID string, physicalID string, physicalPresent bool) {
 	if s.devices == nil {
 		writeError(w, http.StatusServiceUnavailable, "device_manager_unavailable", "device manager is unavailable")
 		return
@@ -326,8 +333,9 @@ func (s *Server) handleEsimSwitch(w http.ResponseWriter, r *http.Request, physic
 		return
 	}
 	var request struct {
-		ICCID  string `json:"iccid"`
-		AIDHex string `json:"aid_hex"` // accepted for contract compatibility; switching keys off iccid
+		ICCID       string `json:"iccid"`
+		AIDHex      string `json:"aid_hex"`
+		AIDHexCamel string `json:"aidHex"`
 	}
 	if err := s.decodeJSON(w, r, &request); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
@@ -338,13 +346,55 @@ func (s *Server) handleEsimSwitch(w http.ResponseWriter, r *http.Request, physic
 		writeError(w, http.StatusBadRequest, "invalid_request", "iccid is required")
 		return
 	}
+	// Profile operations run with RF disabled. The eUICC remains accessible in
+	// CFUN=4, and the recovery path reapplies CFUN=4 as soon as the AT port comes
+	// back after the mandatory modem reset.
+	if _, err := s.devices.SetFlight(r.Context(), physicalID, true); err != nil {
+		s.writeDeviceError(w, err)
+		return
+	}
 	// A confirmed profile switch includes the EC20 reset and a live ICCID read,
 	// which normally takes longer than the server's ordinary response deadline.
 	controller := http.NewResponseController(w)
 	_ = controller.SetWriteDeadline(time.Time{})
-	if err := s.devices.ESIMSwitchProfile(r.Context(), physicalID, iccid, request.AIDHex); err != nil {
+	aidHex := firstNonEmpty(request.AIDHex, request.AIDHexCamel)
+	if err := s.devices.ESIMSwitchProfile(r.Context(), physicalID, iccid, aidHex); err != nil {
 		s.writeDeviceError(w, err)
 		return
+	}
+	if _, err := s.devices.SetFlight(r.Context(), physicalID, true); err != nil {
+		s.writeDeviceError(w, err)
+		return
+	}
+	if err := s.store.UpsertCardPolicy(r.Context(), store.CardPolicy{
+		ICCID: iccid, VoWiFiEnabled: true, AirplaneEnabled: true,
+		IPVersion: "IPV4V6", Source: "default",
+	}); err != nil {
+		s.writeStoreError(w, err)
+		return
+	}
+	config, err := s.store.Device(r.Context(), configuredID)
+	if err != nil {
+		s.writeStoreError(w, err)
+		return
+	}
+	config.VoWiFiEnabled = true
+	config.NetworkEnabled = false
+	if err := s.store.UpsertDevice(r.Context(), config); err != nil {
+		s.writeStoreError(w, err)
+		return
+	}
+	if s.vowifi != nil {
+		state, stateErr := s.vowifi.State(configuredID)
+		switch {
+		case stateErr == nil && state.Enabled:
+			_, err = s.vowifi.RequestReconnect(configuredID)
+		default:
+			_, err = s.vowifi.RequestEnabled(configuredID, true)
+		}
+		if err != nil {
+			s.logger.Warn("profile switched in safe airplane mode but VoWiFi start was not queued", "device_id", configuredID, "iccid", iccid, "error", err)
+		}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"data": map[string]any{"status": "switched", "iccid": iccid, "verified": true}})
 }
@@ -359,8 +409,9 @@ func (s *Server) handleEsimDisable(w http.ResponseWriter, r *http.Request, physi
 		return
 	}
 	var request struct {
-		ICCID  string `json:"iccid"`
-		AIDHex string `json:"aid_hex"` // accepted for the multi-eUICC SPA contract; disabling keys off ICCID
+		ICCID       string `json:"iccid"`
+		AIDHex      string `json:"aid_hex"`
+		AIDHexCamel string `json:"aidHex"`
 	}
 	if err := s.decodeJSON(w, r, &request); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
@@ -371,7 +422,8 @@ func (s *Server) handleEsimDisable(w http.ResponseWriter, r *http.Request, physi
 		writeError(w, http.StatusBadRequest, "invalid_request", "iccid is required")
 		return
 	}
-	if err := s.devices.ESIMDisableProfile(r.Context(), physicalID, iccid, request.AIDHex); err != nil {
+	aidHex := firstNonEmpty(request.AIDHex, request.AIDHexCamel)
+	if err := s.devices.ESIMDisableProfile(r.Context(), physicalID, iccid, aidHex); err != nil {
 		s.writeDeviceError(w, err)
 		return
 	}

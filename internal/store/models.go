@@ -124,6 +124,45 @@ type PhoneAssociation struct {
 	UpdatedAt time.Time
 }
 
+type AutomaticTask struct {
+	ID           int64           `json:"id"`
+	Name         string          `json:"name"`
+	Enabled      bool            `json:"enabled"`
+	DeviceID     string          `json:"device_id"`
+	ProfileICCID string          `json:"profile_iccid"`
+	ProfileAID   string          `json:"profile_aid"`
+	TaskType     string          `json:"task_type"`
+	Environment  string          `json:"environment"`
+	IntervalDays int             `json:"interval_days"`
+	StartDate    string          `json:"start_date"`
+	RunTime      string          `json:"run_time"`
+	Timezone     string          `json:"timezone"`
+	Payload      json.RawMessage `json:"payload"`
+	RetryCount   int             `json:"retry_count"`
+	Notify       bool            `json:"notify"`
+	NextRunAt    time.Time       `json:"next_run_at"`
+	LastRunAt    time.Time       `json:"last_run_at,omitempty"`
+	LastStatus   string          `json:"last_status"`
+	LastError    string          `json:"last_error"`
+	CreatedAt    time.Time       `json:"created_at"`
+	UpdatedAt    time.Time       `json:"updated_at"`
+}
+
+type AutomaticTaskRun struct {
+	ID          int64     `json:"id"`
+	TaskID      int64     `json:"task_id"`
+	DeviceID    string    `json:"device_id"`
+	ScheduledAt time.Time `json:"scheduled_at"`
+	StartedAt   time.Time `json:"started_at,omitempty"`
+	FinishedAt  time.Time `json:"finished_at,omitempty"`
+	Status      string    `json:"status"`
+	Attempts    int       `json:"attempts"`
+	Output      string    `json:"output"`
+	Error       string    `json:"error"`
+	CreatedAt   time.Time `json:"created_at"`
+	UpdatedAt   time.Time `json:"updated_at"`
+}
+
 type SMSMessage struct {
 	ID            int64
 	MessageID     string

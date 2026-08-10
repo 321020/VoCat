@@ -111,7 +111,11 @@ export function DeviceConfigTab({ editConfig, deviceStatus, saving, deleting, on
               <div>
                 <div className="text-sm font-bold text-gray-800 dark:text-gray-100">{t("设备运行模式")}</div>
                 <div className="text-xs text-gray-500 dark:text-gray-400">
-                  {isQmi ? t("此类设备固定 QMI，AT 口仅用于终端") : isMbim ? t("此类设备固定 MBIM，AT 口仅用于终端") : t("AT=传统串口 / QMI=纯 QMI")}
+                  {isQmi
+                    ? t("QMI 负责驻网状态与数据会话；AT 负责 SIM/eSIM、射频、短信、通话和终端指令")
+                    : isMbim
+                      ? t("MBIM 负责数据会话；AT 负责 SIM/eSIM、射频、短信、通话和终端指令")
+                      : t("AT 模式通过串口管理驻网与 PDP 数据会话")}
                 </div>
               </div>
               <Select

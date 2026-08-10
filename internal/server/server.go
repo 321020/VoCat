@@ -84,6 +84,7 @@ type Server struct {
 	netTraffic          *liveNetTracker
 	publicIPMu          sync.RWMutex
 	publicIPs           map[string]cachedPublicIP
+	automaticTasks      *automaticTaskScheduler
 }
 
 func New(options Options) (*Server, error) {

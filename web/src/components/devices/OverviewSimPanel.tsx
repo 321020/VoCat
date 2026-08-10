@@ -4,7 +4,7 @@ import { FieldRow } from "./FieldRow";
 import { useShowSensitive } from "./shared";
 import type { DeviceDetail } from "./types";
 import { useI18n } from "../../lib/i18n";
-import { carrierIso, flagEmoji } from "../../lib/carrier";
+import { carrierBrandIso, flagEmoji } from "../../lib/carrier";
 
 export interface OverviewSimPanelProps {
   device: DeviceDetail;
@@ -20,7 +20,7 @@ export function OverviewSimPanel({ device, simOperatorDisplay, e911Starting, onS
   const sensitive = !showSensitive;
   const activeEsim = (device.activeEsimProfileName || "").trim();
   const flightOn = device.vowifiActive || modem?.operatingMode === 0 || modem?.operatingMode === 4;
-  const carrierFlag = flagEmoji(carrierIso(modem?.imsi));
+  const carrierFlag = flagEmoji(carrierBrandIso(modem?.nativeSpn, modem?.imsi));
   const operatorValue =
     carrierFlag && simOperatorDisplay !== "--" ? `${carrierFlag} ${simOperatorDisplay}` : simOperatorDisplay;
   const backendLabel =

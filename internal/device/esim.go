@@ -26,6 +26,12 @@ import (
 // isdRAID is the standard ISD-R AID that hosts the LPA functions (ES10).
 const isdRAID = "A0000005591010FFFFFFFF8900000100"
 
+// xesimISDRAID is the alternate ISD-R application exposed by XeSIM cards.
+// It implements the same ES10 interface, but is not selectable through the
+// standard ...0100 AID. Selecting it is a read-only capability probe; profile
+// state is never changed during discovery.
+const xesimISDRAID = "A0000005591010FFFFFFFF8900000177"
+
 // eSTK multi-SE products expose each eUICC storage through its own vendor
 // ISD-R AID. The standard GSMA AID aliases one of them, so probing only that
 // AID silently hides the second storage.
@@ -296,20 +302,32 @@ func (manager *Manager) openEuiccOnceAID(ctx context.Context, id, aidHex string)
 	return channel, nil
 }
 
-// discoverEuiccAIDs detects eSTK multi-SE cards without changing any profile
-// state. The vendor product applet is selected only as a read-only capability
-// probe; when present, both vendor ISD-R AIDs are tried. Per OpenEUICC's eSTK
-// integration, the generic GSMA AID is not appended after an eSTK SE opens,
-// because it aliases one of the same storages.
+// discoverEuiccAIDs detects eSTK multi-SE and alternate-ISD-R cards without
+// changing any profile state. The vendor product applet and candidate ISD-R
+// applications are selected only as read-only capability probes. Per
+// OpenEUICC's eSTK integration, generic AIDs are not appended after an eSTK SE
+// opens, because the standard AID aliases one of the same storages.
 func (manager *Manager) discoverEuiccAIDs(ctx context.Context, id string) []string {
 	product, err := manager.openEuiccAID(ctx, id, estkProductAID)
-	if err != nil {
-		return []string{isdRAID}
+	if err == nil {
+		product.close(context.Background())
+
+		var found []string
+		for _, aid := range []string{estkSE0AID, estkSE1AID} {
+			channel, err := manager.openEuiccAID(ctx, id, aid)
+			if err != nil {
+				continue
+			}
+			channel.close(context.Background())
+			found = append(found, aid)
+		}
+		if len(found) > 0 {
+			return found
+		}
 	}
-	product.close(context.Background())
 
 	var found []string
-	for _, aid := range []string{estkSE0AID, estkSE1AID} {
+	for _, aid := range []string{isdRAID, xesimISDRAID} {
 		channel, err := manager.openEuiccAID(ctx, id, aid)
 		if err != nil {
 			continue
@@ -317,10 +335,12 @@ func (manager *Manager) discoverEuiccAIDs(ctx context.Context, id string) []stri
 		channel.close(context.Background())
 		found = append(found, aid)
 	}
-	if len(found) == 0 {
-		return []string{isdRAID}
+	if len(found) > 0 {
+		return found
 	}
-	return found
+	// Preserve the old error path for a physical SIM with no eUICC. The caller
+	// retries the standard AID once and returns ErrNoEUICC to the HTTP layer.
+	return []string{isdRAID}
 }
 
 func isTransientEuiccCME(err error) bool {
@@ -531,18 +551,27 @@ func (manager *Manager) ESIMListProfiles(ctx context.Context, id string) (EsimIn
 		}
 		return EsimInfo{}, errESIMRecovering
 	}
-	channel, err := manager.openEuicc(ctx, id)
-	if err != nil {
-		return EsimInfo{}, err
+	var lastErr error
+	for _, aid := range manager.discoverEuiccAIDs(ctx, id) {
+		channel, err := manager.openEuiccAID(ctx, id, aid)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		payload, err := channel.es10(ctx, []byte{0xBF, 0x2D, 0x00}) // GetProfilesInfo
+		channel.close(context.Background())
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		info := EsimInfo{AID: aid, Profiles: parseProfilesInfo(payload)}
+		manager.cacheESIMInfo(id, info)
+		return info, nil
 	}
-	defer channel.close(context.Background())
-	payload, err := channel.es10(ctx, []byte{0xBF, 0x2D, 0x00}) // GetProfilesInfo
-	if err != nil {
-		return EsimInfo{}, err
+	if lastErr != nil {
+		return EsimInfo{}, lastErr
 	}
-	info := EsimInfo{Profiles: parseProfilesInfo(payload)}
-	manager.cacheESIMInfo(id, info)
-	return info, nil
+	return EsimInfo{}, ErrNoEUICC
 }
 
 // ESIMSwitchProfile enables one profile by ICCID via ES10c EnableProfile.
@@ -774,7 +803,14 @@ func (manager *Manager) refreshAfterProfileSwitch(id string) {
 	time.Sleep(settle)
 	for attempt := 0; attempt < attempts; attempt++ {
 		ctx, cancel := context.WithTimeout(context.Background(), manager.commandTimeout*4)
-		_, err := manager.Refresh(ctx, id)
+		_, _ = manager.Discover(ctx)
+		_, flightErr := manager.SetFlight(ctx, id, true)
+		var err error
+		if flightErr == nil {
+			_, err = manager.Refresh(ctx, id)
+		} else {
+			err = flightErr
+		}
 		cancel()
 		if err == nil {
 			return

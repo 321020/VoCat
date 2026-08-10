@@ -424,7 +424,8 @@ func TestCardPolicyDefaultValidationAndPersistence(t *testing.T) {
 	response := decodeSettingsResponse(t, recorder)
 	policy := response["data"].(map[string]any)
 	if policy["iccid"] != iccid || policy["source"] != "default" ||
-		policy["ip_version"] != "IPV4V6" {
+		policy["ip_version"] != "IPV4V6" || policy["vowifi_enabled"] != true ||
+		policy["airplane_enabled"] != true {
 		t.Fatalf("default policy = %#v", policy)
 	}
 
@@ -434,8 +435,8 @@ func TestCardPolicyDefaultValidationAndPersistence(t *testing.T) {
 		"/api/cards/"+iccid+"/policy",
 		`{"vowifi_enabled":true,"airplane_enabled":true,"apn":"ims","ip_version":"IPV4V6"}`,
 	)
-	if recorder.Code != http.StatusBadRequest {
-		t.Fatalf("conflicting policy status = %d, body = %s", recorder.Code, recorder.Body)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("RF-safe policy status = %d, body = %s", recorder.Code, recorder.Body)
 	}
 
 	recorder = test.request(
@@ -450,11 +451,11 @@ func TestCardPolicyDefaultValidationAndPersistence(t *testing.T) {
 	response = decodeSettingsResponse(t, recorder)
 	policy = response["data"].(map[string]any)
 	if policy["source"] != "manual" || policy["vowifi_enabled"] != true ||
-		policy["ip_version"] != "IPV4V6" {
+		policy["airplane_enabled"] != true || policy["ip_version"] != "IPV4V6" {
 		t.Fatalf("saved policy = %#v", policy)
 	}
 	stored, err := test.database.CardPolicy(context.Background(), iccid)
-	if err != nil || !stored.VoWiFiEnabled || stored.APN != "ims" {
+	if err != nil || !stored.VoWiFiEnabled || !stored.AirplaneEnabled || stored.APN != "ims" {
 		t.Fatalf("stored policy = %+v, %v", stored, err)
 	}
 

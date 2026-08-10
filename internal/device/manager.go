@@ -50,6 +50,8 @@ type ussdSession struct {
 type managedDevice struct {
 	opMu              sync.Mutex
 	candidate         modem.Candidate
+	backend           string
+	lastICCID         string
 	client            modem.Client
 	snapshot          *Snapshot
 	lastError         string
@@ -358,14 +360,42 @@ func (manager *Manager) Refresh(ctx context.Context, id string) (Snapshot, error
 		return Snapshot{}, err
 	}
 	candidate := manager.candidateFor(state)
+	backend := manager.backendFor(state)
 	client, err := manager.clientLocked(ctx, state, candidate)
 	if err != nil {
 		manager.setResult(id, state, nil, err)
 		return Snapshot{}, err
 	}
-	snapshot, err := manager.readSnapshot(ctx, id, candidate, client)
+	previousICCID := state.lastICCID
+	snapshot, err := manager.readSnapshot(ctx, id, candidate, backend, previousICCID, client)
+	if err == nil && strings.TrimSpace(snapshot.ICCID) != "" {
+		state.lastICCID = strings.TrimSpace(snapshot.ICCID)
+	}
 	manager.setResult(id, state, &snapshot, err)
 	return snapshot, err
+}
+
+// SetBackend selects which control plane supplies registration and data state.
+// AT remains available in either mode for UICC, RF, SMS, voice and diagnostics.
+func (manager *Manager) SetBackend(id, backend string) error {
+	backend = strings.ToLower(strings.TrimSpace(backend))
+	if backend != "at" && backend != "qmi" {
+		return fmt.Errorf("unsupported device backend %q", backend)
+	}
+	manager.mu.Lock()
+	defer manager.mu.Unlock()
+	state := manager.devices[id]
+	if state == nil || !state.discovered {
+		return ErrNotFound
+	}
+	state.backend = backend
+	return nil
+}
+
+func (manager *Manager) backendFor(state *managedDevice) string {
+	manager.mu.RLock()
+	defer manager.mu.RUnlock()
+	return state.backend
 }
 
 func (manager *Manager) ExecuteAT(

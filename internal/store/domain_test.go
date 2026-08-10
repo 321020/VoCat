@@ -105,6 +105,43 @@ func TestMigration7BackfillsSMSModemIMEI(t *testing.T) {
 	}
 }
 
+func TestMigration9NormalizesVoWiFiAirplanePolicy(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "rf-safe-policy.db")
+	raw, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for version := 1; version <= 8; version++ {
+		for _, statement := range migrationStatements(version) {
+			if _, err := raw.ExecContext(ctx, statement); err != nil {
+				t.Fatalf("create v%d schema: %v", version, err)
+			}
+		}
+	}
+	if _, err := raw.ExecContext(ctx, `
+		INSERT INTO card_policies (
+			iccid, network_enabled, vowifi_enabled, airplane_enabled,
+			created_at, updated_at
+		) VALUES ('8900000000000000001', 0, 1, 0, 100, 100);
+		PRAGMA user_version = 8;
+	`); err != nil {
+		t.Fatal(err)
+	}
+	if err := raw.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	database := openTestStore(t, path)
+	policy, err := database.CardPolicy(ctx, "8900000000000000001")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !policy.VoWiFiEnabled || !policy.AirplaneEnabled || policy.NetworkEnabled {
+		t.Fatalf("migrated policy = %#v, want VoWiFi+airplane with data off", policy)
+	}
+}
+
 func TestMigration8DefaultsExistingDevicesToPCIeType(t *testing.T) {
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "device-type.db")
@@ -709,13 +746,17 @@ func TestEventsPoliciesAndTraffic(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := database.UpsertCardPolicy(ctx, CardPolicy{
-		ICCID: "invalid", VoWiFiEnabled: true, AirplaneEnabled: true,
-	}); err == nil {
-		t.Fatal("invalid mutually exclusive card policy was accepted")
+		ICCID: "89860002", VoWiFiEnabled: true, AirplaneEnabled: true,
+	}); err != nil {
+		t.Fatalf("RF-safe VoWiFi policy was rejected: %v", err)
 	}
 	policy, err := database.CardPolicy(ctx, "89860001")
 	if err != nil || !policy.VoWiFiEnabled {
 		t.Fatalf("CardPolicy() = %+v, %v", policy, err)
+	}
+	safePolicy, err := database.CardPolicy(ctx, "89860002")
+	if err != nil || !safePolicy.VoWiFiEnabled || !safePolicy.AirplaneEnabled {
+		t.Fatalf("safe CardPolicy() = %+v, %v", safePolicy, err)
 	}
 
 	period := old.Truncate(time.Hour)

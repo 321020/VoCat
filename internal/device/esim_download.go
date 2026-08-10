@@ -217,17 +217,26 @@ type EsimChipInfo struct {
 func (manager *Manager) ESIMChipInfo(ctx context.Context, id string) (*EsimChipInfo, error) {
 	manager.esimMu.Lock()
 	defer manager.esimMu.Unlock()
-	channel, err := manager.openEuicc(ctx, id)
-	if err != nil {
-		return nil, err
-	}
-	defer channel.close(context.Background())
 
-	info, err := readEsimChipInfo(ctx, channel, isdRAID)
-	if err != nil {
-		return nil, err
+	var lastErr error
+	for _, aid := range manager.discoverEuiccAIDs(ctx, id) {
+		channel, err := manager.openEuiccAID(ctx, id, aid)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		info, err := readEsimChipInfo(ctx, channel, aid)
+		channel.close(context.Background())
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		return &info, nil
 	}
-	return &info, nil
+	if lastErr != nil {
+		return nil, lastErr
+	}
+	return nil, ErrNoEUICC
 }
 
 func readEsimChipInfo(ctx context.Context, channel *euiccChannel, aidHex string) (EsimChipInfo, error) {

@@ -31,6 +31,8 @@ export interface ApiErrorBody {
 export interface VoWiFiRuntime {
   deviceId: string;
   phase: string;
+  enabled?: boolean;
+  active?: boolean;
   dataplaneMode: string;
   iccid: string;
   imsi: string;

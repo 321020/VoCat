@@ -236,13 +236,45 @@ func (s *Server) handleDevices(w http.ResponseWriter, r *http.Request) bool {
 			return true
 		}
 		config := payload.toStoreDevice()
+		// Newly added hardware starts fail-closed: RF is disabled immediately and
+		// VoWiFi becomes the desired service. Cellular registration is only
+		// restored by the user's later airplane-mode-off action.
+		config.VoWiFiEnabled = true
+		config.NetworkEnabled = false
 		if !s.developerActive(r.Context()) {
 			config.NetworkEnabled = false
 		}
 		fillConfigFromPhysical(&config, *selected)
+		if selector, ok := s.devices.(interface{ SetBackend(string, string) error }); ok {
+			if err := selector.SetBackend(selected.ID, config.DeviceBackend); err != nil {
+				s.writeDeviceError(w, err)
+				return true
+			}
+		}
+		if _, err := s.devices.SetFlight(r.Context(), selected.ID, true); err != nil {
+			s.writeDeviceError(w, err)
+			return true
+		}
 		if err := s.store.UpsertDevice(r.Context(), config); err != nil {
 			s.writeStoreError(w, err)
 			return true
+		}
+		if selected.Snapshot != nil {
+			iccid := strings.TrimSpace(selected.Snapshot.ICCID)
+			if iccid != "" {
+				if err := s.store.UpsertCardPolicy(r.Context(), store.CardPolicy{
+					ICCID: iccid, VoWiFiEnabled: true, AirplaneEnabled: true,
+					IPVersion: "IPV4V6", Source: "default",
+				}); err != nil {
+					s.writeStoreError(w, err)
+					return true
+				}
+			}
+		}
+		if s.vowifi != nil {
+			if _, err := s.vowifi.RequestEnabled(config.ID, true); err != nil {
+				s.logger.Warn("new device saved in safe airplane mode but VoWiFi start was not queued", "device_id", config.ID, "error", err)
+			}
 		}
 		writeJSON(w, http.StatusCreated, map[string]any{
 			"data": map[string]any{
@@ -416,8 +448,19 @@ func (s *Server) handleDevicePath(
 			}
 			next.ID = id
 			next.CreatedAt = config.CreatedAt
+			// VoWiFi/airplane transitions are transactional device actions. A
+			// general config save must not silently bypass their RF-safe ordering.
+			next.VoWiFiEnabled = config.VoWiFiEnabled
 			if next.Name == id && strings.TrimSpace(payload.Name) == "" {
 				next.Name = config.Name
+			}
+			if _, physicalID, present := s.physicalForConfig(next); present {
+				if selector, ok := s.devices.(interface{ SetBackend(string, string) error }); ok {
+					if err := selector.SetBackend(physicalID, next.DeviceBackend); err != nil {
+						s.writeDeviceError(w, err)
+						return true
+					}
+				}
 			}
 			if err := s.store.UpsertDevice(r.Context(), next); err != nil {
 				s.writeStoreError(w, err)
@@ -435,7 +478,7 @@ func (s *Server) handleDevicePath(
 
 	entry, physicalID, physicalPresent := s.physicalForConfig(config)
 	if len(tail) > 0 && tail[0] == "esim" {
-		return s.handleESIM(w, r, tail[1:], physicalID, physicalPresent)
+		return s.handleESIM(w, r, tail[1:], physicalID, physicalPresent, config.ID)
 	}
 	switch strings.Join(tail, "/") {
 	case "overview":
@@ -503,7 +546,7 @@ func (s *Server) handleDevicePath(
 		if !s.requirePhysicalDevice(w, physicalPresent) {
 			return true
 		}
-		return s.handleFlightMode(w, r, physicalID)
+		return s.handleFlightMode(w, r, config, physicalID)
 	case "network":
 		if !s.requirePhysicalDevice(w, physicalPresent) {
 			return true
@@ -756,9 +799,59 @@ func (s *Server) handleVoWiFiEnabled(
 		}
 	}
 
+	// Establish RF-off synchronously before changing the asynchronous VoWiFi
+	// lifecycle. This removes the attach window both when entering VoWiFi and
+	// when leaving it: teardown starts from CFUN=4 and is required to remain
+	// there until the user explicitly disables airplane mode.
 	previous := config.VoWiFiEnabled
+	liveICCID := ""
+	entry, physicalID, present := s.physicalForConfig(config)
+	if present {
+		if _, err := s.devices.SetFlight(r.Context(), physicalID, true); err != nil {
+			s.writeDeviceError(w, err)
+			return true
+		}
+	}
+	if entry.Snapshot != nil {
+		iccid := strings.TrimSpace(entry.Snapshot.ICCID)
+		if iccid != "" {
+			liveICCID = iccid
+			policy, policyErr := s.store.CardPolicy(r.Context(), iccid)
+			if errors.Is(policyErr, store.ErrNotFound) {
+				policy = store.CardPolicy{ICCID: iccid, IPVersion: "IPV4V6"}
+				policyErr = nil
+			}
+			if policyErr != nil {
+				s.writeStoreError(w, policyErr)
+				return true
+			}
+			policy.VoWiFiEnabled = request.Enabled
+			policy.AirplaneEnabled = true
+			policy.NetworkEnabled = false
+			policy.Source = "manual"
+			if err := s.store.UpsertCardPolicy(r.Context(), policy); err != nil {
+				s.writeStoreError(w, err)
+				return true
+			}
+		}
+	}
+
+	rollbackCardPolicy := func() {
+		if liveICCID == "" {
+			return
+		}
+		policy, policyErr := s.store.CardPolicy(context.Background(), liveICCID)
+		if policyErr != nil {
+			return
+		}
+		policy.VoWiFiEnabled = previous
+		policy.AirplaneEnabled = true
+		policy.NetworkEnabled = false
+		_ = s.store.UpsertCardPolicy(context.Background(), policy)
+	}
 	config.VoWiFiEnabled = request.Enabled
 	if err := s.store.UpsertDevice(r.Context(), config); err != nil {
+		rollbackCardPolicy()
 		s.writeStoreError(w, err)
 		return true
 	}
@@ -780,6 +873,7 @@ func (s *Server) handleVoWiFiEnabled(
 			return true
 		}
 		config.VoWiFiEnabled = previous
+		rollbackCardPolicy()
 		if restoreErr := s.store.UpsertDevice(r.Context(), config); restoreErr != nil {
 			s.logger.Error(
 				"restore VoWiFi policy after rejected runtime operation",
@@ -983,7 +1077,7 @@ func (s *Server) handleUSSD(w http.ResponseWriter, r *http.Request, id string) b
 	return true
 }
 
-func (s *Server) handleFlightMode(w http.ResponseWriter, r *http.Request, id string) bool {
+func (s *Server) handleFlightMode(w http.ResponseWriter, r *http.Request, config store.Device, physicalID string) bool {
 	if !requireMethod(w, r, http.MethodPatch) {
 		return true
 	}
@@ -994,7 +1088,11 @@ func (s *Server) handleFlightMode(w http.ResponseWriter, r *http.Request, id str
 		writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
 		return true
 	}
-	result, err := s.devices.SetFlight(r.Context(), id, request.Enabled)
+	if config.VoWiFiEnabled {
+		writeError(w, http.StatusConflict, "vowifi_owns_airplane_mode", "airplane mode is locked on while VoWiFi is enabled")
+		return true
+	}
+	result, err := s.devices.SetFlight(r.Context(), physicalID, request.Enabled)
 	if err != nil {
 		s.writeDeviceError(w, err)
 		return true
@@ -1002,7 +1100,7 @@ func (s *Server) handleFlightMode(w http.ResponseWriter, r *http.Request, id str
 	// Unlike VoWiFi, CFUN airplane state is not represented in the device row.
 	// Persist it against the live ICCID so a restart can distinguish an
 	// intentional airplane policy from an interrupted VoWiFi teardown.
-	if entry, getErr := s.devices.Get(id); getErr == nil && entry.Snapshot != nil {
+	if entry, getErr := s.devices.Get(physicalID); getErr == nil && entry.Snapshot != nil {
 		iccid := strings.TrimSpace(entry.Snapshot.ICCID)
 		if iccid != "" {
 			policy, policyErr := s.store.CardPolicy(r.Context(), iccid)
@@ -1073,7 +1171,7 @@ func (s *Server) handleCellularData(
 		controller := http.NewResponseController(w)
 		_ = controller.SetWriteDeadline(time.Time{})
 		result, err := s.devices.SetNetwork(r.Context(), physicalID, device.NetworkRequest{
-			Enabled: request.Enabled, APN: apn, IPVersion: "IPV4V6",
+			Enabled: request.Enabled, APN: apn, IPVersion: "IPV4V6", Backend: config.DeviceBackend,
 		})
 		if err != nil {
 			s.writeDeviceError(w, err)
@@ -1087,7 +1185,7 @@ func (s *Server) handleCellularData(
 		if err := s.store.UpsertDevice(r.Context(), config); err != nil {
 			rollbackContext, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 			_, _ = s.devices.SetNetwork(rollbackContext, physicalID, device.NetworkRequest{
-				Enabled: previous, APN: config.APN, IPVersion: "IPV4V6",
+				Enabled: previous, APN: config.APN, IPVersion: "IPV4V6", Backend: config.DeviceBackend,
 			})
 			cancel()
 			s.writeStoreError(w, err)
@@ -1266,28 +1364,46 @@ func (s *Server) configuredDeviceSummary(
 	result["network_connected"] = config.NetworkEnabled
 	result["data_connected"] = config.NetworkEnabled
 	result["vowifi_enabled"] = config.VoWiFiEnabled
-	if runtime, err := s.store.VoWiFiRuntime(context.Background(), config.ID); err == nil {
-		currentICCID := ""
-		var currentSnapshot *device.Snapshot
-		if entry != nil {
-			currentSnapshot = entry.Snapshot
-			if entry.Snapshot != nil {
-				currentICCID = strings.TrimSpace(entry.Snapshot.ICCID)
+	var runtimeResponse map[string]any
+	runtimeMatchesCard := true
+	if s.vowifi != nil {
+		if runtime, err := s.vowifi.State(config.ID); err == nil {
+			runtimeMatchesCard = voWiFiRuntimeMatchesSnapshot(runtime.ICCID, entry)
+			if runtimeMatchesCard {
+				runtimeResponse = liveVoWiFiRuntime(runtime)
+			} else {
+				runtimeResponse = idleVoWiFiRuntime(config.ID, snapshotForEntry(entry))
 			}
 		}
-		runtimeMatchesCard := currentICCID == "" || runtime.ICCID == "" ||
-			strings.EqualFold(currentICCID, strings.TrimSpace(runtime.ICCID))
-		var runtimeResponse map[string]any
-		if runtimeMatchesCard {
-			runtimeResponse = storedVoWiFiRuntime(runtime)
-		} else {
-			// The saved IMS session belongs to a different eSIM profile. Never
-			// project its registration or number onto the currently selected SIM.
-			runtimeResponse = idleVoWiFiRuntime(config.ID, currentSnapshot)
-		}
-		result["vowifi_runtime"] = runtimeResponse
-		result["vowifi_active"] = config.VoWiFiEnabled && runtimeMatchesCard && runtime.TunnelReady
 	}
+	if runtimeResponse == nil {
+		if runtime, err := s.store.VoWiFiRuntime(context.Background(), config.ID); err == nil {
+			currentICCID := ""
+			var currentSnapshot *device.Snapshot
+			if entry != nil {
+				currentSnapshot = entry.Snapshot
+				if entry.Snapshot != nil {
+					currentICCID = strings.TrimSpace(entry.Snapshot.ICCID)
+				}
+			}
+			runtimeMatchesCard = currentICCID == "" || runtime.ICCID == "" ||
+				strings.EqualFold(currentICCID, strings.TrimSpace(runtime.ICCID))
+			if runtimeMatchesCard {
+				runtimeResponse = storedVoWiFiRuntime(runtime)
+			} else {
+				// The saved IMS session belongs to a different eSIM profile. Never
+				// project its registration or number onto the currently selected SIM.
+				runtimeResponse = idleVoWiFiRuntime(config.ID, currentSnapshot)
+			}
+		}
+	}
+	if runtimeResponse == nil {
+		runtimeResponse = idleVoWiFiRuntime(config.ID, snapshotForEntry(entry))
+	}
+	result["vowifi_runtime"] = runtimeResponse
+	runtimeEnabled, _ := runtimeResponse["enabled"].(bool)
+	runtimeTunnelReady, _ := runtimeResponse["tunnel_ready"].(bool)
+	result["vowifi_active"] = config.VoWiFiEnabled && runtimeMatchesCard && runtimeEnabled && runtimeTunnelReady
 	// Numbers are SIM-owned data. Resolve the association by the live ICCID
 	// instead of reusing the last VoWiFi runtime attached to this device ID.
 	if entry != nil && entry.Snapshot != nil {
@@ -1390,9 +1506,14 @@ func (s *Server) configuredDeviceStatus(
 }
 
 func storedVoWiFiRuntime(runtime store.VoWiFiRuntime) map[string]any {
+	extra, _ := rawJSONObject(runtime.Extra).(map[string]any)
+	enabled, _ := extra["enabled"].(bool)
+	active, _ := extra["active"].(bool)
 	return map[string]any{
 		"device_id":           runtime.DeviceID,
 		"phase":               runtime.Phase,
+		"enabled":             enabled,
+		"active":              active,
 		"dataplane_mode":      runtime.DataplaneMode,
 		"iccid":               runtime.ICCID,
 		"imsi":                runtime.IMSI,
@@ -1414,6 +1535,63 @@ func storedVoWiFiRuntime(runtime store.VoWiFiRuntime) map[string]any {
 		"imscore":             rawJSONObject(runtime.IMSCore),
 		"smsip":               rawJSONObject(runtime.SMSIP),
 	}
+}
+
+func liveVoWiFiRuntime(runtime vowifi.State) map[string]any {
+	return map[string]any{
+		"device_id":           runtime.DeviceID,
+		"phase":               string(runtime.Phase),
+		"enabled":             runtime.Enabled,
+		"active":              runtime.Active,
+		"dataplane_mode":      runtime.DataplaneMode,
+		"iccid":               runtime.ICCID,
+		"imsi":                runtime.IMSI,
+		"sim_ready":           runtime.SIMReady,
+		"access_ready":        runtime.AccessReady,
+		"tunnel_ready":        runtime.TunnelReady,
+		"ims_ready":           runtime.IMSReady,
+		"sms_ready":           runtime.SMSReady,
+		"reg_status":          map[bool]int{true: 1, false: 0}[runtime.IMSReady],
+		"reg_status_text":     map[bool]string{true: "registered", false: "not registered"}[runtime.IMSReady],
+		"network_mode":        "Wi-Fi",
+		"local_phone":         runtime.PhoneNumber,
+		"phone_number_source": runtime.PhoneNumberSource,
+		"last_error_class":    runtime.LastErrorClass,
+		"last_error":          runtime.LastError,
+		"last_reason":         runtime.LastReason,
+		"updated_at":          runtime.UpdatedAt,
+		"tunnel": map[string]any{
+			"established":    runtime.TunnelReady,
+			"name":           runtime.TunnelName,
+			"dataplane_mode": runtime.DataplaneMode,
+			"epdg":           runtime.EPDG,
+			"proxy_mode":     runtime.ProxyMode,
+			"proxy_id":       runtime.ProxyID,
+			"security_audit": runtime.Security,
+		},
+		"imscore": map[string]any{
+			"registered":         runtime.IMSReady,
+			"registration_state": runtime.IMSRegistration,
+			"associated_number":  runtime.PhoneNumber,
+			"number_source":      runtime.PhoneNumberSource,
+		},
+		"smsip": map[string]any{"ready": runtime.SMSReady},
+	}
+}
+
+func snapshotForEntry(entry *device.Device) *device.Snapshot {
+	if entry == nil {
+		return nil
+	}
+	return entry.Snapshot
+}
+
+func voWiFiRuntimeMatchesSnapshot(runtimeICCID string, entry *device.Device) bool {
+	current := strings.TrimSpace(snapshotString(snapshotForEntry(entry), func(snapshot *device.Snapshot) string {
+		return snapshot.ICCID
+	}))
+	runtimeICCID = strings.TrimSpace(runtimeICCID)
+	return current == "" || runtimeICCID == "" || strings.EqualFold(current, runtimeICCID)
 }
 
 func rawJSONObject(value json.RawMessage) any {
@@ -1569,6 +1747,7 @@ func modemSummary(snapshot *device.Snapshot, phone string, phoneSource string) m
 			"operator":              "",
 			"native_mcc":            "",
 			"native_mnc":            "",
+			"native_spn":            "",
 			"operator_country_code": "",
 			"card_mcc":              "",
 			"card_mnc":              "",
@@ -1598,6 +1777,7 @@ func modemSummary(snapshot *device.Snapshot, phone string, phoneSource string) m
 		"operator":              snapshot.OperatorName,
 		"native_mcc":            mcc,
 		"native_mnc":            mnc,
+		"native_spn":            snapshot.SPN,
 		"operator_country_code": operatorCountryCode,
 		"card_mcc":              cardMCC,
 		"card_mnc":              cardMNC,
@@ -1643,6 +1823,8 @@ func idleVoWiFiRuntime(id string, snapshot *device.Snapshot) map[string]any {
 	return map[string]any{
 		"device_id":           id,
 		"phase":               "idle",
+		"enabled":             false,
+		"active":              false,
 		"dataplane_mode":      "",
 		"iccid":               iccid,
 		"imsi":                imsi,

@@ -267,6 +267,89 @@ func TestManagerStopsAutomaticRetryWhenPolicyIsDisabled(t *testing.T) {
 	}
 }
 
+func TestManagerAcceptsRepeatedEnableWhileBusy(t *testing.T) {
+	manager := New(Options{OperationTimeout: time.Second})
+	t.Cleanup(func() { _ = manager.Close(context.Background()) })
+	if err := manager.Register(testOrchestrator(t, "ec20")); err != nil {
+		t.Fatal(err)
+	}
+
+	started := make(chan struct{})
+	release := make(chan struct{})
+	if _, err := manager.startOperation("ec20", false, func(context.Context, *vowifi.Orchestrator) error {
+		close(started)
+		<-release
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	<-started
+	if _, err := manager.RequestEnabled("ec20", true); err != nil {
+		t.Fatalf("repeated desired state was rejected: %v", err)
+	}
+	close(release)
+
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		state, err := manager.State("ec20")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if state.Phase == vowifi.PhaseSMSReady {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatal("desired enable was not reconciled after the active operation")
+}
+
+func TestManagerReEnablesWhenSwitchChangesDuringDisable(t *testing.T) {
+	manager := New(Options{OperationTimeout: time.Second})
+	t.Cleanup(func() { _ = manager.Close(context.Background()) })
+	if err := manager.Register(testOrchestrator(t, "ec20")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := manager.RequestEnabled("ec20", true); err != nil {
+		t.Fatal(err)
+	}
+	waitForPhase := func(want vowifi.Phase) {
+		t.Helper()
+		deadline := time.Now().Add(time.Second)
+		for time.Now().Before(deadline) {
+			state, err := manager.State("ec20")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if state.Phase == want {
+				return
+			}
+			time.Sleep(time.Millisecond)
+		}
+		t.Fatalf("phase did not become %s", want)
+	}
+	waitForPhase(vowifi.PhaseSMSReady)
+
+	started := make(chan struct{})
+	release := make(chan struct{})
+	if _, err := manager.startOperation("ec20", false, func(ctx context.Context, orchestrator *vowifi.Orchestrator) error {
+		close(started)
+		<-release
+		_, err := orchestrator.Disable(ctx)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	<-started
+	manager.mu.Lock()
+	manager.entries["ec20"].desiredEnabled = false
+	manager.mu.Unlock()
+	if _, err := manager.RequestEnabled("ec20", true); err != nil {
+		t.Fatalf("enable while disable is active: %v", err)
+	}
+	close(release)
+	waitForPhase(vowifi.PhaseSMSReady)
+}
+
 func TestManagerRejectsUnknownDevice(t *testing.T) {
 	manager := New(Options{})
 	t.Cleanup(func() {
@@ -348,8 +431,9 @@ func TestManagerCoalescesReconnectWhileLifecycleOperationIsBusy(t *testing.T) {
 	if _, err := manager.RequestReconnect("ec20"); err != nil {
 		t.Fatalf("second queued reconnect error = %v", err)
 	}
-	if _, err := manager.RequestEnabled("ec20", true); !errors.Is(err, ErrOperationInProgress) {
-		t.Fatalf("non-reconnect operation error = %v, want ErrOperationInProgress", err)
+	if _, err := manager.RequestEnabled("ec20", true); err != nil {
+		close(release)
+		t.Fatalf("repeated desired enable was rejected: %v", err)
 	}
 	manager.mu.Lock()
 	pending := manager.entries["ec20"].reconnectPending

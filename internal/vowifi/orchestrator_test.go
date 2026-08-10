@@ -366,11 +366,11 @@ func TestEnableUsesEvidenceBackedOrderAndDisableRollsBackInReverse(t *testing.T)
 	}
 
 	wantEnableCalls := []string{
-		"sim.identity",
-		"aka.ready",
 		"radio.snapshot",
 		"radio.rf_off",
 		"radio.stop_data",
+		"sim.identity",
+		"aka.ready",
 		"proxy.resolve",
 		"tunnel.start",
 		"tunnel.evidence",
@@ -422,26 +422,10 @@ func TestEnableFailuresCleanUpEveryAcquiredLayer(t *testing.T) {
 		{name: "identity", failCall: "sim.identity"},
 		{name: "aka", failCall: "aka.ready"},
 		{name: "radio snapshot", failCall: "radio.snapshot"},
-		{
-			name:            "stop data can partially mutate",
-			failCall:        "radio.stop_data",
-			wantCleanupTail: []string{"radio.restore"},
-		},
-		{
-			name:            "rf off",
-			failCall:        "radio.rf_off",
-			wantCleanupTail: []string{"radio.restore"},
-		},
-		{
-			name:            "proxy",
-			failCall:        "proxy.resolve",
-			wantCleanupTail: []string{"radio.restore"},
-		},
-		{
-			name:            "tunnel start",
-			failCall:        "tunnel.start",
-			wantCleanupTail: []string{"radio.restore"},
-		},
+		{name: "stop data can partially mutate", failCall: "radio.stop_data"},
+		{name: "rf off", failCall: "radio.rf_off"},
+		{name: "proxy", failCall: "proxy.resolve"},
+		{name: "tunnel start", failCall: "tunnel.start"},
 		{
 			name: "tunnel evidence",
 			mutate: func(environment *fakeEnvironment) {
@@ -449,12 +433,12 @@ func TestEnableFailuresCleanUpEveryAcquiredLayer(t *testing.T) {
 				environment.tunnelEvidence.ResponderAUTH = ResponderAUTHUnknown
 			},
 			wantError:       ErrTunnelNotEstablished,
-			wantCleanupTail: []string{"tunnel.close", "radio.restore"},
+			wantCleanupTail: []string{"tunnel.close"},
 		},
 		{
 			name:            "IMS start",
 			failCall:        "ims.start",
-			wantCleanupTail: []string{"tunnel.close", "radio.restore"},
+			wantCleanupTail: []string{"tunnel.close"},
 		},
 		{
 			name: "IMS registration evidence",
@@ -462,12 +446,12 @@ func TestEnableFailuresCleanUpEveryAcquiredLayer(t *testing.T) {
 				environment.imsEvidence.Registered = false
 			},
 			wantError:       ErrIMSNotRegistered,
-			wantCleanupTail: []string{"ims.close", "tunnel.close", "radio.restore"},
+			wantCleanupTail: []string{"ims.close", "tunnel.close"},
 		},
 		{
 			name:            "SMS activation",
 			failCall:        "ims.sms",
-			wantCleanupTail: []string{"ims.close", "tunnel.close", "radio.restore"},
+			wantCleanupTail: []string{"ims.close", "tunnel.close"},
 		},
 		{
 			name: "SMS evidence",
@@ -475,7 +459,7 @@ func TestEnableFailuresCleanUpEveryAcquiredLayer(t *testing.T) {
 				environment.smsEvidence.Ready = false
 			},
 			wantError:       ErrSMSNotReady,
-			wantCleanupTail: []string{"ims.close", "tunnel.close", "radio.restore"},
+			wantCleanupTail: []string{"ims.close", "tunnel.close"},
 		},
 	}
 
@@ -500,6 +484,9 @@ func TestEnableFailuresCleanUpEveryAcquiredLayer(t *testing.T) {
 			if state.Phase != PhaseFailed || state.Active ||
 				state.TunnelReady || state.IMSReady || state.SMSReady {
 				t.Fatalf("failed state = %+v", state)
+			}
+			if environment.callCount("radio.restore") != 0 {
+				t.Fatalf("failed VoWiFi attempt re-enabled cellular RF: %#v", environment.callsSnapshot())
 			}
 			if len(test.wantCleanupTail) > 0 {
 				calls := environment.callsSnapshot()
@@ -701,6 +688,34 @@ func TestRetryAfterFailureCreatesANewAttempt(t *testing.T) {
 	if environment.callCount("tunnel.start") != 2 {
 		t.Fatalf("tunnel.start count = %d", environment.callCount("tunnel.start"))
 	}
+	if environment.callCount("radio.snapshot") != 1 || environment.callCount("radio.restore") != 0 {
+		t.Fatalf("retry must retain RF-off checkpoint: %#v", environment.callsSnapshot())
+	}
+}
+
+func TestFailedEnableRestoresRadioOnlyOnExplicitDisable(t *testing.T) {
+	environment := newFakeEnvironment()
+	environment.setFailure("tunnel.start", 1)
+	orchestrator := newTestOrchestrator(t, environment, false)
+
+	state, err := orchestrator.Enable(context.Background())
+	if err == nil || state.Phase != PhaseFailed || !state.Enabled {
+		t.Fatalf("Enable() = (%+v, %v)", state, err)
+	}
+	if environment.callCount("radio.restore") != 0 {
+		t.Fatalf("failed enable restored cellular RF: %#v", environment.callsSnapshot())
+	}
+
+	state, err = orchestrator.Disable(context.Background())
+	if err != nil {
+		t.Fatalf("Disable() error = %v", err)
+	}
+	if state.Phase != PhaseIdle || state.Enabled {
+		t.Fatalf("Disable() state = %+v", state)
+	}
+	if environment.callCount("radio.restore") != 1 {
+		t.Fatalf("explicit disable did not restore cellular RF: %#v", environment.callsSnapshot())
+	}
 }
 
 func TestReconnectClosesThenRebuildsTheRuntime(t *testing.T) {
@@ -719,7 +734,8 @@ func TestReconnectClosesThenRebuildsTheRuntime(t *testing.T) {
 	}
 	if environment.callCount("tunnel.start") != 2 ||
 		environment.callCount("tunnel.close") != 1 ||
-		environment.callCount("radio.restore") != 1 {
+		environment.callCount("radio.restore") != 0 ||
+		environment.callCount("radio.snapshot") != 1 {
 		t.Fatalf("calls = %#v", environment.callsSnapshot())
 	}
 }
@@ -745,7 +761,8 @@ func TestReconnectToleratesCleanupFailureAndRebuilds(t *testing.T) {
 	}
 	if environment.callCount("ims.close") != 1 ||
 		environment.callCount("tunnel.close") != 1 ||
-		environment.callCount("radio.restore") != 1 ||
+		environment.callCount("radio.restore") != 0 ||
+		environment.callCount("radio.snapshot") != 1 ||
 		environment.callCount("tunnel.start") != 2 {
 		t.Fatalf("calls = %#v", environment.callsSnapshot())
 	}
@@ -781,7 +798,7 @@ func TestRuntimeTunnelFailureRevokesReadinessAndCleansEveryLayer(t *testing.T) {
 	}
 
 	calls := environment.callsSnapshot()
-	wantTail := []string{"ims.close", "tunnel.close", "radio.restore"}
+	wantTail := []string{"ims.close", "tunnel.close"}
 	if len(calls) < len(wantTail) ||
 		!reflect.DeepEqual(calls[len(calls)-len(wantTail):], wantTail) {
 		t.Fatalf("runtime failure cleanup tail = %#v", calls)
@@ -853,7 +870,7 @@ func TestSubscriptionPublishesOrderedEvidencePhases(t *testing.T) {
 	}
 }
 
-func TestCleanupAttemptsEveryLayerAndReportsAllErrors(t *testing.T) {
+func TestFailedAttemptKeepsRadioOffUntilExplicitDisable(t *testing.T) {
 	environment := newFakeEnvironment()
 	environment.setFailure("ims.sms", 1)
 	environment.setFailure("ims.close", 1)
@@ -865,18 +882,25 @@ func TestCleanupAttemptsEveryLayerAndReportsAllErrors(t *testing.T) {
 	if err == nil {
 		t.Fatal("Enable() unexpectedly succeeded")
 	}
-	if len(state.CleanupErrors) != 3 {
+	if len(state.CleanupErrors) != 2 {
 		t.Fatalf("cleanup errors = %#v", state.CleanupErrors)
 	}
 	calls := environment.callsSnapshot()
-	wantTail := []string{"ims.close", "tunnel.close", "radio.restore"}
-	if !reflect.DeepEqual(calls[len(calls)-3:], wantTail) {
-		t.Fatalf("cleanup tail = %#v", calls[len(calls)-3:])
+	wantTail := []string{"ims.close", "tunnel.close"}
+	if !reflect.DeepEqual(calls[len(calls)-2:], wantTail) {
+		t.Fatalf("cleanup tail = %#v", calls[len(calls)-2:])
 	}
-	for _, text := range []string{"close IMS", "close tunnel", "restore radio"} {
+	for _, text := range []string{"close IMS", "close tunnel"} {
 		if !strings.Contains(err.Error(), text) {
 			t.Fatalf("error %q does not contain %q", err, text)
 		}
+	}
+	if environment.callCount("radio.restore") != 0 {
+		t.Fatalf("failed attempt restored RF unexpectedly: %#v", calls)
+	}
+	if _, disableErr := orchestrator.Disable(context.Background()); disableErr == nil ||
+		!strings.Contains(disableErr.Error(), "restore radio") {
+		t.Fatalf("Disable() error = %v, want retained radio restore failure", disableErr)
 	}
 }
 

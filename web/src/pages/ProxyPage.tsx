@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { AddRegular } from "@fluentui/react-icons";
 import { api, ApiError, apiMessage } from "../api";
 import type { DeviceListItem, DeviceProxyBinding, DevicesResponse, UpstreamProxy } from "../types";
 import { usePolling } from "../lib/usePolling";
-import { PageHeader, confirmDialog, message } from "../components/ui";
+import { Button, PageHeader, confirmDialog, message } from "../components/ui";
 import {
   emptyUpstreamForm,
   ipv6AddrError,
@@ -233,13 +234,16 @@ export default function ProxyPage() {
 
   return (
     <div className="mx-auto max-w-7xl">
-      <PageHeader title={t("代理管理")} subtitle={t("管理 VoWiFi 上游代理和设备绑定")} />
+      <PageHeader
+        title={t("代理管理")}
+        subtitle={t("管理 VoWiFi 上游代理和设备绑定")}
+        actions={<Button variant="primary" icon={<AddRegular />} onClick={() => openUpstreamDialog()}>{t("新增代理")}</Button>}
+      />
       <UpstreamSection
         rows={proxyRows}
         loading={upstreamLoading}
         error={upstreamError}
         onRetry={() => loadUpstream(false)}
-        onNew={() => openUpstreamDialog()}
         onEdit={openUpstreamDialog}
         onDelete={removeUpstream}
         onOpenBindings={openBindingsDialog}

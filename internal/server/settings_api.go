@@ -1168,11 +1168,11 @@ func (s *Server) liveCardPolicyFlags(ctx context.Context, iccid string) (vowifi,
 		if !strings.EqualFold(strings.TrimSpace(entry.Snapshot.ICCID), clean) {
 			continue
 		}
-		// VoWiFi deliberately puts the modem into RF-off mode while the SWu/IMS
-		// path owns service. That physical CFUN state is not the user's separate
-		// airplane-mode policy; exposing both toggles as enabled is contradictory
-		// and makes the UI unable to represent the active policy correctly.
-		return config.VoWiFiEnabled, entry.Snapshot.FlightMode && !config.VoWiFiEnabled, true
+		// VoWiFi is an RF-off service mode. Surface that fact explicitly: while
+		// VoWiFi is selected both switches are on, but the airplane switch is
+		// read-only in the UI. Once VoWiFi is disabled, airplane remains on until
+		// the user explicitly turns it off.
+		return config.VoWiFiEnabled, config.VoWiFiEnabled || entry.Snapshot.FlightMode, true
 	}
 	return false, false, false
 }
@@ -1193,9 +1193,11 @@ func (s *Server) handleCardPolicy(w http.ResponseWriter, r *http.Request, iccid 
 		policy, err := s.store.CardPolicy(r.Context(), iccid)
 		if errors.Is(err, store.ErrNotFound) {
 			policy = store.CardPolicy{
-				ICCID:     iccid,
-				IPVersion: "IPV4V6",
-				Source:    "default",
+				ICCID:           iccid,
+				VoWiFiEnabled:   true,
+				AirplaneEnabled: true,
+				IPVersion:       "IPV4V6",
+				Source:          "default",
 			}
 		} else if err != nil {
 			s.writeStoreError(w, err)
@@ -1250,14 +1252,11 @@ func (s *Server) handleCardPolicy(w http.ResponseWriter, r *http.Request, iccid 
 			)
 			return
 		}
-		if *request.VoWiFiEnabled && *request.AirplaneEnabled {
-			writeError(
-				w,
-				http.StatusBadRequest,
-				"invalid_card_policy",
-				"VoWiFi and airplane mode cannot both be enabled",
-			)
-			return
+		// VoWiFi always owns an RF-off modem. Store airplane=true even when an
+		// older client omits that implication, so disabling VoWiFi cannot expose a
+		// brief cellular attach window.
+		if *request.VoWiFiEnabled {
+			*request.AirplaneEnabled = true
 		}
 		policy := store.CardPolicy{
 			ICCID:           iccid,

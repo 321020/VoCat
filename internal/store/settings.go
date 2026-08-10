@@ -369,9 +369,6 @@ func (s *Store) UpsertCardPolicy(ctx context.Context, value CardPolicy) error {
 	default:
 		return fmt.Errorf("unsupported card policy IP version %q", value.IPVersion)
 	}
-	if value.VoWiFiEnabled && value.AirplaneEnabled {
-		return errors.New("VoWiFi and airplane mode cannot both be enabled")
-	}
 	now := time.Now().UTC()
 	createdAt := value.CreatedAt
 	if createdAt.IsZero() {

@@ -19,6 +19,14 @@ func TestManagerRefreshBuildsEC20Snapshot(t *testing.T) {
 			),
 		},
 		{command: "AT+CPIN?", response: okResponse("+CPIN: READY")},
+		{
+			command:  "AT+CCID",
+			response: modem.Response{Final: "+CME ERROR: 100"},
+			err:      errors.New("CCID unsupported"),
+		},
+		{command: "AT+QCCID", response: okResponse("+QCCID: 8986001234567890123F")},
+		{command: "AT+CIMI", response: okResponse("460001234567890")},
+		{command: "AT+CRSM=176,28486,0,0,17", response: okResponse(`+CRSM: 144,0,"00434D4343FFFFFFFFFFFFFFFFFFFFFFFF"`)},
 		{command: "AT+CSQ", response: okResponse("+CSQ: 20,99")},
 		{
 			command: `AT+QENG="servingcell"`,
@@ -29,13 +37,6 @@ func TestManagerRefreshBuildsEC20Snapshot(t *testing.T) {
 		{command: "AT+COPS?", response: okResponse(`+COPS: 0,0,"China Mobile",7`)},
 		{command: "AT+CEREG?", response: okResponse(`+CEREG: 0,5`)},
 		{command: "AT+CGSN", response: okResponse("867123456789012")},
-		{
-			command:  "AT+CCID",
-			response: modem.Response{Final: "+CME ERROR: 100"},
-			err:      errors.New("CCID unsupported"),
-		},
-		{command: "AT+QCCID", response: okResponse("+QCCID: 8986001234567890123F")},
-		{command: "AT+CIMI", response: okResponse("460001234567890")},
 		{command: "AT+CFUN?", response: okResponse("+CFUN: 1")},
 		{command: "AT+CNUM", response: okResponse(`+CNUM: "","+8613800138000",145`)},
 	}}
@@ -74,7 +75,7 @@ func TestManagerRefreshBuildsEC20Snapshot(t *testing.T) {
 	}
 	if snapshot.IMEI != "867123456789012" ||
 		snapshot.ICCID != "8986001234567890123" ||
-		snapshot.IMSI != "460001234567890" {
+		snapshot.IMSI != "460001234567890" || snapshot.SPN != "CMCC" {
 		t.Fatalf("subscriber identifiers = %#v", snapshot)
 	}
 	if !snapshot.ModeKnown || snapshot.OperatingMode != 1 ||
@@ -94,6 +95,18 @@ func TestManagerRefreshBuildsEC20Snapshot(t *testing.T) {
 		t.Fatalf("stored device = %#v", device)
 	}
 	client.assertDone(t)
+}
+
+func TestParseSPNASCIIAndUCS2(t *testing.T) {
+	if got := parseSPN(okResponse(`+CRSM: 144,0,"004C6562617261FFFFFFFFFFFFFFFFFFFF"`)); got != "Lebara" {
+		t.Fatalf("ASCII SPN = %q", got)
+	}
+	if got := parseSPN(okResponse(`+CRSM: 144,0,"0080004C00650062006100720061FFFF"`)); got != "Lebara" {
+		t.Fatalf("UCS2 SPN = %q", got)
+	}
+	if got := parseSPN(okResponse(`+CRSM: 106,130,""`)); got != "" {
+		t.Fatalf("failed CRSM SPN = %q", got)
+	}
 }
 
 func TestParseICCIDIdentifierStripsTwoFillerNibbles(t *testing.T) {
@@ -120,6 +133,57 @@ func TestManagerRequiresStartAndKnownDevice(t *testing.T) {
 	if _, err := manager.Refresh(context.Background(), "missing"); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("unknown device error = %v", err)
 	}
+}
+
+func TestManagerBackendSelectionIsExplicit(t *testing.T) {
+	manager, id := newStartedTestManager(t, &transcriptClient{})
+	if err := manager.SetBackend(id, "qmi"); err != nil {
+		t.Fatal(err)
+	}
+	state, err := manager.lookup(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := manager.backendFor(state); got != "qmi" {
+		t.Fatalf("backend = %q, want qmi", got)
+	}
+	if err := manager.SetBackend(id, "mbim"); err == nil {
+		t.Fatal("unsupported backend was accepted")
+	}
+}
+
+func TestManagerForcesRFOffBeforeInspectingChangedSIMNetwork(t *testing.T) {
+	client := &transcriptClient{steps: []clientStep{
+		{command: "ATI", response: okResponse("Quectel", "EC20", "Revision: test")},
+		{command: "AT+CPIN?", response: okResponse("+CPIN: READY")},
+		{command: "AT+CCID", response: okResponse("+CCID: 8900000000000000002")},
+		// This must precede CIMI, signal, serving-cell and operator queries.
+		{command: "AT+CFUN=4", response: okResponse()},
+		{command: "AT+CIMI", response: okResponse("234150000000002")},
+		{command: "AT+CRSM=176,28486,0,0,17", response: okResponse(`+CRSM: 144,0,"004C6562617261FFFFFFFFFFFFFFFFFFFF"`)},
+		{command: "AT+CSQ", response: okResponse("+CSQ: 99,99")},
+		{command: `AT+QENG="servingcell"`, response: okResponse(`+QENG: "servingcell","SEARCH"`)},
+		{command: "AT+COPS?", response: okResponse("+COPS: 0")},
+		{command: "AT+CEREG?", response: okResponse("+CEREG: 0,0")},
+		{command: "AT+CGSN", response: okResponse("867123456789012")},
+		{command: "AT+CFUN?", response: okResponse("+CFUN: 4")},
+		{command: "AT+CNUM", response: okResponse(`+CNUM: "","+447700900002",145`)},
+	}}
+	manager, id := newStartedTestManager(t, client)
+	state, err := manager.lookup(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	state.lastICCID = "8900000000000000001"
+
+	snapshot, err := manager.Refresh(context.Background(), id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !snapshot.SIMChanged || !snapshot.FlightMode || snapshot.OperatingMode != 4 {
+		t.Fatalf("changed SIM snapshot = %#v", snapshot)
+	}
+	client.assertDone(t)
 }
 
 func TestExecuteSensitiveATDoesNotPersistCommandOrModemError(t *testing.T) {
