@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 )
@@ -16,9 +17,15 @@ func newTestES9P(t *testing.T, handler http.HandlerFunc) *es9pClient {
 	t.Helper()
 	server := httptest.NewTLSServer(handler)
 	t.Cleanup(server.Close)
-	client := newES9PClient(strings.TrimPrefix(server.URL, "https://"))
-	client.http = server.Client()
-	return client
+	endpoint, err := url.Parse(server.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return &es9pClient{
+		smdp:     strings.TrimPrefix(server.URL, "https://"),
+		endpoint: endpoint,
+		http:     server.Client(),
+	}
 }
 
 func successEnvelope(fields map[string]any) map[string]any {
@@ -32,6 +39,20 @@ func successEnvelope(fields map[string]any) map[string]any {
 }
 
 func b64(value []byte) string { return base64.StdEncoding.EncodeToString(value) }
+
+func TestNewES9PClientRejectsUnsafeAddress(t *testing.T) {
+	for _, address := range []string{
+		"https://rsp.example.com",
+		"127.0.0.1",
+		"169.254.169.254",
+		"rsp.example.com/unexpected/path",
+		"user:password@rsp.example.com",
+	} {
+		if _, err := newES9PClient(context.Background(), address); err == nil {
+			t.Errorf("newES9PClient(%q) accepted an unsafe address", address)
+		}
+	}
+}
 
 func TestInitiateAuthenticationSuccess(t *testing.T) {
 	signed1 := []byte{0x30, 0x03, 0x80, 0x01, 0x09}

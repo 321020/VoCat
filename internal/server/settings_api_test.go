@@ -583,3 +583,23 @@ func TestRouteSettingsAPIReturnsFalseForUnknownPath(t *testing.T) {
 		t.Fatal("unknown path was claimed by settings router")
 	}
 }
+
+func TestParseMailAddressRejectsHeaderInjection(t *testing.T) {
+	for _, value := range []string{
+		"sender@example.com\r\nBcc: victim@example.com",
+		"recipient@example.com\nX-Test: injected",
+		"display\x00name <sender@example.com>",
+	} {
+		if _, err := parseMailAddress(value); err == nil {
+			t.Errorf("parseMailAddress(%q) accepted header injection", value)
+		}
+	}
+	address, err := parseMailAddress("Vocat Alerts <alerts@example.com>")
+	if err != nil {
+		t.Fatal(err)
+	}
+	header := formatMailAddress(address)
+	if strings.ContainsAny(header, "\r\n") {
+		t.Fatalf("formatted address contains a line break: %q", header)
+	}
+}

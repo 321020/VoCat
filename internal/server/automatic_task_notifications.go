@@ -266,13 +266,13 @@ func sendEmailTextNotification(ctx context.Context, config map[string]any, subje
 			return err
 		}
 	}
-	from, err := mail.ParseAddress(configString(config, "from_address"))
+	from, err := parseMailAddress(configString(config, "from_address"))
 	if err != nil {
 		return err
 	}
 	var recipients []*mail.Address
 	for _, item := range configStrings(config, "to_addresses") {
-		address, err := mail.ParseAddress(item)
+		address, err := parseMailAddress(item)
 		if err != nil {
 			return err
 		}
@@ -291,7 +291,7 @@ func sendEmailTextNotification(ctx context.Context, config map[string]any, subje
 		return err
 	}
 	email := strings.Join([]string{
-		"Date: " + time.Now().UTC().Format(time.RFC1123Z), "From: " + from.String(),
+		"Date: " + time.Now().UTC().Format(time.RFC1123Z), "From: " + formatMailAddress(from),
 		"To: " + joinMailAddresses(recipients), "Subject: " + mime.QEncoding.Encode("UTF-8", subject),
 		"MIME-Version: 1.0", "Content-Type: text/plain; charset=UTF-8", "Content-Transfer-Encoding: 8bit", "", text, "",
 	}, "\r\n")

@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"mime"
 	"net"
 	"net/http"
 	"net/mail"
@@ -278,7 +279,7 @@ func validateNotificationField(
 			}
 		}
 		if name == "from_address" && value != "" {
-			if _, err := mail.ParseAddress(value); err != nil {
+			if _, err := parseMailAddress(value); err != nil {
 				return fmt.Errorf("%s is not a valid email address", field)
 			}
 		}
@@ -763,13 +764,13 @@ func sendEmailNotificationTest(ctx context.Context, config map[string]any) error
 			return fmt.Errorf("%w: SMTP authentication failed", errProviderRejected)
 		}
 	}
-	from, err := mail.ParseAddress(configString(config, "from_address"))
+	from, err := parseMailAddress(configString(config, "from_address"))
 	if err != nil {
 		return fmt.Errorf("parse sender address: %w", err)
 	}
 	recipients := make([]*mail.Address, 0)
 	for _, item := range configStrings(config, "to_addresses") {
-		address, err := mail.ParseAddress(item)
+		address, err := parseMailAddress(item)
 		if err != nil {
 			return fmt.Errorf("parse recipient address: %w", err)
 		}
@@ -789,7 +790,7 @@ func sendEmailNotificationTest(ctx context.Context, config map[string]any) error
 	}
 	message := strings.Join([]string{
 		"Date: " + time.Now().UTC().Format(time.RFC1123Z),
-		"From: " + from.String(),
+		"From: " + formatMailAddress(from),
 		"To: " + joinMailAddresses(recipients),
 		"Subject: vocat notification test",
 		"MIME-Version: 1.0",
@@ -814,9 +815,33 @@ func sendEmailNotificationTest(ctx context.Context, config map[string]any) error
 func joinMailAddresses(values []*mail.Address) string {
 	result := make([]string, 0, len(values))
 	for _, value := range values {
-		result = append(result, value.String())
+		result = append(result, formatMailAddress(value))
 	}
 	return strings.Join(result, ", ")
+}
+
+func parseMailAddress(value string) (*mail.Address, error) {
+	value = strings.TrimSpace(value)
+	if value == "" || strings.ContainsAny(value, "\r\n\x00") {
+		return nil, errors.New("email address contains a prohibited control character")
+	}
+	address, err := mail.ParseAddress(value)
+	if err != nil || address.Address == "" || strings.ContainsAny(address.Address, "\r\n\x00") {
+		return nil, errors.New("invalid email address")
+	}
+	for _, character := range address.Name {
+		if character < 0x20 || character == 0x7f {
+			return nil, errors.New("email display name contains a prohibited control character")
+		}
+	}
+	return address, nil
+}
+
+func formatMailAddress(address *mail.Address) string {
+	if address.Name == "" {
+		return address.Address
+	}
+	return mime.QEncoding.Encode("UTF-8", address.Name) + " <" + address.Address + ">"
 }
 
 func restrictedHTTPClient(

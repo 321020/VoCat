@@ -74,7 +74,10 @@ func (manager *Manager) ESIMDownloadProfile(ctx context.Context, id string, para
 		return nil, err
 	}
 
-	client := newES9PClient(smdp)
+	client, err := newES9PClient(ctx, smdp)
+	if err != nil {
+		return nil, err
+	}
 
 	report("auth_client", "正在向 SM-DP+ 进行客户端身份认证...", 30)
 	init, err := client.initiateAuthentication(ctx, challenge, info1)

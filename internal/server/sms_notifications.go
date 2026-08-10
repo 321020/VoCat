@@ -402,13 +402,13 @@ func sendEmailSMSNotification(ctx context.Context, config map[string]any, messag
 			return fmt.Errorf("%w: SMTP authentication failed", errProviderRejected)
 		}
 	}
-	from, err := mail.ParseAddress(configString(config, "from_address"))
+	from, err := parseMailAddress(configString(config, "from_address"))
 	if err != nil {
 		return fmt.Errorf("parse sender address: %w", err)
 	}
 	recipients := make([]*mail.Address, 0)
 	for _, item := range configStrings(config, "to_addresses") {
-		address, err := mail.ParseAddress(item)
+		address, err := parseMailAddress(item)
 		if err != nil {
 			return fmt.Errorf("parse recipient address: %w", err)
 		}
@@ -428,7 +428,7 @@ func sendEmailSMSNotification(ctx context.Context, config map[string]any, messag
 	}
 	email := strings.Join([]string{
 		"Date: " + time.Now().UTC().Format(time.RFC1123Z),
-		"From: " + from.String(),
+		"From: " + formatMailAddress(from),
 		"To: " + joinMailAddresses(recipients),
 		"Subject: " + mime.QEncoding.Encode("UTF-8", "收到新短信 - "+message.DeviceLabel),
 		"MIME-Version: 1.0",

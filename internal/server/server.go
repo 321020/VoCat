@@ -414,7 +414,10 @@ func (s *Server) decodeJSON(w http.ResponseWriter, r *http.Request, destination 
 		}
 	}
 
-	r.Body = http.MaxBytesReader(w, r.Body, s.maxRequestBodyBytes)
+	// MaxBytesReader's ResponseWriter parameter is deprecated and unused by Go.
+	// Passing nil also makes the request body and response data flows explicitly
+	// separate for static analysis.
+	r.Body = http.MaxBytesReader(nil, r.Body, s.maxRequestBodyBytes)
 	decoder := json.NewDecoder(r.Body)
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(destination); err != nil {

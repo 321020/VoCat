@@ -3,14 +3,17 @@ package device
 import (
 	"bytes"
 	"context"
-	"crypto/tls"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
+
+	"vocat/internal/netguard"
 )
 
 // es9pClient speaks SGP.22 ES9+ — JSON over HTTPS — to one SM-DP+. It is the
@@ -24,25 +27,31 @@ import (
 // header.functionExecutionStatus (with statusCodeData.message holding the
 // human-readable failure, e.g. "The matchingID is not found").
 type es9pClient struct {
-	smdp string
-	http *http.Client
+	smdp     string
+	endpoint *url.URL
+	http     *http.Client
 }
 
-func newES9PClient(smdp string) *es9pClient {
-	// The eUICC — not the host — is the root of trust for RSP: during
-	// AuthenticateServer the card verifies the SM-DP+'s CERT.DPauth.SIG against
-	// its embedded CI root, so a rogue/TLS-MitM server cannot forge a signature
-	// the card will accept. The host TLS layer is transport only, and a minimal
-	// embedded box may ship no CA bundle (this is exactly what broke on the test
-	// machine), so we don't anchor host TLS to system roots. InsecureSkipVerify
-	// is safe here specifically because the card does the authoritative check.
-	transport := &http.Transport{
-		TLSClientConfig: &tls.Config{InsecureSkipVerify: true}, //nolint:gosec // eUICC is the RSP trust anchor
+func newES9PClient(ctx context.Context, smdp string) (*es9pClient, error) {
+	smdp = strings.TrimSpace(smdp)
+	if smdp == "" || strings.Contains(smdp, "://") {
+		return nil, errors.New("esim: SM-DP+ address must be a hostname with an optional port")
+	}
+	candidate, err := url.Parse("https://" + smdp)
+	if err != nil || candidate.Hostname() == "" || candidate.User != nil ||
+		(candidate.Path != "" && candidate.Path != "/") || candidate.RawQuery != "" || candidate.Fragment != "" {
+		return nil, errors.New("esim: SM-DP+ address must be a hostname with an optional port")
+	}
+	candidate.Path = ""
+	validated, err := netguard.ValidatePublicURL(ctx, candidate.String(), true)
+	if err != nil {
+		return nil, fmt.Errorf("esim: unsafe SM-DP+ address: %w", err)
 	}
 	return &es9pClient{
-		smdp: strings.TrimSpace(smdp),
-		http: &http.Client{Timeout: 90 * time.Second, Transport: transport},
-	}
+		smdp:     validated.Host,
+		endpoint: validated,
+		http:     netguard.NewPublicHTTPClient(90*time.Second, true),
+	}, nil
 }
 
 // es9pError is a failed ES9+ functionExecutionStatus. Message is the SM-DP+'s
@@ -80,12 +89,13 @@ type es9pStatusCodeData struct {
 // is decided the way lpac decides it: a non-success execution status, or a
 // missing required output field, yields an es9pError carrying the SM-DP+ message.
 func (c *es9pClient) call(ctx context.Context, function string, request map[string]string, requiredOut ...string) (map[string]json.RawMessage, error) {
-	url := "https://" + c.smdp + "/gsma/rsp2/es9plus/" + function
+	endpoint := *c.endpoint
+	endpoint.Path = "/gsma/rsp2/es9plus/" + function
 	body, err := json.Marshal(request)
 	if err != nil {
 		return nil, err
 	}
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint.String(), bytes.NewReader(body))
 	if err != nil {
 		return nil, err
 	}
