@@ -316,9 +316,18 @@ export interface CountryRule {
 
 export interface DeviceProxyBinding {
   deviceId: string;
+  iccid: string;
+  profileName: string;
   upstreamProxyId: string;
   reconnectRequested?: boolean;
   reconnectError?: string;
+}
+
+export interface ProfileProxyCandidate {
+  deviceId: string;
+  iccid: string;
+  profileName: string;
+  stateText?: string;
 }
 
 export interface LogEntry {

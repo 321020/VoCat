@@ -196,6 +196,37 @@ func migrationStatements(version int) []string {
 			`CREATE INDEX IF NOT EXISTS sms_send_attempts_created_idx
 				ON sms_send_attempts(created_at, id)`,
 		}
+	case 12:
+		return []string{
+			`ALTER TABLE device_proxy_bindings RENAME TO device_proxy_bindings_v11`,
+			`CREATE TABLE device_proxy_bindings (
+				iccid TEXT PRIMARY KEY,
+				device_id TEXT NOT NULL,
+				profile_name TEXT NOT NULL DEFAULT '',
+				upstream_proxy_id TEXT NOT NULL,
+				created_at INTEGER NOT NULL,
+				updated_at INTEGER NOT NULL,
+				FOREIGN KEY (device_id) REFERENCES devices(id) ON DELETE CASCADE,
+				FOREIGN KEY (upstream_proxy_id) REFERENCES upstream_proxies(id) ON DELETE CASCADE
+			)`,
+			// A legacy device-wide binding is safe to preserve only when the
+			// currently observed ICCID is known. It then becomes one profile binding
+			// instead of leaking onto every future profile used by that device.
+			`INSERT OR IGNORE INTO device_proxy_bindings (
+				iccid, device_id, profile_name, upstream_proxy_id, created_at, updated_at
+			)
+			SELECT COALESCE(NULLIF(v.iccid, ''), NULLIF(d.iccid, '')),
+				b.device_id, '', b.upstream_proxy_id, b.created_at, b.updated_at
+			FROM device_proxy_bindings_v11 b
+			LEFT JOIN vowifi_runtime v ON v.device_id = b.device_id
+			LEFT JOIN device_runtime d ON d.device_id = b.device_id
+			WHERE COALESCE(NULLIF(v.iccid, ''), NULLIF(d.iccid, '')) IS NOT NULL`,
+			`DROP TABLE device_proxy_bindings_v11`,
+			`CREATE INDEX device_proxy_bindings_proxy_idx
+				ON device_proxy_bindings(upstream_proxy_id)`,
+			`CREATE INDEX device_proxy_bindings_device_idx
+				ON device_proxy_bindings(device_id, iccid)`,
+		}
 	default:
 		return nil
 	}

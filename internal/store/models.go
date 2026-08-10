@@ -302,11 +302,12 @@ type CountryRule struct {
 	UpdatedAt       time.Time
 }
 
-// DeviceProxyBinding selects the SOCKS5 upstream used by one device's whole
-// VoWiFi runtime. The IKE/IPsec transport uses this route and IMS/SMS then
-// travel inside that tunnel.
+// DeviceProxyBinding selects the SOCKS5 upstream for exactly one eSIM profile.
+// ICCID is globally unique, while one proxy may serve profiles on many devices.
 type DeviceProxyBinding struct {
 	DeviceID        string
+	ICCID           string
+	ProfileName     string
 	UpstreamProxyID string
 	CreatedAt       time.Time
 	UpdatedAt       time.Time

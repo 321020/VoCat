@@ -456,6 +456,10 @@ func (s *Server) routeAutomaticTasksAPI(w http.ResponseWriter, r *http.Request, 
 		s.handleAutomaticTasks(w, r)
 		return true
 	}
+	if len(segments) == 2 && segments[1] == "runs" {
+		s.handleAutomaticTaskRuns(w, r)
+		return true
+	}
 	id, err := strconv.ParseInt(segments[1], 10, 64)
 	if err != nil || id <= 0 {
 		writeError(w, http.StatusBadRequest, "invalid_task_id", "automatic task ID is invalid")
@@ -481,12 +485,7 @@ func (s *Server) handleAutomaticTasks(w http.ResponseWriter, r *http.Request) {
 			s.writeStoreError(w, err)
 			return
 		}
-		runs, err := s.store.ListAutomaticTaskRuns(r.Context(), 100)
-		if err != nil {
-			s.writeStoreError(w, err)
-			return
-		}
-		writeJSON(w, http.StatusOK, map[string]any{"data": map[string]any{"tasks": tasks, "runs": runs}})
+		writeJSON(w, http.StatusOK, map[string]any{"data": map[string]any{"tasks": tasks}})
 	case http.MethodPost:
 		task, err := s.decodeAutomaticTask(r, 0)
 		if err != nil {
@@ -529,6 +528,21 @@ func (s *Server) handleAutomaticTask(w http.ResponseWriter, r *http.Request, id 
 		w.Header().Set("Allow", "PUT, DELETE")
 		writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed")
 	}
+}
+
+func (s *Server) handleAutomaticTaskRuns(w http.ResponseWriter, r *http.Request) {
+	if !requireMethod(w, r, http.MethodGet) {
+		return
+	}
+	query := r.URL.Query()
+	limit, _ := strconv.Atoi(query.Get("limit"))
+	offset, _ := strconv.Atoi(query.Get("offset"))
+	runs, total, err := s.store.ListAutomaticTaskRunsPaginated(r.Context(), limit, offset)
+	if err != nil {
+		s.writeStoreError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"data": map[string]any{"runs": runs, "total": total}})
 }
 
 func (s *Server) handleAutomaticTaskRunNow(w http.ResponseWriter, r *http.Request, id int64) {

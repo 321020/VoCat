@@ -203,6 +203,7 @@ type ProxyRoute struct {
 
 type ProxyRequest struct {
 	DeviceID    string
+	ICCID       string
 	HomeMCC     string
 	HomeMNC     string
 	CountryCode string

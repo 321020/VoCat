@@ -70,3 +70,51 @@ func TestDeletingAutomaticTaskRemovesRunHistory(t *testing.T) {
 		t.Fatalf("orphan runs = %+v, %v", runs, err)
 	}
 }
+
+func TestListAutomaticTaskRunsPaginated(t *testing.T) {
+	ctx := context.Background()
+	database := openTestStore(t, filepath.Join(t.TempDir(), "automatic-task-runs-page.db"))
+	mustSaveDevice(t, database, "ec20", "EC20")
+	task, err := database.SaveAutomaticTask(ctx, AutomaticTask{
+		Name: "task", Enabled: true, DeviceID: "ec20", ProfileICCID: "one",
+		TaskType: "call", Environment: "cellular", IntervalDays: 1,
+		StartDate: "2026-08-10", RunTime: "12:00", Timezone: "Asia/Shanghai", Payload: []byte(`{"phone":"10086","duration_seconds":10}`),
+		NextRunAt: time.Now().Add(time.Hour),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for index := 0; index < 5; index++ {
+		if _, err := database.QueueAutomaticTaskNow(ctx, task); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	first, total, err := database.ListAutomaticTaskRunsPaginated(ctx, 2, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if total != 5 || len(first) != 2 {
+		t.Fatalf("first page: total = %d, runs = %+v", total, first)
+	}
+	if first[0].ID <= first[1].ID {
+		t.Fatalf("runs not newest-first: %+v", first)
+	}
+
+	last, total, err := database.ListAutomaticTaskRunsPaginated(ctx, 2, 4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if total != 5 || len(last) != 1 {
+		t.Fatalf("last page: total = %d, runs = %+v", total, last)
+	}
+
+	// Out-of-range paging inputs are clamped to defaults, not errors.
+	all, total, err := database.ListAutomaticTaskRunsPaginated(ctx, 0, -5)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if total != 5 || len(all) != 5 {
+		t.Fatalf("clamped page: total = %d, runs = %+v", total, all)
+	}
+}

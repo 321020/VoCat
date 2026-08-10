@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   AddRegular,
   DeleteRegular,
@@ -14,6 +14,7 @@ import {
   Input,
   Modal,
   PageHeader,
+  Pagination,
   Select,
   Switch,
   Tag,
@@ -135,6 +136,9 @@ export default function AutomaticTasksPage() {
   const { t } = useI18n();
   const [tasks, setTasks] = useState<AutomaticTask[]>([]);
   const [runs, setRuns] = useState<AutomaticTaskRun[]>([]);
+  const [runsTotal, setRunsTotal] = useState(0);
+  const [runsPage, setRunsPage] = useState(1);
+  const [runsPageSize, setRunsPageSize] = useState(20);
   const [devices, setDevices] = useState<DeviceListItem[]>([]);
   const [profiles, setProfiles] = useState<ProfileOption[]>([]);
   const [loading, setLoading] = useState(true);
@@ -143,16 +147,19 @@ export default function AutomaticTasksPage() {
   const [form, setForm] = useState<TaskForm>(() => emptyForm());
   const [saving, setSaving] = useState(false);
   const [busy, setBusy] = useState(0);
+  // Refs mirror the runs page/pageSize so the 5s poll reloads the page the user
+  // is actually looking at instead of snapping back to page 1 on every tick.
+  const runsPageRef = useRef(1);
+  const runsPageSizeRef = useRef(20);
 
   const load = useCallback(async (initial = false) => {
     if (initial) setLoading(true);
     try {
       const [taskData, deviceData] = await Promise.all([
-        api<{ tasks?: AutomaticTask[]; runs?: AutomaticTaskRun[] }>("/automatic-tasks"),
+        api<{ tasks?: AutomaticTask[] }>("/automatic-tasks"),
         api<DevicesResponse>("/devices"),
       ]);
       setTasks(taskData.tasks || []);
-      setRuns(taskData.runs || []);
       setDevices(deviceData.devices || []);
     } catch (error) {
       message.error(apiMessage(error));
@@ -161,11 +168,57 @@ export default function AutomaticTasksPage() {
     }
   }, []);
 
+  const fetchRuns = useCallback(async (page: number, pageSize: number) => {
+    const request = (target: number) =>
+      api<{ runs?: AutomaticTaskRun[]; total?: number }>(
+        `/automatic-tasks/runs?limit=${pageSize}&offset=${(target - 1) * pageSize}`,
+      );
+    try {
+      let data = await request(page);
+      const total = data.total ?? 0;
+      const pages = Math.max(1, Math.ceil(total / pageSize));
+      // Clamp when the current page fell past the end (a larger page size, or
+      // runs removed with a deleted task) instead of showing an empty slice.
+      if (page > pages) {
+        data = await request(pages);
+        runsPageRef.current = pages;
+        setRunsPage(pages);
+      }
+      setRuns(data.runs || []);
+      setRunsTotal(total);
+    } catch (error) {
+      message.error(apiMessage(error));
+    }
+  }, []);
+
+  const reloadRuns = useCallback(
+    () => fetchRuns(runsPageRef.current, runsPageSizeRef.current),
+    [fetchRuns],
+  );
+
   useEffect(() => {
     void load(true);
-    const timer = window.setInterval(() => void load(), 5000);
+    void reloadRuns();
+    const timer = window.setInterval(() => {
+      void load();
+      void reloadRuns();
+    }, 5000);
     return () => window.clearInterval(timer);
-  }, [load]);
+  }, [load, reloadRuns]);
+
+  function changeRunsPage(page: number) {
+    runsPageRef.current = page;
+    setRunsPage(page);
+    void fetchRuns(page, runsPageSizeRef.current);
+  }
+
+  function changeRunsPageSize(pageSize: number) {
+    runsPageSizeRef.current = pageSize;
+    setRunsPageSize(pageSize);
+    runsPageRef.current = 1;
+    setRunsPage(1);
+    void fetchRuns(1, pageSize);
+  }
 
   const loadProfiles = useCallback(async (deviceId: string, keepICCID = "") => {
     setProfiles([]);
@@ -299,6 +352,7 @@ export default function AutomaticTasksPage() {
       await api(`/automatic-tasks/${task.id}/run`, { method: "POST" });
       message.success(t("任务已加入设备队列"));
       await load();
+      changeRunsPage(1);
     } catch (error) {
       message.error(apiMessage(error));
     } finally {
@@ -313,6 +367,7 @@ export default function AutomaticTasksPage() {
       await api(`/automatic-tasks/${task.id}`, { method: "DELETE" });
       message.success(t("自动任务已删除"));
       await load();
+      await reloadRuns();
     } catch (error) {
       message.error(apiMessage(error));
     } finally {
@@ -393,13 +448,24 @@ export default function AutomaticTasksPage() {
           <table className="w-full min-w-[800px] text-left text-sm">
             <thead className="bg-gray-50/70 text-xs text-gray-500 dark:bg-white/[0.025]"><tr><th className="px-4 py-3">{t("任务")}</th><th className="px-4 py-3">{t("设备")}</th><th className="px-4 py-3">{t("状态")}</th><th className="px-4 py-3">{t("排队时间")}</th><th className="px-4 py-3">{t("尝试次数")}</th><th className="px-4 py-3">{t("结果")}</th></tr></thead>
             <tbody className="divide-y divide-gray-100 dark:divide-white/10">
-              {runs.slice(0, 30).map((run) => (
+              {runs.map((run) => (
                 <tr key={run.id}><td className="px-4 py-3 font-medium">{taskByID.get(run.taskId)?.name || `#${run.taskId}`}</td><td className="px-4 py-3">{deviceByID.get(run.deviceId)?.name || run.deviceId}</td><td className="px-4 py-3"><Tag type={run.status === "success" ? "success" : run.status === "failed" ? "danger" : run.status === "running" ? "warning" : "info"}>{({ queued: t("排队中"), running: t("执行中"), success: t("成功"), failed: t("失败") })[run.status]}</Tag></td><td className="px-4 py-3 text-xs">{formatDateTime(run.scheduledAt)}</td><td className="px-4 py-3">{run.attempts}</td><td className="px-4 py-3"><div className={run.error ? "max-w-md text-red-500" : "max-w-md text-gray-600 dark:text-gray-300"}>{run.error || run.output || "--"}</div></td></tr>
               ))}
             </tbody>
           </table>
         </div>
         {!runs.length ? <div className="p-8 text-center text-sm text-gray-400">{t("暂无执行记录")}</div> : null}
+        {runsTotal > 0 ? (
+          <div className="border-t border-gray-100 px-5 py-3 dark:border-white/10">
+            <Pagination
+              page={runsPage}
+              pageSize={runsPageSize}
+              total={runsTotal}
+              onPageChange={changeRunsPage}
+              onPageSizeChange={changeRunsPageSize}
+            />
+          </div>
+        ) : null}
       </div>
 
       <Modal open={open} onClose={() => setOpen(false)} title={form.id ? t("编辑自动任务") : t("添加自动任务")} width="max-w-3xl">

@@ -106,6 +106,48 @@ func TestMigration7BackfillsSMSModemIMEI(t *testing.T) {
 	}
 }
 
+func TestMigration12ConvertsOnlyKnownActiveDeviceBindingToICCID(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "profile-proxy-binding.db")
+	raw, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for version := 1; version <= 11; version++ {
+		for _, statement := range migrationStatements(version) {
+			if _, err := raw.ExecContext(ctx, statement); err != nil {
+				t.Fatalf("create v%d schema: %v", version, err)
+			}
+		}
+	}
+	if _, err := raw.ExecContext(ctx, `
+		INSERT INTO devices (id, name, created_at, updated_at) VALUES
+			('known', 'Known', 100, 100), ('unknown', 'Unknown', 100, 100);
+		INSERT INTO upstream_proxies (id, name, addr, created_at, updated_at)
+			VALUES ('route', 'Route', '127.0.0.1:1080', 100, 100);
+		INSERT INTO device_proxy_bindings (device_id, upstream_proxy_id, created_at, updated_at) VALUES
+			('known', 'route', 100, 100), ('unknown', 'route', 100, 100);
+		INSERT INTO vowifi_runtime (device_id, iccid, updated_at)
+			VALUES ('known', '89441000400128014257', 100);
+		PRAGMA user_version = 11;
+	`); err != nil {
+		t.Fatal(err)
+	}
+	if err := raw.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	database := openTestStore(t, path)
+	binding, err := database.DeviceProxyBinding(ctx, "89441000400128014257")
+	if err != nil || binding.DeviceID != "known" || binding.UpstreamProxyID != "route" {
+		t.Fatalf("migrated binding = %+v, %v", binding, err)
+	}
+	bindings, err := database.ListDeviceProxyBindings(ctx)
+	if err != nil || len(bindings) != 1 {
+		t.Fatalf("migrated bindings = %+v, %v; unknown ICCID binding must be dropped", bindings, err)
+	}
+}
+
 func TestMigration9NormalizesVoWiFiAirplanePolicy(t *testing.T) {
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "rf-safe-policy.db")
@@ -604,12 +646,12 @@ func TestProxyCredentialsAndCountryRules(t *testing.T) {
 		t.Fatalf("CountryRule() = %+v, %v", rule, err)
 	}
 	if err := database.UpsertDeviceProxyBinding(ctx, DeviceProxyBinding{
-		DeviceID: "ec20-1", UpstreamProxyID: "up-1",
+		DeviceID: "ec20-1", ICCID: "89441000400128014257", ProfileName: "Vodafone", UpstreamProxyID: "up-1",
 	}); err != nil {
 		t.Fatal(err)
 	}
-	binding, err := database.DeviceProxyBinding(ctx, "ec20-1")
-	if err != nil || binding.UpstreamProxyID != "up-1" {
+	binding, err := database.DeviceProxyBinding(ctx, "89441000400128014257")
+	if err != nil || binding.UpstreamProxyID != "up-1" || binding.DeviceID != "ec20-1" || binding.ProfileName != "Vodafone" {
 		t.Fatalf("DeviceProxyBinding() = %+v, %v", binding, err)
 	}
 	if err := database.DeleteUpstreamProxy(ctx, "up-1"); err != nil {
@@ -618,7 +660,7 @@ func TestProxyCredentialsAndCountryRules(t *testing.T) {
 	if _, err := database.CountryRule(ctx, "CN"); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("country rule should cascade with upstream deletion, got %v", err)
 	}
-	if _, err := database.DeviceProxyBinding(ctx, "ec20-1"); !errors.Is(err, ErrNotFound) {
+	if _, err := database.DeviceProxyBinding(ctx, "89441000400128014257"); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("device binding should cascade with upstream deletion, got %v", err)
 	}
 }

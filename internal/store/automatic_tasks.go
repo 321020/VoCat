@@ -179,16 +179,51 @@ func (s *Store) UpdateAutomaticTaskRun(ctx context.Context, run AutomaticTaskRun
 	return err
 }
 
+const automaticTaskRunSelect = `
+	SELECT id, task_id, device_id, scheduled_at, started_at, finished_at,
+		status, attempts, output, error, created_at, updated_at
+	FROM automatic_task_runs`
+
 func (s *Store) ListAutomaticTaskRuns(ctx context.Context, limit int) ([]AutomaticTaskRun, error) {
 	if limit <= 0 || limit > 500 {
 		limit = 100
 	}
-	rows, err := s.db.QueryContext(ctx, `SELECT id, task_id, device_id, scheduled_at,
-		started_at, finished_at, status, attempts, output, error, created_at, updated_at
-		FROM automatic_task_runs ORDER BY id DESC LIMIT ?`, limit)
+	rows, err := s.db.QueryContext(ctx, automaticTaskRunSelect+` ORDER BY id DESC LIMIT ?`, limit)
 	if err != nil {
 		return nil, err
 	}
+	return scanAutomaticTaskRuns(rows)
+}
+
+// ListAutomaticTaskRunsPaginated returns one page of runs (newest first) plus
+// the total run count, so the UI can page through the full history instead of
+// a fixed recent window.
+func (s *Store) ListAutomaticTaskRunsPaginated(ctx context.Context, limit, offset int) ([]AutomaticTaskRun, int, error) {
+	if limit <= 0 {
+		limit = 20
+	}
+	if limit > 100 {
+		limit = 100
+	}
+	if offset < 0 {
+		offset = 0
+	}
+	total := 0
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM automatic_task_runs`).Scan(&total); err != nil {
+		return nil, 0, fmt.Errorf("count automatic task runs: %w", err)
+	}
+	rows, err := s.db.QueryContext(ctx, automaticTaskRunSelect+` ORDER BY id DESC LIMIT ? OFFSET ?`, limit, offset)
+	if err != nil {
+		return nil, 0, err
+	}
+	runs, err := scanAutomaticTaskRuns(rows)
+	if err != nil {
+		return nil, 0, err
+	}
+	return runs, total, nil
+}
+
+func scanAutomaticTaskRuns(rows *sql.Rows) ([]AutomaticTaskRun, error) {
 	defer rows.Close()
 	var result []AutomaticTaskRun
 	for rows.Next() {
