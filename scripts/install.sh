@@ -210,7 +210,6 @@ User=root
 Group=root
 WorkingDirectory=/opt/vocat
 EnvironmentFile=${ENV_FILE}
-Environment=VOCAT_ADDR=0.0.0.0:7575
 Environment=VOCAT_DATABASE_PATH=/opt/vocat/data/vocat.db
 ExecStart=${BINARY_PATH}
 Restart=on-failure

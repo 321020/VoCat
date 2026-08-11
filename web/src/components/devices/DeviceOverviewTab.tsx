@@ -12,6 +12,7 @@ import { isVoWiFiInUse } from "./shared";
 export interface DeviceOverviewTabProps {
   device: DeviceDetail;
   simOperatorDisplay: string;
+  customPhoneNumber?: string;
   trafficSpeedRx: string;
   trafficSpeedTx: string;
   trafficMinuteRx: string;
@@ -39,6 +40,7 @@ export function DeviceOverviewTab(props: DeviceOverviewTabProps) {
         <OverviewSimPanel
           device={device}
           simOperatorDisplay={props.simOperatorDisplay}
+          customPhoneNumber={props.customPhoneNumber}
           e911Starting={props.e911Starting}
           onSetupE911={props.onSetupE911}
         />

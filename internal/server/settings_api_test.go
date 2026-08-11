@@ -426,8 +426,33 @@ func TestCardPolicyDefaultValidationAndPersistence(t *testing.T) {
 	policy := response["data"].(map[string]any)
 	if policy["iccid"] != iccid || policy["source"] != "default" ||
 		policy["ip_version"] != "IPV4V6" || policy["vowifi_enabled"] != true ||
-		policy["airplane_enabled"] != true {
+		policy["airplane_enabled"] != true || policy["custom_phone_number"] != "" {
 		t.Fatalf("default policy = %#v", policy)
+	}
+
+	recorder = test.request(
+		t,
+		http.MethodPut,
+		"/api/cards/"+iccid+"/policy",
+		`{"custom_phone_number":"+86 (138) 0013-8000"}`,
+	)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("custom phone policy status = %d, body = %s", recorder.Code, recorder.Body)
+	}
+	response = decodeSettingsResponse(t, recorder)
+	policy = response["data"].(map[string]any)
+	if policy["custom_phone_number"] != "+8613800138000" {
+		t.Fatalf("normalized custom phone number = %#v", policy)
+	}
+
+	recorder = test.request(
+		t,
+		http.MethodPut,
+		"/api/cards/"+iccid+"/policy",
+		`{"custom_phone_number":"+86-CALL-ME"}`,
+	)
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("invalid custom phone status = %d, body = %s", recorder.Code, recorder.Body)
 	}
 
 	recorder = test.request(
@@ -456,7 +481,7 @@ func TestCardPolicyDefaultValidationAndPersistence(t *testing.T) {
 		t.Fatalf("saved policy = %#v", policy)
 	}
 	stored, err := test.database.CardPolicy(context.Background(), iccid)
-	if err != nil || !stored.VoWiFiEnabled || !stored.AirplaneEnabled || stored.APN != "ims" {
+	if err != nil || !stored.VoWiFiEnabled || !stored.AirplaneEnabled || stored.APN != "ims" || stored.CustomPhoneNumber != "+8613800138000" {
 		t.Fatalf("stored policy = %+v, %v", stored, err)
 	}
 
@@ -471,8 +496,19 @@ func TestCardPolicyDefaultValidationAndPersistence(t *testing.T) {
 		t.Fatalf("partial policy status = %d, body = %s", recorder.Code, recorder.Body)
 	}
 	stored, err = test.database.CardPolicy(context.Background(), iccid)
-	if err != nil || stored.VoWiFiEnabled || stored.AirplaneEnabled || stored.APN != "ims" {
+	if err != nil || stored.VoWiFiEnabled || stored.AirplaneEnabled || stored.APN != "ims" || stored.CustomPhoneNumber != "+8613800138000" {
 		t.Fatalf("partially updated policy = %+v, %v", stored, err)
+	}
+
+	// Clearing the override restores system-number display without affecting the
+	// rest of this ICCID's policy.
+	recorder = test.request(t, http.MethodPut, "/api/cards/"+iccid+"/policy", `{"custom_phone_number":""}`)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("clear custom phone status = %d, body = %s", recorder.Code, recorder.Body)
+	}
+	stored, err = test.database.CardPolicy(context.Background(), iccid)
+	if err != nil || stored.CustomPhoneNumber != "" || stored.APN != "ims" {
+		t.Fatalf("cleared custom phone policy = %+v, %v", stored, err)
 	}
 
 	// APN-only updates are accepted without changing either switch.

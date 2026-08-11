@@ -589,6 +589,7 @@ export default function DevicesPage() {
       <DeviceOverviewTab
         device={detail}
         simOperatorDisplay={simOperator}
+        customPhoneNumber={cardPolicy?.iccid === detail.modem?.iccid ? cardPolicy.customPhoneNumber : ""}
         trafficSpeedRx={''}
         trafficSpeedTx={''}
         trafficMinuteRx={''}

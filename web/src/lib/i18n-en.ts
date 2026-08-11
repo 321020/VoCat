@@ -5,6 +5,52 @@
  * 富文本片段（嵌套链接/代码块的说明框）不走字典，在组件里按语言分支渲染。
  */
 export const EN_DICT: Record<string, string> = {
+  // Cellular APN profiles.
+  "蜂窝 APN": "Cellular APN",
+  "APN 列表和启用状态跟随当前 ICCID/Profile 保存": "APN profiles and the active selection are saved per ICCID/Profile",
+  "新增 APN": "Add APN",
+  "正在读取 APN 列表...": "Loading APN profiles...",
+  "账号 / 认证": "Account / Authentication",
+  "协议 / 漫游": "Protocol / Roaming",
+  来源: "Source",
+  "运营商自动配置": "Carrier Automatic",
+  默认: "Default",
+  "模组已有": "Modem",
+  自定义: "Custom",
+  漫游: "Roaming",
+  "已设密码": "Password set",
+  使用中: "Active",
+  "APN 已启用": "APN enabled",
+  "已使用运营商自动 APN 配置": "Carrier automatic APN configuration enabled",
+  "启用 APN 失败": "Failed to enable APN",
+  "设备离线：自定义列表仍可管理，模组已有 APN 将在上线后读取":
+    "Device offline: custom profiles can still be managed; modem APNs will load when the device comes online",
+  "新增 APN 配置": "Add APN Profile",
+  "修改 APN 配置": "Edit APN Profile",
+  "保存修改": "Save Changes",
+  "添加到列表": "Add to List",
+  留空: "Leave blank",
+  "留空表示保持原密码": "Leave blank to keep the current password",
+  "APN 协议": "APN Protocol",
+  "APN 漫游协议": "APN Roaming Protocol",
+  "认证类型": "Authentication Type",
+  "清除已保存密码": "Clear Saved Password",
+  "关闭时，密码输入框留空会保持原密码": "When disabled, leaving the password blank keeps the current password",
+  "APN 只能包含字母、数字、点、下划线或连字符，且最长 100 个字符":
+    "APN may contain only letters, numbers, dots, underscores, or hyphens, with a maximum of 100 characters",
+  "MCC 必须是 3 位数字": "MCC must be exactly 3 digits",
+  "MNC 必须是 2 或 3 位数字": "MNC must be 2 or 3 digits",
+  "自定义 APN 已添加，请点击启用后使用": "Custom APN added. Click Enable to use it",
+  "自定义 APN 已修改": "Custom APN updated",
+  "添加 APN 失败": "Failed to add APN",
+  "修改 APN 失败": "Failed to update APN",
+  "确定删除这个自定义 APN 配置吗？": "Delete this custom APN profile?",
+  "删除 APN": "Delete APN",
+  "APN 已删除，并恢复运营商自动配置": "APN deleted; carrier automatic configuration restored",
+  "自定义 APN 已删除": "Custom APN deleted",
+  "删除 APN 失败": "Failed to delete APN",
+  修改: "Edit",
+
   // External extensions.
   "插件": "Plugins",
   "通过 URL 或本地插件包扩展 VoCat 功能": "Extend VoCat with a URL or a local plugin package",
@@ -938,6 +984,15 @@ export const EN_DICT: Record<string, string> = {
   "410 WiFi 棒（高通芯片）": "410 WiFi Dongle (Qualcomm)",
   "大疆 4G 模块（移远芯片）": "DJI 4G Module (Quectel)",
   "PCIe EC20/EC25（移远芯片）": "PCIe EC20/EC25 (Quectel)",
+
+  // ---- Per-Profile phone display override ----
+  "自定义手机号": "Custom Phone Number",
+  "请输入手机号（可留空）": "Enter a phone number (optional)",
+  "自定义手机号已保存": "Custom phone number saved",
+  "已恢复显示系统读取的号码": "Restored the system-detected number",
+  "保存自定义手机号失败": "Failed to save custom phone number",
+  "支持开头的 + 和 3-20 位数字；留空时显示系统从 SIM/网络读取的号码":
+    "Supports a leading + and 3–20 digits. Leave blank to show the number read from the SIM/network.",
 
   // ---- AT 快捷指令（按 group · item 分组翻译） ----
   基础: "Basics",

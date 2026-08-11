@@ -255,6 +255,11 @@ func migrationStatements(version int) []string {
 			`ALTER TABLE card_apn_profiles ADD COLUMN auth_type TEXT NOT NULL DEFAULT 'NONE'
 				CHECK (auth_type IN ('NONE', 'PAP', 'CHAP', 'PAP_OR_CHAP'))`,
 		}
+	case 15:
+		return []string{
+			`ALTER TABLE card_policies
+				ADD COLUMN custom_phone_number TEXT NOT NULL DEFAULT ''`,
+		}
 	default:
 		return nil
 	}

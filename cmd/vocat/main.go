@@ -1070,15 +1070,18 @@ func enforceCardRegion(
 			}
 		}
 		if snapshot.ICCID != "" {
-			policy := store.CardPolicy{
-				ICCID:           snapshot.ICCID,
-				NetworkEnabled:  false,
-				VoWiFiEnabled:   false,
-				AirplaneEnabled: true,
-				IPVersion:       "IPV4V6",
-				Source:          cardPolicySourceRegionBlock,
+			policy, policyErr := database.CardPolicy(ctx, snapshot.ICCID)
+			if errors.Is(policyErr, store.ErrNotFound) {
+				policy = store.CardPolicy{ICCID: snapshot.ICCID, IPVersion: "IPV4V6"}
+				policyErr = nil
 			}
-			if err := database.UpsertCardPolicy(ctx, policy); err != nil && ctx.Err() == nil {
+			policy.NetworkEnabled = false
+			policy.VoWiFiEnabled = false
+			policy.AirplaneEnabled = true
+			policy.Source = cardPolicySourceRegionBlock
+			if policyErr != nil && ctx.Err() == nil {
+				logger.Warn("region block: failed to read card policy", "device_id", id, "iccid", snapshot.ICCID, "error", policyErr)
+			} else if err := database.UpsertCardPolicy(ctx, policy); err != nil && ctx.Err() == nil {
 				logger.Warn(
 					"region block: failed to persist card policy",
 					"device_id", id, "iccid", snapshot.ICCID, "error", err,

@@ -263,11 +263,15 @@ func (s *Server) handleDevices(w http.ResponseWriter, r *http.Request) bool {
 		if selected.Snapshot != nil {
 			iccid := strings.TrimSpace(selected.Snapshot.ICCID)
 			if iccid != "" {
-				if err := s.store.UpsertCardPolicy(r.Context(), store.CardPolicy{
-					ICCID: iccid, VoWiFiEnabled: true, AirplaneEnabled: true,
-					IPVersion: "IPV4V6", Source: "default",
-				}); err != nil {
-					s.writeStoreError(w, err)
+				_, policyErr := s.store.CardPolicy(r.Context(), iccid)
+				if errors.Is(policyErr, store.ErrNotFound) {
+					policyErr = s.store.UpsertCardPolicy(r.Context(), store.CardPolicy{
+						ICCID: iccid, VoWiFiEnabled: true, AirplaneEnabled: true,
+						IPVersion: "IPV4V6", Source: "default",
+					})
+				}
+				if policyErr != nil {
+					s.writeStoreError(w, policyErr)
 					return true
 				}
 			}

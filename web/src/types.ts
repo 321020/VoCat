@@ -230,6 +230,7 @@ export interface CardPolicy {
   airplaneEnabled: boolean;
   apn?: string;
   ipVersion?: string;
+  customPhoneNumber?: string;
   source?: string;
   createdAt?: string;
   updatedAt?: string;

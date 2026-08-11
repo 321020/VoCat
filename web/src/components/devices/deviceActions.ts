@@ -27,6 +27,7 @@ export interface CardPolicyUpdate {
   airplaneEnabled?: boolean;
   apn?: string;
   ipVersion?: "IP" | "IPV6" | "IPV4V6";
+  customPhoneNumber?: string;
 }
 export function updateCardPolicy(iccid: string, body: CardPolicyUpdate) {
   return api<CardPolicy>(`/cards/${iccid}/policy`, { method: "PUT", body });

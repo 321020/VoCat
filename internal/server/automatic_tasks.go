@@ -274,7 +274,19 @@ func (s *Server) prepareAutomaticTaskEnvironment(ctx context.Context, config *st
 		if err := s.store.UpsertDevice(ctx, *config); err != nil {
 			return err
 		}
-		if err := s.store.UpsertCardPolicy(ctx, store.CardPolicy{ICCID: iccid, VoWiFiEnabled: true, AirplaneEnabled: true, IPVersion: "IPV4V6", Source: "automatic_task"}); err != nil {
+		policy, policyErr := s.store.CardPolicy(ctx, iccid)
+		if errors.Is(policyErr, store.ErrNotFound) {
+			policy = defaultCardPolicy(iccid)
+			policyErr = nil
+		}
+		if policyErr != nil {
+			return policyErr
+		}
+		policy.NetworkEnabled = false
+		policy.VoWiFiEnabled = true
+		policy.AirplaneEnabled = true
+		policy.Source = "automatic_task"
+		if err := s.store.UpsertCardPolicy(ctx, policy); err != nil {
 			return err
 		}
 		if s.vowifi == nil {

@@ -784,7 +784,7 @@ func TestEventsPoliciesAndTraffic(t *testing.T) {
 
 	if err := database.UpsertCardPolicy(ctx, CardPolicy{
 		ICCID: "89860001", NetworkEnabled: true, VoWiFiEnabled: true,
-		APN: "ims", IPVersion: "ipv4v6",
+		APN: "ims", IPVersion: "ipv4v6", CustomPhoneNumber: "+8613800138000",
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -794,7 +794,7 @@ func TestEventsPoliciesAndTraffic(t *testing.T) {
 		t.Fatalf("RF-safe VoWiFi policy was rejected: %v", err)
 	}
 	policy, err := database.CardPolicy(ctx, "89860001")
-	if err != nil || !policy.VoWiFiEnabled {
+	if err != nil || !policy.VoWiFiEnabled || policy.CustomPhoneNumber != "+8613800138000" {
 		t.Fatalf("CardPolicy() = %+v, %v", policy, err)
 	}
 	safePolicy, err := database.CardPolicy(ctx, "89860002")

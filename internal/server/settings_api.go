@@ -1227,17 +1227,18 @@ func (s *Server) handleCardPolicy(w http.ResponseWriter, r *http.Request, iccid 
 		writeJSON(w, http.StatusOK, map[string]any{"data": cardPolicyResponse(policy)})
 	case http.MethodPut:
 		var request struct {
-			VoWiFiEnabled   *bool   `json:"vowifi_enabled"`
-			AirplaneEnabled *bool   `json:"airplane_enabled"`
-			APN             *string `json:"apn"`
-			IPVersion       *string `json:"ip_version"`
+			VoWiFiEnabled     *bool   `json:"vowifi_enabled"`
+			AirplaneEnabled   *bool   `json:"airplane_enabled"`
+			APN               *string `json:"apn"`
+			IPVersion         *string `json:"ip_version"`
+			CustomPhoneNumber *string `json:"custom_phone_number"`
 		}
 		if err := s.decodeJSON(w, r, &request); err != nil {
 			writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
 			return
 		}
 		if request.VoWiFiEnabled == nil && request.AirplaneEnabled == nil &&
-			request.APN == nil && request.IPVersion == nil {
+			request.APN == nil && request.IPVersion == nil && request.CustomPhoneNumber == nil {
 			writeError(
 				w,
 				http.StatusBadRequest,
@@ -1276,6 +1277,14 @@ func (s *Server) handleCardPolicy(w http.ResponseWriter, r *http.Request, iccid 
 				return
 			}
 			policy.IPVersion = ipVersion
+		}
+		if request.CustomPhoneNumber != nil {
+			phoneNumber, phoneErr := normalizeCustomPhoneNumber(*request.CustomPhoneNumber)
+			if phoneErr != nil {
+				writeError(w, http.StatusBadRequest, "invalid_card_policy", phoneErr.Error())
+				return
+			}
+			policy.CustomPhoneNumber = phoneNumber
 		}
 		if request.VoWiFiEnabled != nil {
 			policy.VoWiFiEnabled = *request.VoWiFiEnabled
@@ -1575,15 +1584,42 @@ func validICCID(value string) bool {
 	return true
 }
 
+func normalizeCustomPhoneNumber(value string) (string, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return "", nil
+	}
+	var normalized strings.Builder
+	digitCount := 0
+	for index, character := range value {
+		switch {
+		case character >= '0' && character <= '9':
+			normalized.WriteRune(character)
+			digitCount++
+		case character == '+' && index == 0:
+			normalized.WriteRune(character)
+		case character == ' ' || character == '-' || character == '(' || character == ')':
+			// Common visual separators are accepted but not persisted.
+		default:
+			return "", errors.New("custom phone number may contain only digits, a leading plus sign, spaces, parentheses, or hyphens")
+		}
+	}
+	if digitCount < 3 || digitCount > 20 {
+		return "", errors.New("custom phone number must contain between 3 and 20 digits")
+	}
+	return normalized.String(), nil
+}
+
 func cardPolicyResponse(policy store.CardPolicy) map[string]any {
 	response := map[string]any{
-		"iccid":            policy.ICCID,
-		"network_enabled":  false,
-		"vowifi_enabled":   policy.VoWiFiEnabled,
-		"airplane_enabled": policy.AirplaneEnabled,
-		"apn":              policy.APN,
-		"ip_version":       policy.IPVersion,
-		"source":           policy.Source,
+		"iccid":               policy.ICCID,
+		"network_enabled":     false,
+		"vowifi_enabled":      policy.VoWiFiEnabled,
+		"airplane_enabled":    policy.AirplaneEnabled,
+		"apn":                 policy.APN,
+		"ip_version":          policy.IPVersion,
+		"custom_phone_number": policy.CustomPhoneNumber,
+		"source":              policy.Source,
 	}
 	if !policy.CreatedAt.IsZero() {
 		response["created_at"] = policy.CreatedAt
