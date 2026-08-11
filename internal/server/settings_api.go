@@ -11,7 +11,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"mime"
 	"net"
 	"net/http"
 	"net/mail"
@@ -25,6 +24,7 @@ import (
 	"sync"
 	"time"
 
+	"vocat/internal/device"
 	"vocat/internal/store"
 )
 
@@ -98,6 +98,14 @@ func (s *Server) routeSettingsAPI(
 	}
 	if len(segments) == 3 && segments[0] == "cards" && segments[2] == "policy" {
 		s.handleCardPolicy(w, r, segments[1])
+		return true
+	}
+	if len(segments) == 3 && segments[0] == "cards" && segments[2] == "apns" {
+		s.handleCardAPNProfiles(w, r, segments[1], "")
+		return true
+	}
+	if len(segments) == 4 && segments[0] == "cards" && segments[2] == "apns" {
+		s.handleCardAPNProfiles(w, r, segments[1], segments[3])
 		return true
 	}
 	return false
@@ -788,18 +796,13 @@ func sendEmailNotificationTest(ctx context.Context, config map[string]any) error
 	if err != nil {
 		return fmt.Errorf("%w: SMTP message rejected", errProviderRejected)
 	}
-	message := strings.Join([]string{
-		"Date: " + time.Now().UTC().Format(time.RFC1123Z),
-		"From: " + formatMailAddress(from),
-		"To: " + joinMailAddresses(recipients),
-		"Subject: vocat notification test",
-		"MIME-Version: 1.0",
-		"Content-Type: text/plain; charset=UTF-8",
-		"",
+	if err := writePlainTextMail(
+		writer,
+		from,
+		recipients,
+		"vocat notification test",
 		"This is a vocat notification test.",
-		"",
-	}, "\r\n")
-	if _, err := io.WriteString(writer, message); err != nil {
+	); err != nil {
 		_ = writer.Close()
 		return fmt.Errorf("write SMTP test message: %w", err)
 	}
@@ -841,7 +844,7 @@ func formatMailAddress(address *mail.Address) string {
 	if address.Name == "" {
 		return address.Address
 	}
-	return mime.QEncoding.Encode("UTF-8", address.Name) + " <" + address.Address + ">"
+	return (&mail.Address{Name: address.Name, Address: address.Address}).String()
 }
 
 func restrictedHTTPClient(
@@ -1217,13 +1220,7 @@ func (s *Server) handleCardPolicy(w http.ResponseWriter, r *http.Request, iccid 
 	case http.MethodGet:
 		policy, err := s.store.CardPolicy(r.Context(), iccid)
 		if errors.Is(err, store.ErrNotFound) {
-			policy = store.CardPolicy{
-				ICCID:           iccid,
-				VoWiFiEnabled:   true,
-				AirplaneEnabled: true,
-				IPVersion:       "IPV4V6",
-				Source:          "default",
-			}
+			policy = defaultCardPolicy(iccid)
 		} else if err != nil {
 			s.writeStoreError(w, err)
 			return
@@ -1238,65 +1235,78 @@ func (s *Server) handleCardPolicy(w http.ResponseWriter, r *http.Request, iccid 
 		writeJSON(w, http.StatusOK, map[string]any{"data": cardPolicyResponse(policy)})
 	case http.MethodPut:
 		var request struct {
-			VoWiFiEnabled   *bool  `json:"vowifi_enabled"`
-			AirplaneEnabled *bool  `json:"airplane_enabled"`
-			APN             string `json:"apn"`
-			IPVersion       string `json:"ip_version"`
+			VoWiFiEnabled   *bool   `json:"vowifi_enabled"`
+			AirplaneEnabled *bool   `json:"airplane_enabled"`
+			APN             *string `json:"apn"`
+			IPVersion       *string `json:"ip_version"`
 		}
 		if err := s.decodeJSON(w, r, &request); err != nil {
 			writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
 			return
 		}
-		if request.VoWiFiEnabled == nil ||
-			request.AirplaneEnabled == nil {
+		if request.VoWiFiEnabled == nil && request.AirplaneEnabled == nil &&
+			request.APN == nil && request.IPVersion == nil {
 			writeError(
 				w,
 				http.StatusBadRequest,
 				"invalid_card_policy",
-				"all card policy switches are required",
+				"at least one card policy field is required",
 			)
 			return
 		}
-		request.APN = strings.TrimSpace(request.APN)
-		if len(request.APN) > 128 || strings.ContainsAny(request.APN, "\r\n\x00") {
-			writeError(w, http.StatusBadRequest, "invalid_card_policy", "APN is invalid")
+		policy, err := s.store.CardPolicy(r.Context(), iccid)
+		if errors.Is(err, store.ErrNotFound) {
+			policy = defaultCardPolicy(iccid)
+		} else if err != nil {
+			s.writeStoreError(w, err)
 			return
 		}
-		request.IPVersion = strings.ToUpper(strings.TrimSpace(request.IPVersion))
-		if request.IPVersion == "" {
-			request.IPVersion = "IPV4V6"
+		if request.APN != nil {
+			apn := strings.TrimSpace(*request.APN)
+			if !device.ValidAPN(apn) {
+				writeError(w, http.StatusBadRequest, "invalid_card_policy", "APN must contain only letters, digits, dots, underscores, or hyphens")
+				return
+			}
+			policy.APN = apn
 		}
-		if request.IPVersion != "IP" &&
-			request.IPVersion != "IPV6" &&
-			request.IPVersion != "IPV4V6" {
-			writeError(
-				w,
-				http.StatusBadRequest,
-				"invalid_card_policy",
-				"IP version must be IP, IPV6, or IPV4V6",
-			)
-			return
+		if request.IPVersion != nil {
+			ipVersion := strings.ToUpper(strings.TrimSpace(*request.IPVersion))
+			if ipVersion == "" {
+				ipVersion = "IPV4V6"
+			}
+			if ipVersion != "IP" && ipVersion != "IPV6" && ipVersion != "IPV4V6" {
+				writeError(
+					w,
+					http.StatusBadRequest,
+					"invalid_card_policy",
+					"IP version must be IP, IPV6, or IPV4V6",
+				)
+				return
+			}
+			policy.IPVersion = ipVersion
+		}
+		if request.VoWiFiEnabled != nil {
+			policy.VoWiFiEnabled = *request.VoWiFiEnabled
+		}
+		if request.AirplaneEnabled != nil {
+			policy.AirplaneEnabled = *request.AirplaneEnabled
 		}
 		// VoWiFi always owns an RF-off modem. Store airplane=true even when an
 		// older client omits that implication, so disabling VoWiFi cannot expose a
 		// brief cellular attach window.
-		if *request.VoWiFiEnabled {
-			*request.AirplaneEnabled = true
+		if policy.VoWiFiEnabled {
+			policy.AirplaneEnabled = true
+			policy.NetworkEnabled = false
 		}
-		policy := store.CardPolicy{
-			ICCID:           iccid,
-			NetworkEnabled:  false,
-			VoWiFiEnabled:   *request.VoWiFiEnabled,
-			AirplaneEnabled: *request.AirplaneEnabled,
-			APN:             request.APN,
-			IPVersion:       request.IPVersion,
-			Source:          "manual",
+		if policy.IPVersion == "" {
+			policy.IPVersion = "IPV4V6"
 		}
+		policy.Source = "manual"
 		if err := s.store.UpsertCardPolicy(r.Context(), policy); err != nil {
 			s.writeStoreError(w, err)
 			return
 		}
-		policy, err := s.store.CardPolicy(r.Context(), iccid)
+		policy, err = s.store.CardPolicy(r.Context(), iccid)
 		if err != nil {
 			s.writeStoreError(w, err)
 			return
@@ -1306,6 +1316,259 @@ func (s *Server) handleCardPolicy(w http.ResponseWriter, r *http.Request, iccid 
 		w.Header().Set("Allow", "GET, PUT")
 		writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed")
 	}
+}
+
+func defaultCardPolicy(iccid string) store.CardPolicy {
+	return store.CardPolicy{
+		ICCID:           strings.TrimSpace(iccid),
+		VoWiFiEnabled:   true,
+		AirplaneEnabled: true,
+		IPVersion:       "IPV4V6",
+		Source:          "default",
+	}
+}
+
+type cardAPNProfilePayload struct {
+	APN              string  `json:"apn"`
+	Username         string  `json:"username"`
+	Password         *string `json:"password"`
+	ClearPassword    bool    `json:"clear_password"`
+	Proxy            string  `json:"proxy"`
+	MCC              string  `json:"mcc"`
+	MNC              string  `json:"mnc"`
+	IPVersion        string  `json:"ip_version"`
+	RoamingIPVersion string  `json:"roaming_ip_version"`
+	AuthType         string  `json:"auth_type"`
+}
+
+func (s *Server) decodeCardAPNProfilePayload(w http.ResponseWriter, r *http.Request) (cardAPNProfilePayload, bool) {
+	var request cardAPNProfilePayload
+	if err := s.decodeJSON(w, r, &request); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
+		return request, false
+	}
+	request.APN = strings.TrimSpace(request.APN)
+	if request.APN == "" || !device.ValidAPN(request.APN) {
+		writeError(w, http.StatusBadRequest, "invalid_apn", "APN must contain only letters, digits, dots, underscores, or hyphens")
+		return request, false
+	}
+	request.IPVersion = strings.ToUpper(strings.TrimSpace(request.IPVersion))
+	if request.IPVersion == "" {
+		request.IPVersion = "IPV4V6"
+	}
+	if request.IPVersion != "IP" && request.IPVersion != "IPV6" && request.IPVersion != "IPV4V6" {
+		writeError(w, http.StatusBadRequest, "invalid_ip_version", "IP version must be IP, IPV6, or IPV4V6")
+		return request, false
+	}
+	request.RoamingIPVersion = strings.ToUpper(strings.TrimSpace(request.RoamingIPVersion))
+	if request.RoamingIPVersion == "" {
+		request.RoamingIPVersion = "IP"
+	}
+	if request.RoamingIPVersion != "IP" && request.RoamingIPVersion != "IPV6" && request.RoamingIPVersion != "IPV4V6" {
+		writeError(w, http.StatusBadRequest, "invalid_roaming_ip_version", "roaming IP version must be IP, IPV6, or IPV4V6")
+		return request, false
+	}
+	request.AuthType = strings.ToUpper(strings.TrimSpace(request.AuthType))
+	if request.AuthType == "" {
+		request.AuthType = "NONE"
+	}
+	if request.AuthType != "NONE" && request.AuthType != "PAP" && request.AuthType != "CHAP" && request.AuthType != "PAP_OR_CHAP" {
+		writeError(w, http.StatusBadRequest, "invalid_auth_type", "authentication type must be NONE, PAP, CHAP, or PAP_OR_CHAP")
+		return request, false
+	}
+	request.Username = strings.TrimSpace(request.Username)
+	request.Proxy = strings.TrimSpace(request.Proxy)
+	request.MCC = strings.TrimSpace(request.MCC)
+	request.MNC = strings.TrimSpace(request.MNC)
+	password := ""
+	if request.Password != nil {
+		password = *request.Password
+	}
+	if !validAPNText(request.Username, 128) || !validAPNText(password, 128) || !validAPNText(request.Proxy, 255) {
+		writeError(w, http.StatusBadRequest, "invalid_apn_credentials", "APN username, password, or proxy contains unsupported characters")
+		return request, false
+	}
+	if request.MCC != "" && !decimalLength(request.MCC, 3, 3) {
+		writeError(w, http.StatusBadRequest, "invalid_mcc", "MCC must contain exactly 3 digits")
+		return request, false
+	}
+	if request.MNC != "" && !decimalLength(request.MNC, 2, 3) {
+		writeError(w, http.StatusBadRequest, "invalid_mnc", "MNC must contain 2 or 3 digits")
+		return request, false
+	}
+	return request, true
+}
+
+func (s *Server) handleCardAPNProfiles(w http.ResponseWriter, r *http.Request, iccid, profileID string) {
+	iccid = strings.TrimSpace(iccid)
+	if !validICCID(iccid) {
+		writeError(w, http.StatusBadRequest, "invalid_iccid", "ICCID must contain between 10 and 32 decimal digits")
+		return
+	}
+	if profileID != "" {
+		id, err := strconv.ParseInt(profileID, 10, 64)
+		if err != nil || id < 1 {
+			writeError(w, http.StatusBadRequest, "invalid_apn_profile", "APN profile ID is invalid")
+			return
+		}
+		profiles, err := s.store.ListCardAPNProfiles(r.Context(), iccid)
+		if err != nil {
+			s.writeStoreError(w, err)
+			return
+		}
+		var existing store.CardAPNProfile
+		for _, profile := range profiles {
+			if profile.ID == id {
+				existing = profile
+				break
+			}
+		}
+		if existing.ID == 0 {
+			writeError(w, http.StatusNotFound, "apn_profile_not_found", "APN profile was not found")
+			return
+		}
+		switch r.Method {
+		case http.MethodDelete:
+			if err := s.store.DeleteCardAPNProfile(r.Context(), iccid, id); err != nil {
+				s.writeStoreError(w, err)
+				return
+			}
+			policy, err := s.store.CardPolicy(r.Context(), iccid)
+			if err == nil && strings.EqualFold(policy.APN, existing.APN) && strings.EqualFold(policy.IPVersion, existing.IPVersion) {
+				policy.APN = ""
+				policy.IPVersion = "IPV4V6"
+				policy.Source = "manual"
+				if err := s.store.UpsertCardPolicy(r.Context(), policy); err != nil {
+					s.writeStoreError(w, err)
+					return
+				}
+			} else if err != nil && !errors.Is(err, store.ErrNotFound) {
+				s.writeStoreError(w, err)
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]any{"data": map[string]any{"deleted": true, "id": id}})
+		case http.MethodPatch, http.MethodPut:
+			request, ok := s.decodeCardAPNProfilePayload(w, r)
+			if !ok {
+				return
+			}
+			password := existing.Password
+			if request.ClearPassword {
+				password = ""
+			} else if request.Password != nil && *request.Password != "" {
+				password = *request.Password
+			}
+			updated, err := s.store.UpdateCardAPNProfile(r.Context(), store.CardAPNProfile{
+				ID: id, ICCID: iccid, APN: request.APN, Username: request.Username,
+				Password: password, Proxy: request.Proxy, MCC: request.MCC, MNC: request.MNC,
+				IPVersion: request.IPVersion, RoamingIPVersion: request.RoamingIPVersion,
+				AuthType: request.AuthType,
+			})
+			if err != nil {
+				s.writeStoreError(w, err)
+				return
+			}
+			policy, policyErr := s.store.CardPolicy(r.Context(), iccid)
+			if policyErr == nil && strings.EqualFold(policy.APN, existing.APN) && strings.EqualFold(policy.IPVersion, existing.IPVersion) {
+				policy.APN = updated.APN
+				policy.IPVersion = updated.IPVersion
+				policy.Source = "manual"
+				if err := s.store.UpsertCardPolicy(r.Context(), policy); err != nil {
+					s.writeStoreError(w, err)
+					return
+				}
+			} else if policyErr != nil && !errors.Is(policyErr, store.ErrNotFound) {
+				s.writeStoreError(w, policyErr)
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]any{"data": cardAPNProfileResponse(updated)})
+		default:
+			w.Header().Set("Allow", "PATCH, PUT, DELETE")
+			writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed")
+		}
+		return
+	}
+
+	switch r.Method {
+	case http.MethodGet:
+		profiles, err := s.store.ListCardAPNProfiles(r.Context(), iccid)
+		if err != nil {
+			s.writeStoreError(w, err)
+			return
+		}
+		items := make([]map[string]any, 0, len(profiles))
+		for _, profile := range profiles {
+			items = append(items, cardAPNProfileResponse(profile))
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"data": map[string]any{"items": items}})
+	case http.MethodPost:
+		request, ok := s.decodeCardAPNProfilePayload(w, r)
+		if !ok {
+			return
+		}
+		if _, err := s.store.CardPolicy(r.Context(), iccid); errors.Is(err, store.ErrNotFound) {
+			if err := s.store.UpsertCardPolicy(r.Context(), defaultCardPolicy(iccid)); err != nil {
+				s.writeStoreError(w, err)
+				return
+			}
+		} else if err != nil {
+			s.writeStoreError(w, err)
+			return
+		}
+		password := ""
+		if request.Password != nil {
+			password = *request.Password
+		}
+		profile, err := s.store.UpsertCardAPNProfile(r.Context(), store.CardAPNProfile{
+			ICCID: iccid, APN: request.APN, Username: request.Username,
+			Password: password, Proxy: request.Proxy, MCC: request.MCC, MNC: request.MNC,
+			IPVersion: request.IPVersion, RoamingIPVersion: request.RoamingIPVersion,
+			AuthType: request.AuthType,
+		})
+		if err != nil {
+			s.writeStoreError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusCreated, map[string]any{"data": cardAPNProfileResponse(profile)})
+	default:
+		w.Header().Set("Allow", "GET, POST")
+		writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed")
+	}
+}
+
+func cardAPNProfileResponse(profile store.CardAPNProfile) map[string]any {
+	return map[string]any{
+		"id": profile.ID, "iccid": profile.ICCID, "apn": profile.APN,
+		"username": profile.Username, "has_password": profile.Password != "",
+		"proxy": profile.Proxy, "mcc": profile.MCC, "mnc": profile.MNC,
+		"ip_version": profile.IPVersion, "roaming_ip_version": profile.RoamingIPVersion,
+		"auth_type": profile.AuthType, "created_at": profile.CreatedAt,
+		"updated_at": profile.UpdatedAt,
+	}
+}
+
+func validAPNText(value string, maxLength int) bool {
+	if len(value) > maxLength || strings.ContainsAny(value, "\r\n\x00\"") {
+		return false
+	}
+	for _, character := range value {
+		if character < 0x20 || character == 0x7f {
+			return false
+		}
+	}
+	return true
+}
+
+func decimalLength(value string, minimum, maximum int) bool {
+	if len(value) < minimum || len(value) > maximum {
+		return false
+	}
+	for _, character := range value {
+		if character < '0' || character > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 func validICCID(value string) bool {

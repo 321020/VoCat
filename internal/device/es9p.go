@@ -10,6 +10,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strings"
 	"time"
 
@@ -32,9 +33,11 @@ type es9pClient struct {
 	http     *http.Client
 }
 
+var smdpAddressPattern = regexp.MustCompile(`^(?:[A-Za-z0-9](?:[A-Za-z0-9.-]{0,251}[A-Za-z0-9])?|\[[0-9A-Fa-f:.]+\])(?::[0-9]{1,5})?$`)
+
 func newES9PClient(ctx context.Context, smdp string) (*es9pClient, error) {
 	smdp = strings.TrimSpace(smdp)
-	if smdp == "" || strings.Contains(smdp, "://") {
+	if !smdpAddressPattern.MatchString(smdp) {
 		return nil, errors.New("esim: SM-DP+ address must be a hostname with an optional port")
 	}
 	candidate, err := url.Parse("https://" + smdp)
@@ -159,31 +162,31 @@ func es9pErrFromStatus(function, status string, scd *es9pStatusCodeData) error {
 // human-readable failure when the SM-DP+ omits statusCodeData.message. Table
 // mirrors lpac's euicc/es9p_errors.c.
 var es9pErrorTable = map[[2]string]string{
-	{"8.1", "4.8"}:     "eUICC does not have sufficient space for this Profile",
-	{"8.1", "6.1"}:     "eUICC signature is invalid or serverChallenge is invalid",
-	{"8.1.1", "2.2"}:   "EID is missing in the context of this order",
-	{"8.1.1", "3.1"}:   "a different EID is already associated with this ICCID",
-	{"8.1.1", "3.8"}:   "EID doesn't match the expected value",
-	{"8.1.2", "6.1"}:   "EUM Certificate is invalid",
-	{"8.1.2", "6.3"}:   "EUM Certificate has expired",
-	{"8.1.3", "6.1"}:   "eUICC Certificate is invalid",
-	{"8.1.3", "6.3"}:   "eUICC Certificate has expired",
-	{"8.2", "1.2"}:     "Profile has not yet been released",
-	{"8.2", "3.7"}:     "BPP is not available for a new binding",
-	{"8.2.5", "3.7"}:   "No more Profile available for the requested Profile Type",
-	{"8.2.5", "4.3"}:   "No eligible Profile for this eUICC/Device",
-	{"8.2.6", "3.1"}:   "a different MatchingID is associated with this ICCID",
-	{"8.2.6", "3.3"}:   "Conflicting MatchingID value",
-	{"8.2.6", "3.8"}:   "MatchingID (AC_Token or EventID) is refused",
-	{"8.2.7", "2.2"}:   "Confirmation Code is missing",
-	{"8.2.7", "3.8"}:   "Confirmation Code is refused",
-	{"8.2.7", "6.4"}:   "maximum number of retries for the Confirmation Code exceeded",
-	{"8.8.1", "3.8"}:   "Invalid SM-DP+ Address",
-	{"8.8.4", "3.7"}:   "The SM-DP+ has no CERT.DPauth.ECDSA signed by one of the CI Public Key supported by the eUICC",
-	{"8.8.5", "4.1"}:   "The Download order has expired",
-	{"8.8.5", "6.4"}:   "maximum number of retries for the Profile download order exceeded",
-	{"8.10.1", "3.9"}:  "The RSP session identified by the TransactionID is unknown",
-	{"8.11.1", "3.9"}:  "Unknown CI Public Key. The CI used by the EUM Certificate is not a trusted root.",
+	{"8.1", "4.8"}:    "eUICC does not have sufficient space for this Profile",
+	{"8.1", "6.1"}:    "eUICC signature is invalid or serverChallenge is invalid",
+	{"8.1.1", "2.2"}:  "EID is missing in the context of this order",
+	{"8.1.1", "3.1"}:  "a different EID is already associated with this ICCID",
+	{"8.1.1", "3.8"}:  "EID doesn't match the expected value",
+	{"8.1.2", "6.1"}:  "EUM Certificate is invalid",
+	{"8.1.2", "6.3"}:  "EUM Certificate has expired",
+	{"8.1.3", "6.1"}:  "eUICC Certificate is invalid",
+	{"8.1.3", "6.3"}:  "eUICC Certificate has expired",
+	{"8.2", "1.2"}:    "Profile has not yet been released",
+	{"8.2", "3.7"}:    "BPP is not available for a new binding",
+	{"8.2.5", "3.7"}:  "No more Profile available for the requested Profile Type",
+	{"8.2.5", "4.3"}:  "No eligible Profile for this eUICC/Device",
+	{"8.2.6", "3.1"}:  "a different MatchingID is associated with this ICCID",
+	{"8.2.6", "3.3"}:  "Conflicting MatchingID value",
+	{"8.2.6", "3.8"}:  "MatchingID (AC_Token or EventID) is refused",
+	{"8.2.7", "2.2"}:  "Confirmation Code is missing",
+	{"8.2.7", "3.8"}:  "Confirmation Code is refused",
+	{"8.2.7", "6.4"}:  "maximum number of retries for the Confirmation Code exceeded",
+	{"8.8.1", "3.8"}:  "Invalid SM-DP+ Address",
+	{"8.8.4", "3.7"}:  "The SM-DP+ has no CERT.DPauth.ECDSA signed by one of the CI Public Key supported by the eUICC",
+	{"8.8.5", "4.1"}:  "The Download order has expired",
+	{"8.8.5", "6.4"}:  "maximum number of retries for the Profile download order exceeded",
+	{"8.10.1", "3.9"}: "The RSP session identified by the TransactionID is unknown",
+	{"8.11.1", "3.9"}: "Unknown CI Public Key. The CI used by the EUM Certificate is not a trusted root.",
 }
 
 func es9pErrorMessage(subjectCode, reasonCode string) string {
@@ -264,10 +267,10 @@ func (c *es9pClient) initiateAuthentication(ctx context.Context, euiccChallenge,
 // es9pAuthenticateResult carries the profile metadata and the SM-DP+ download
 // authorization needed for PrepareDownload.
 type es9pAuthenticateResult struct {
-	TransactionID  string
+	TransactionID   string
 	ProfileMetadata []byte
-	SmdpSigned2    []byte
-	SmdpSignature2 []byte
+	SmdpSigned2     []byte
+	SmdpSignature2  []byte
 	SmdpCertificate []byte
 }
 
@@ -297,7 +300,7 @@ func (c *es9pClient) authenticateClient(ctx context.Context, transactionID strin
 
 func (c *es9pClient) getBoundProfilePackage(ctx context.Context, transactionID string, prepareDownloadResponse []byte) ([]byte, error) {
 	root, err := c.call(ctx, "getBoundProfilePackage", map[string]string{
-		"transactionId":          transactionID,
+		"transactionId":           transactionID,
 		"prepareDownloadResponse": es9pBase64Encode(prepareDownloadResponse),
 	}, "boundProfilePackage")
 	if err != nil {
@@ -310,10 +313,34 @@ func (c *es9pClient) getBoundProfilePackage(ctx context.Context, transactionID s
 // for the download case). It is best-effort: the profile is already installed, so
 // a notification failure is reported by the caller as a warning, not a failure.
 func (c *es9pClient) handleNotification(ctx context.Context, pendingNotification []byte) error {
-	_, err := c.call(ctx, "handleNotification", map[string]string{
+	endpoint := *c.endpoint
+	endpoint.Path = "/gsma/rsp2/es9plus/handleNotification"
+	body, err := json.Marshal(map[string]string{
 		"pendingNotification": es9pBase64Encode(pendingNotification),
 	})
-	return err
+	if err != nil {
+		return err
+	}
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint.String(), bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("User-Agent", "gsma-rsp-lpad")
+	request.Header.Set("X-Admin-Protocol", "gsma/rsp/v2.2.2")
+	response, err := c.http.Do(request)
+	if err != nil {
+		return fmt.Errorf("es9p handleNotification: %w", err)
+	}
+	defer response.Body.Close()
+	_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, 1<<20))
+	// SGP.22 defines HandleNotification as a notification-handler function:
+	// success is an empty HTTP 204 response, not the JSON envelope returned by
+	// ordinary ES9+ request-response functions.
+	if response.StatusCode != http.StatusNoContent {
+		return fmt.Errorf("es9p handleNotification: receiver returned HTTP %d", response.StatusCode)
+	}
+	return nil
 }
 
 // cancelSession aborts an in-flight download so the SM-DP+ releases the

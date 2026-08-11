@@ -258,11 +258,22 @@ func (s *Server) prepareAutomaticTaskEnvironment(ctx context.Context, config *st
 	if err := s.store.UpsertDevice(ctx, *config); err != nil {
 		return err
 	}
-	if err := s.store.UpsertCardPolicy(ctx, store.CardPolicy{ICCID: iccid, NetworkEnabled: config.NetworkEnabled, VoWiFiEnabled: false, AirplaneEnabled: false, APN: config.APN, IPVersion: "IPV4V6", Source: "automatic_task"}); err != nil {
+	policy, policyErr := s.store.CardPolicy(ctx, iccid)
+	if errors.Is(policyErr, store.ErrNotFound) {
+		policy = defaultCardPolicy(iccid)
+		policy.APN = config.APN
+	} else if policyErr != nil {
+		return policyErr
+	}
+	policy.NetworkEnabled = config.NetworkEnabled
+	policy.VoWiFiEnabled = false
+	policy.AirplaneEnabled = false
+	policy.Source = "automatic_task"
+	if err := s.store.UpsertCardPolicy(ctx, policy); err != nil {
 		return err
 	}
 	if task.TaskType != "public_ip" {
-		if _, err := s.devices.SetNetwork(ctx, physicalID, device.NetworkRequest{Enabled: false, APN: config.APN, IPVersion: "IPV4V6", Backend: config.DeviceBackend}); err != nil {
+		if _, err := s.devices.SetNetwork(ctx, physicalID, s.cardNetworkRequest(ctx, physicalID, *config, policy, false)); err != nil {
 			s.logger.Warn("automatic task could not stop unused cellular data", "device_id", config.ID, "error", err)
 		}
 	}
@@ -282,7 +293,7 @@ func (s *Server) prepareAutomaticTaskEnvironment(ctx context.Context, config *st
 		if !s.developerActive(ctx) {
 			return errors.New("roaming public IP tasks require developer mode")
 		}
-		if _, err := s.devices.SetNetwork(ctx, physicalID, device.NetworkRequest{Enabled: true, APN: config.APN, IPVersion: "IPV4V6", Backend: config.DeviceBackend}); err != nil {
+		if _, err := s.devices.SetNetwork(ctx, physicalID, s.cardNetworkRequest(ctx, physicalID, *config, policy, true)); err != nil {
 			s.rollbackAutomaticNetwork(config.ID, physicalID, iccid, *config)
 			return fmt.Errorf("start roaming data: %w", err)
 		}
@@ -425,16 +436,51 @@ func (s *Server) executeAutomaticPublicIP(ctx context.Context, config store.Devi
 func (s *Server) rollbackAutomaticNetwork(deviceID, physicalID, iccid string, config store.Device) {
 	cleanupContext, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	if _, err := s.devices.SetNetwork(cleanupContext, physicalID, device.NetworkRequest{Enabled: false, APN: config.APN, IPVersion: "IPV4V6", Backend: config.DeviceBackend}); err != nil {
+	policy, policyErr := s.store.CardPolicy(cleanupContext, iccid)
+	if policyErr != nil {
+		policy = store.CardPolicy{ICCID: iccid, APN: config.APN, IPVersion: "IPV4V6"}
+	}
+	if _, err := s.devices.SetNetwork(cleanupContext, physicalID, s.cardNetworkRequest(cleanupContext, physicalID, config, policy, false)); err != nil {
 		s.logger.Warn("stop one-shot automatic roaming data", "device_id", deviceID, "error", err)
 	}
 	config.NetworkEnabled = false
 	if err := s.store.UpsertDevice(cleanupContext, config); err != nil {
 		s.logger.Warn("restore automatic roaming data setting", "device_id", deviceID, "error", err)
 	}
-	if err := s.store.UpsertCardPolicy(cleanupContext, store.CardPolicy{ICCID: iccid, NetworkEnabled: false, VoWiFiEnabled: false, AirplaneEnabled: false, APN: config.APN, IPVersion: "IPV4V6", Source: "automatic_task"}); err != nil {
+	policy.NetworkEnabled = false
+	policy.VoWiFiEnabled = false
+	policy.AirplaneEnabled = false
+	policy.Source = "automatic_task"
+	if err := s.store.UpsertCardPolicy(cleanupContext, policy); err != nil {
 		s.logger.Warn("restore automatic roaming card policy", "device_id", deviceID, "error", err)
 	}
+}
+
+func (s *Server) cardNetworkRequest(
+	ctx context.Context,
+	physicalID string,
+	config store.Device,
+	policy store.CardPolicy,
+	enabled bool,
+) device.NetworkRequest {
+	request := device.NetworkRequest{
+		Enabled: enabled, APN: policy.APN, IPVersion: policy.IPVersion, Backend: config.DeviceBackend,
+	}
+	if request.IPVersion == "" {
+		request.IPVersion = "IPV4V6"
+	}
+	profile, err := s.store.CardAPNProfileByAPN(ctx, policy.ICCID, policy.APN, policy.IPVersion)
+	if err != nil {
+		return request
+	}
+	request.Username = profile.Username
+	request.Password = profile.Password
+	request.Authentication = profile.AuthType
+	if entry, getErr := s.devices.Get(physicalID); getErr == nil && entry.Snapshot != nil &&
+		entry.Snapshot.RegistrationStatus == 5 && profile.RoamingIPVersion != "" {
+		request.IPVersion = profile.RoamingIPVersion
+	}
+	return request
 }
 
 func compactAutomaticResponse(body []byte) string {

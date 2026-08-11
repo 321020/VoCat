@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"encoding/csv"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -552,6 +553,11 @@ func (s *Server) handleDevicePath(
 			return true
 		}
 		return s.handleCellularData(w, r, config, physicalID)
+	case "network/apns":
+		if !s.requirePhysicalDevice(w, physicalPresent) {
+			return true
+		}
+		return s.handleAPNProfiles(w, r, physicalID)
 	case "network/public-ip":
 		if !s.requirePhysicalDevice(w, physicalPresent) {
 			return true
@@ -1127,6 +1133,65 @@ func (s *Server) handleFlightMode(w http.ResponseWriter, r *http.Request, config
 	return true
 }
 
+type modemAPNProfile struct {
+	CID       int    `json:"cid"`
+	APN       string `json:"apn"`
+	IPVersion string `json:"ip_version"`
+}
+
+func parseModemAPNProfiles(lines []string) []modemAPNProfile {
+	profiles := make([]modemAPNProfile, 0)
+	seen := make(map[string]bool)
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		prefix := strings.Index(strings.ToUpper(line), "+CGDCONT:")
+		if prefix < 0 {
+			continue
+		}
+		record, err := csv.NewReader(strings.NewReader(strings.TrimSpace(line[prefix+len("+CGDCONT:"):]))).Read()
+		if err != nil || len(record) < 3 {
+			continue
+		}
+		cid, err := strconv.Atoi(strings.TrimSpace(record[0]))
+		if err != nil || cid < 1 {
+			continue
+		}
+		ipVersion := strings.ToUpper(strings.TrimSpace(record[1]))
+		if ipVersion == "IPV4" {
+			ipVersion = "IP"
+		}
+		if ipVersion != "IP" && ipVersion != "IPV6" && ipVersion != "IPV4V6" {
+			continue
+		}
+		apn := strings.TrimSpace(record[2])
+		if apn == "" || !device.ValidAPN(apn) {
+			continue
+		}
+		key := strings.ToLower(apn) + "\x00" + ipVersion
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		profiles = append(profiles, modemAPNProfile{CID: cid, APN: apn, IPVersion: ipVersion})
+	}
+	return profiles
+}
+
+func (s *Server) handleAPNProfiles(w http.ResponseWriter, r *http.Request, physicalID string) bool {
+	if !requireMethod(w, r, http.MethodGet) {
+		return true
+	}
+	response, err := s.devices.ExecuteAT(r.Context(), physicalID, "AT+CGDCONT?")
+	if err != nil {
+		s.writeDeviceError(w, err)
+		return true
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"data": map[string]any{
+		"items": parseModemAPNProfiles(response.Lines),
+	}})
+	return true
+}
+
 func (s *Server) handleCellularData(
 	w http.ResponseWriter,
 	r *http.Request,
@@ -1165,31 +1230,74 @@ func (s *Server) handleCellularData(
 			}
 		}
 		apn := strings.TrimSpace(request.APN)
-		if apn == "" {
+		policyIPVersion := "IPV4V6"
+		activeICCID := ""
+		isRoaming := false
+		var activePolicy store.CardPolicy
+		var activeAPNProfile store.CardAPNProfile
+		if entry, getErr := s.devices.Get(physicalID); getErr == nil && entry.Snapshot != nil {
+			activeICCID = strings.TrimSpace(entry.Snapshot.ICCID)
+			isRoaming = entry.Snapshot.RegistrationStatus == 5
+			if stored, policyErr := s.store.CardPolicy(r.Context(), activeICCID); policyErr == nil {
+				activePolicy = stored
+				if apn == "" {
+					apn = strings.TrimSpace(stored.APN)
+				}
+				if stored.IPVersion != "" {
+					policyIPVersion = stored.IPVersion
+				}
+			}
+		}
+		if apn == "" && activePolicy.ICCID == "" {
 			apn = strings.TrimSpace(config.APN)
+		}
+		if !device.ValidAPN(apn) {
+			writeError(w, http.StatusBadRequest, "invalid_apn", "APN must contain only letters, digits, dots, underscores, or hyphens")
+			return true
+		}
+		if profile, profileErr := s.store.CardAPNProfileByAPN(r.Context(), activeICCID, apn, policyIPVersion); profileErr == nil {
+			activeAPNProfile = profile
+		}
+		effectiveIPVersion := policyIPVersion
+		if isRoaming && activeAPNProfile.RoamingIPVersion != "" {
+			effectiveIPVersion = activeAPNProfile.RoamingIPVersion
+		}
+		networkRequest := device.NetworkRequest{
+			Enabled: request.Enabled, APN: apn, IPVersion: effectiveIPVersion,
+			Username: activeAPNProfile.Username, Password: activeAPNProfile.Password,
+			Authentication: activeAPNProfile.AuthType, Backend: config.DeviceBackend,
 		}
 		controller := http.NewResponseController(w)
 		_ = controller.SetWriteDeadline(time.Time{})
-		result, err := s.devices.SetNetwork(r.Context(), physicalID, device.NetworkRequest{
-			Enabled: request.Enabled, APN: apn, IPVersion: "IPV4V6", Backend: config.DeviceBackend,
-		})
+		result, err := s.devices.SetNetwork(r.Context(), physicalID, networkRequest)
 		if err != nil {
 			s.writeDeviceError(w, err)
 			return true
 		}
 		previous := config.NetworkEnabled
 		config.NetworkEnabled = request.Enabled
-		if apn != "" {
-			config.APN = apn
-		}
+		config.APN = apn
 		if err := s.store.UpsertDevice(r.Context(), config); err != nil {
 			rollbackContext, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-			_, _ = s.devices.SetNetwork(rollbackContext, physicalID, device.NetworkRequest{
-				Enabled: previous, APN: config.APN, IPVersion: "IPV4V6", Backend: config.DeviceBackend,
-			})
+			networkRequest.Enabled = previous
+			networkRequest.APN = config.APN
+			_, _ = s.devices.SetNetwork(rollbackContext, physicalID, networkRequest)
 			cancel()
 			s.writeStoreError(w, err)
 			return true
+		}
+		if validICCID(activeICCID) {
+			if activePolicy.ICCID == "" {
+				activePolicy = defaultCardPolicy(activeICCID)
+			}
+			activePolicy.APN = apn
+			activePolicy.IPVersion = policyIPVersion
+			if strings.TrimSpace(request.APN) != "" {
+				activePolicy.Source = "manual"
+			}
+			if err := s.store.UpsertCardPolicy(r.Context(), activePolicy); err != nil {
+				s.logger.Warn("cellular APN active but card policy could not be updated", "device_id", config.ID, "iccid", activeICCID, "error", err)
+			}
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"data": map[string]any{
 			"enabled": result.Enabled, "interface": result.Interface,

@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -457,6 +458,101 @@ func TestCardPolicyDefaultValidationAndPersistence(t *testing.T) {
 	stored, err := test.database.CardPolicy(context.Background(), iccid)
 	if err != nil || !stored.VoWiFiEnabled || !stored.AirplaneEnabled || stored.APN != "ims" {
 		t.Fatalf("stored policy = %+v, %v", stored, err)
+	}
+
+	// Updating only the switches must preserve the ICCID-specific APN.
+	recorder = test.request(
+		t,
+		http.MethodPut,
+		"/api/cards/"+iccid+"/policy",
+		`{"vowifi_enabled":false,"airplane_enabled":false}`,
+	)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("partial policy status = %d, body = %s", recorder.Code, recorder.Body)
+	}
+	stored, err = test.database.CardPolicy(context.Background(), iccid)
+	if err != nil || stored.VoWiFiEnabled || stored.AirplaneEnabled || stored.APN != "ims" {
+		t.Fatalf("partially updated policy = %+v, %v", stored, err)
+	}
+
+	// APN-only updates are accepted without changing either switch.
+	recorder = test.request(t, http.MethodPut, "/api/cards/"+iccid+"/policy", `{"apn":"mobile.example","ip_version":"ip"}`)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("APN-only policy status = %d, body = %s", recorder.Code, recorder.Body)
+	}
+	stored, err = test.database.CardPolicy(context.Background(), iccid)
+	if err != nil || stored.VoWiFiEnabled || stored.AirplaneEnabled || stored.APN != "mobile.example" || stored.IPVersion != "IP" {
+		t.Fatalf("APN-only updated policy = %+v, %v", stored, err)
+	}
+
+	// A profile can keep multiple custom APNs independently of the active APN.
+	recorder = test.request(t, http.MethodPost, "/api/cards/"+iccid+"/apns", `{
+		"apn":"custom.table","username":"gg","password":"p","proxy":"",
+		"mcc":"234","mnc":"10","ip_version":"IPV4V6",
+		"roaming_ip_version":"IP","auth_type":"PAP"
+	}`)
+	if recorder.Code != http.StatusCreated {
+		t.Fatalf("create custom APN status = %d, body = %s", recorder.Code, recorder.Body)
+	}
+	response = decodeSettingsResponse(t, recorder)
+	custom := response["data"].(map[string]any)
+	customID := int64(custom["id"].(float64))
+	recorder = test.request(t, http.MethodGet, "/api/cards/"+iccid+"/apns", "")
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("list custom APNs status = %d, body = %s", recorder.Code, recorder.Body)
+	}
+	response = decodeSettingsResponse(t, recorder)
+	items := response["data"].(map[string]any)["items"].([]any)
+	if len(items) != 1 {
+		t.Fatalf("custom APNs = %#v", items)
+	}
+	listed := items[0].(map[string]any)
+	if listed["apn"] != "custom.table" || listed["username"] != "gg" ||
+		listed["has_password"] != true || listed["mcc"] != "234" || listed["mnc"] != "10" ||
+		listed["roaming_ip_version"] != "IP" || listed["auth_type"] != "PAP" {
+		t.Fatalf("custom APNs = %#v", items)
+	}
+	if _, exposed := listed["password"]; exposed {
+		t.Fatalf("custom APN API exposed stored password: %#v", listed)
+	}
+	storedAPN, err := test.database.CardAPNProfileByAPN(context.Background(), iccid, "custom.table", "IPV4V6")
+	if err != nil || storedAPN.Username != "gg" || storedAPN.Password != "p" || storedAPN.AuthType != "PAP" {
+		t.Fatalf("stored custom APN = %#v, %v", storedAPN, err)
+	}
+	recorder = test.request(t, http.MethodPatch, "/api/cards/"+iccid+"/apns/"+strconv.FormatInt(customID, 10), `{
+		"apn":"custom.edited","username":"gg2","proxy":"","mcc":"234","mnc":"10",
+		"ip_version":"IPV4V6","roaming_ip_version":"IP","auth_type":"PAP"
+	}`)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("edit custom APN status = %d, body = %s", recorder.Code, recorder.Body)
+	}
+	storedAPN, err = test.database.CardAPNProfileByAPN(context.Background(), iccid, "custom.edited", "IPV4V6")
+	if err != nil || storedAPN.Username != "gg2" || storedAPN.Password != "p" {
+		t.Fatalf("editing custom APN did not preserve password: %#v, %v", storedAPN, err)
+	}
+	recorder = test.request(t, http.MethodPut, "/api/cards/"+iccid+"/policy", `{"apn":"custom.edited","ip_version":"IPV4V6"}`)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("activate custom APN status = %d, body = %s", recorder.Code, recorder.Body)
+	}
+	recorder = test.request(t, http.MethodPatch, "/api/cards/"+iccid+"/apns/"+strconv.FormatInt(customID, 10), `{
+		"apn":"custom.final","username":"gg2","clear_password":true,"proxy":"",
+		"mcc":"234","mnc":"10","ip_version":"IP","roaming_ip_version":"IPV4V6","auth_type":"CHAP"
+	}`)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("edit active custom APN status = %d, body = %s", recorder.Code, recorder.Body)
+	}
+	stored, err = test.database.CardPolicy(context.Background(), iccid)
+	storedAPN, profileErr := test.database.CardAPNProfileByAPN(context.Background(), iccid, "custom.final", "IP")
+	if err != nil || profileErr != nil || stored.APN != "custom.final" || stored.IPVersion != "IP" || storedAPN.Password != "" {
+		t.Fatalf("active APN edit was not synchronized: policy=%#v profile=%#v errors=%v/%v", stored, storedAPN, err, profileErr)
+	}
+	recorder = test.request(t, http.MethodDelete, "/api/cards/"+iccid+"/apns/"+strconv.FormatInt(customID, 10), "")
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("delete custom APN status = %d, body = %s", recorder.Code, recorder.Body)
+	}
+	stored, err = test.database.CardPolicy(context.Background(), iccid)
+	if err != nil || stored.APN != "" || stored.IPVersion != "IPV4V6" {
+		t.Fatalf("deleting active custom APN did not restore automatic mode: %+v, %v", stored, err)
 	}
 
 	recorder = test.request(t, http.MethodGet, "/api/cards/not-an-iccid/policy", "")

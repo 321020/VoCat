@@ -58,7 +58,7 @@ func TestMigrationFromAuthenticationSchema(t *testing.T) {
 		"local_proxy_config", "upstream_proxies", "country_rules",
 		"device_proxy_bindings",
 		"notification_settings", "app_settings", "audit_events",
-		"log_events", "card_policies", "traffic_buckets",
+		"log_events", "card_policies", "card_apn_profiles", "traffic_buckets",
 		"sms_send_attempts",
 	} {
 		var found string

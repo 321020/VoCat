@@ -35,6 +35,23 @@ func TestSetNetworkATBackendActivatesAndDeactivatesPDP(t *testing.T) {
 	client.assertDone(t)
 }
 
+func TestSetNetworkATBackendAppliesPAPCredentials(t *testing.T) {
+	client := &transcriptClient{steps: []clientStep{
+		{command: `AT+CGDCONT=1,"IPV4V6","giffgaff.com"`, response: okResponse()},
+		{command: `AT+CGAUTH=1,1,"gg","p"`, response: okResponse()},
+		{command: "AT+CGATT=1", response: okResponse()},
+		{command: "AT+CGACT=1,1", response: okResponse()},
+	}}
+	manager, id := newStartedTestManager(t, client)
+	if _, err := manager.SetNetwork(context.Background(), id, NetworkRequest{
+		Enabled: true, APN: "giffgaff.com", IPVersion: "IPV4V6",
+		Username: "gg", Password: "p", Authentication: "PAP",
+	}); err != nil {
+		t.Fatalf("enable authenticated network: %v", err)
+	}
+	client.assertDone(t)
+}
+
 func TestSetNetworkRejectsUnsafeAPNBeforeOpeningModem(t *testing.T) {
 	client := &transcriptClient{}
 	manager, id := newStartedTestManager(t, client)

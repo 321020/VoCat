@@ -19,6 +19,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"sort"
 	"strings"
@@ -30,6 +31,10 @@ import (
 )
 
 const maxPackageBytes int64 = 64 << 20
+
+// This syntactic guard gives the request boundary an explicit allowlist. The
+// resolved addresses are still checked again by netguard before dialing.
+var publicHTTPSURLPattern = regexp.MustCompile(`^https://(?:[A-Za-z0-9](?:[A-Za-z0-9.-]{0,251}[A-Za-z0-9])?|\[[0-9A-Fa-f:.]+\])(?::[0-9]{1,5})?(?:[/?#][^\r\n]*)?$`)
 
 type Plugin struct {
 	Manifest
@@ -156,6 +161,10 @@ func (manager *Manager) List() []Plugin {
 }
 
 func (manager *Manager) InstallURL(ctx context.Context, rawURL, expectedSHA string) (Plugin, error) {
+	rawURL = strings.TrimSpace(rawURL)
+	if !publicHTTPSURLPattern.MatchString(rawURL) {
+		return Plugin{}, errors.New("plugin URL must be a public absolute HTTPS URL")
+	}
 	parsed, err := netguard.ValidatePublicURL(ctx, rawURL, true)
 	if err != nil {
 		return Plugin{}, fmt.Errorf("plugin URL must be a public absolute HTTPS URL: %w", err)

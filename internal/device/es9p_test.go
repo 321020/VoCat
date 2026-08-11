@@ -47,6 +47,7 @@ func TestNewES9PClientRejectsUnsafeAddress(t *testing.T) {
 		"169.254.169.254",
 		"rsp.example.com/unexpected/path",
 		"user:password@rsp.example.com",
+		"rsp.example.com\r\nX-Injected: yes",
 	} {
 		if _, err := newES9PClient(context.Background(), address); err == nil {
 			t.Errorf("newES9PClient(%q) accepted an unsafe address", address)
@@ -160,5 +161,36 @@ func TestGetBoundProfilePackageSuccess(t *testing.T) {
 	}
 	if !bytes.Equal(got, pkg) {
 		t.Fatalf("bpp = %X, want %X", got, pkg)
+	}
+}
+
+func TestHandleNotificationRequiresHTTP204(t *testing.T) {
+	pending := []byte{0xBF, 0x37, 0x00}
+	client := newTestES9P(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/gsma/rsp2/es9plus/handleNotification" {
+			t.Errorf("path = %s", r.URL.Path)
+		}
+		if r.Header.Get("X-Admin-Protocol") != "gsma/rsp/v2.2.2" {
+			t.Errorf("X-Admin-Protocol = %q", r.Header.Get("X-Admin-Protocol"))
+		}
+		var request map[string]string
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Errorf("decode request: %v", err)
+		}
+		decoded, err := base64.StdEncoding.DecodeString(request["pendingNotification"])
+		if err != nil || !bytes.Equal(decoded, pending) {
+			t.Errorf("pendingNotification = %q (%X), err=%v", request["pendingNotification"], decoded, err)
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})
+	if err := client.handleNotification(context.Background(), pending); err != nil {
+		t.Fatalf("handleNotification: %v", err)
+	}
+
+	client = newTestES9P(t, func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(successEnvelope(nil))
+	})
+	if err := client.handleNotification(context.Background(), pending); err == nil || !strings.Contains(err.Error(), "HTTP 200") {
+		t.Fatalf("HTTP 200 error = %v", err)
 	}
 }

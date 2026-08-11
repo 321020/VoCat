@@ -13,6 +13,40 @@ import (
 
 var apnPattern = regexp.MustCompile(`^[A-Za-z0-9](?:[A-Za-z0-9._-]{0,98}[A-Za-z0-9])?$`)
 
+// ValidAPN reports whether value can safely be used as a modem PDP-context APN.
+// An empty value is valid and means that the modem/operator default should be used.
+func ValidAPN(value string) bool {
+	value = strings.TrimSpace(value)
+	return value == "" || apnPattern.MatchString(value)
+}
+
+func validNetworkCredential(value string) bool {
+	if len(value) > 128 || strings.ContainsAny(value, "\r\n\x00\"") {
+		return false
+	}
+	for _, character := range value {
+		if character < 0x20 || character == 0x7f {
+			return false
+		}
+	}
+	return true
+}
+
+func normalizeNetworkAuthentication(value string) string {
+	switch strings.ToUpper(strings.TrimSpace(value)) {
+	case "", "NONE":
+		return "NONE"
+	case "PAP":
+		return "PAP"
+	case "CHAP":
+		return "CHAP"
+	case "PAP_OR_CHAP":
+		return "PAP_OR_CHAP"
+	default:
+		return ""
+	}
+}
+
 func (manager *Manager) SetNetwork(
 	ctx context.Context,
 	id string,
@@ -23,8 +57,15 @@ func (manager *Manager) SetNetwork(
 		return NetworkResult{}, err
 	}
 	apn := strings.TrimSpace(request.APN)
-	if request.Enabled && apn != "" && !apnPattern.MatchString(apn) {
+	if request.Enabled && !ValidAPN(apn) {
 		return NetworkResult{}, ErrInvalidNetworkAPN
+	}
+	if !validNetworkCredential(request.Username) || !validNetworkCredential(request.Password) {
+		return NetworkResult{}, errors.New("APN username or password contains unsupported characters")
+	}
+	authentication := normalizeNetworkAuthentication(request.Authentication)
+	if authentication == "" {
+		return NetworkResult{}, errors.New("authentication type must be NONE, PAP, CHAP, or PAP_OR_CHAP")
 	}
 	ipVersion := normalizeIPVersion(request.IPVersion)
 	if ipVersion == "" {
@@ -58,7 +99,7 @@ func (manager *Manager) SetNetwork(
 		if candidate.QMIControl == "" || candidate.NetworkInterface == "" {
 			return NetworkResult{}, fmt.Errorf("%w: QMI control device and network interface are required", ErrDataBackendUnavailable)
 		}
-		return setQMINetwork(ctx, candidate, request.Enabled, apn, ipVersion)
+		return setQMINetwork(ctx, candidate, request.Enabled, apn, ipVersion, request.Username, request.Password, authentication)
 	}
 
 	client, err := manager.clientLocked(ctx, state, candidate)
@@ -69,9 +110,12 @@ func (manager *Manager) SetNetwork(
 	if request.Enabled {
 		commands := []string{
 			fmt.Sprintf(`AT+CGDCONT=1,"%s","%s"`, ipVersion, apn),
-			"AT+CGATT=1",
-			"AT+CGACT=1,1",
 		}
+		if authentication != "NONE" {
+			authCode := map[string]int{"PAP": 1, "CHAP": 2, "PAP_OR_CHAP": 3}[authentication]
+			commands = append(commands, fmt.Sprintf(`AT+CGAUTH=1,%d,"%s","%s"`, authCode, request.Username, request.Password))
+		}
+		commands = append(commands, "AT+CGATT=1", "AT+CGACT=1,1")
 		for _, command := range commands {
 			if _, err := manager.command(ctx, client, command); err != nil {
 				manager.setResult(id, state, nil, err)

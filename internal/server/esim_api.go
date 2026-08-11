@@ -1,9 +1,11 @@
 package server
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -13,6 +15,11 @@ import (
 
 func esimUnavailable(w http.ResponseWriter) {
 	writeError(w, http.StatusNotImplemented, "esim_operation_unavailable", "This specific eSIM operation is not implemented.")
+}
+
+type esimNotificationController interface {
+	ESIMNotifications(context.Context, string) ([]device.EsimNotification, error)
+	ESIMRetryNotification(context.Context, string, string, uint64) error
 }
 
 // handleESIM routes every /devices/{id}/esim* path.
@@ -53,11 +60,16 @@ func (s *Server) handleESIM(w http.ResponseWriter, r *http.Request, rest []strin
 			if !requireMethod(w, r, http.MethodGet) {
 				return true
 			}
-			// No LPA download backend, so there are never pending notifications.
-			writeJSON(w, http.StatusOK, map[string]any{"data": map[string]any{"items": []any{}}})
+			s.writeEsimNotifications(w, r, physicalID, physicalPresent)
 			return true
 		}
-		// notifications/{id}/actions/retry
+		if len(rest) == 4 && rest[2] == "actions" && rest[3] == "retry" {
+			if !requireMethod(w, r, http.MethodPost) {
+				return true
+			}
+			s.handleEsimNotificationRetry(w, r, physicalID, physicalPresent, rest[1])
+			return true
+		}
 		esimUnavailable(w)
 		return true
 	case "actions":
@@ -88,6 +100,48 @@ func (s *Server) handleESIM(w http.ResponseWriter, r *http.Request, rest []strin
 	default:
 		return false
 	}
+}
+
+func (s *Server) writeEsimNotifications(w http.ResponseWriter, r *http.Request, physicalID string, physicalPresent bool) {
+	controller, ok := s.devices.(esimNotificationController)
+	if !ok || !physicalPresent {
+		writeJSON(w, http.StatusOK, map[string]any{"data": map[string]any{"items": []any{}}})
+		return
+	}
+	items, err := controller.ESIMNotifications(r.Context(), physicalID)
+	if err != nil {
+		s.writeDeviceError(w, err)
+		return
+	}
+	if items == nil {
+		items = []device.EsimNotification{}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"data": map[string]any{"items": items}})
+}
+
+func (s *Server) handleEsimNotificationRetry(w http.ResponseWriter, r *http.Request, physicalID string, physicalPresent bool, rawSequenceNumber string) {
+	controller, ok := s.devices.(esimNotificationController)
+	if !ok {
+		esimUnavailable(w)
+		return
+	}
+	if !physicalPresent {
+		writeError(w, http.StatusServiceUnavailable, "physical_device_missing", "the configured modem is not present on this Linux host")
+		return
+	}
+	sequenceNumber, err := strconv.ParseUint(strings.TrimSpace(rawSequenceNumber), 10, 64)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_request", "notification sequence number is invalid")
+		return
+	}
+	if err := controller.ESIMRetryNotification(r.Context(), physicalID, r.URL.Query().Get("aid_hex"), sequenceNumber); err != nil {
+		s.writeDeviceError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"data": map[string]any{
+		"status":  "sent",
+		"message": "通知已上报运营商并从 eUICC 待处理列表移除",
+	}})
 }
 
 // esimInfo loads the eUICC profile list. The string result is "ok" (use info),
@@ -366,37 +420,68 @@ func (s *Server) handleEsimSwitch(w http.ResponseWriter, r *http.Request, config
 		s.writeDeviceError(w, err)
 		return
 	}
-	if err := s.store.UpsertCardPolicy(r.Context(), store.CardPolicy{
-		ICCID: iccid, VoWiFiEnabled: true, AirplaneEnabled: true,
-		IPVersion: "IPV4V6", Source: "default",
-	}); err != nil {
+	policy, err := s.store.CardPolicy(r.Context(), iccid)
+	if errors.Is(err, store.ErrNotFound) {
+		policy = defaultCardPolicy(iccid)
+		if err := s.store.UpsertCardPolicy(r.Context(), policy); err != nil {
+			s.writeStoreError(w, err)
+			return
+		}
+	} else if err != nil {
 		s.writeStoreError(w, err)
 		return
+	}
+	// Never replace a returning profile's policy with defaults. VoWiFi still
+	// implies airplane mode, but every user-selected value and APN belongs to
+	// this ICCID and is restored when the profile becomes active again.
+	if policy.VoWiFiEnabled && (!policy.AirplaneEnabled || policy.NetworkEnabled) {
+		policy.AirplaneEnabled = true
+		policy.NetworkEnabled = false
+		if err := s.store.UpsertCardPolicy(r.Context(), policy); err != nil {
+			s.writeStoreError(w, err)
+			return
+		}
 	}
 	config, err := s.store.Device(r.Context(), configuredID)
 	if err != nil {
 		s.writeStoreError(w, err)
 		return
 	}
-	config.VoWiFiEnabled = true
+	config.VoWiFiEnabled = policy.VoWiFiEnabled
 	config.NetworkEnabled = false
+	config.APN = policy.APN
 	if err := s.store.UpsertDevice(r.Context(), config); err != nil {
 		s.writeStoreError(w, err)
 		return
 	}
+	canRestoreFlightImmediately := s.vowifi == nil
 	if s.vowifi != nil {
 		state, stateErr := s.vowifi.State(configuredID)
-		switch {
-		case stateErr == nil && state.Enabled:
-			_, err = s.vowifi.RequestReconnect(configuredID)
-		default:
-			_, err = s.vowifi.RequestEnabled(configuredID, true)
+		if policy.VoWiFiEnabled {
+			switch {
+			case stateErr == nil && state.Enabled:
+				_, err = s.vowifi.RequestReconnect(configuredID)
+			default:
+				_, err = s.vowifi.RequestEnabled(configuredID, true)
+			}
+		} else if stateErr == nil && state.Enabled {
+			_, err = s.vowifi.RequestEnabled(configuredID, false)
+		} else {
+			canRestoreFlightImmediately = true
 		}
 		if err != nil {
-			s.logger.Warn("profile switched in safe airplane mode but VoWiFi start was not queued", "device_id", configuredID, "iccid", iccid, "error", err)
+			s.logger.Warn("profile switched but saved VoWiFi state was not queued", "device_id", configuredID, "iccid", iccid, "enabled", policy.VoWiFiEnabled, "error", err)
 		}
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"data": map[string]any{"status": "switched", "iccid": iccid, "verified": true}})
+	if !policy.VoWiFiEnabled && canRestoreFlightImmediately && !policy.AirplaneEnabled {
+		if _, err := s.devices.SetFlight(r.Context(), physicalID, false); err != nil {
+			s.logger.Warn("profile switched but saved airplane state will require reconciliation", "device_id", configuredID, "iccid", iccid, "error", err)
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"data": map[string]any{
+		"status": "switched", "iccid": iccid, "verified": true,
+		"card_policy": cardPolicyResponse(policy),
+	}})
 }
 
 func (s *Server) handleEsimDisable(w http.ResponseWriter, r *http.Request, physicalID string, physicalPresent bool) {

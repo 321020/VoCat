@@ -18,6 +18,8 @@ func TestInstallURLRejectsNonHTTPSAndPrivateDestinations(t *testing.T) {
 	defer manager.Close()
 	for _, raw := range []string{
 		"http://example.com/plugin.zip",
+		"https://user@example.com/plugin.zip",
+		"https://example.com/plugin.zip\r\nX-Injected: yes",
 		"https://127.0.0.1/plugin.zip",
 		"https://169.254.169.254/latest/meta-data/",
 	} {

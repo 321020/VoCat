@@ -11,7 +11,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"mime"
 	"net"
 	"net/http"
 	"net/mail"
@@ -290,12 +289,7 @@ func sendEmailTextNotification(ctx context.Context, config map[string]any, subje
 	if err != nil {
 		return err
 	}
-	email := strings.Join([]string{
-		"Date: " + time.Now().UTC().Format(time.RFC1123Z), "From: " + formatMailAddress(from),
-		"To: " + joinMailAddresses(recipients), "Subject: " + mime.QEncoding.Encode("UTF-8", subject),
-		"MIME-Version: 1.0", "Content-Type: text/plain; charset=UTF-8", "Content-Transfer-Encoding: 8bit", "", text, "",
-	}, "\r\n")
-	if _, err := io.WriteString(writer, email); err != nil {
+	if err := writePlainTextMail(writer, from, recipients, subject, text); err != nil {
 		_ = writer.Close()
 		return err
 	}

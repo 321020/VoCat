@@ -1,6 +1,7 @@
 import { CardUiRegular } from "@fluentui/react-icons";
 import { Tag } from "../ui";
 import { PolicySwitchCard } from "./PolicySwitchCard";
+import { CardPolicyAPN } from "./CardPolicyAPN";
 import { useCardPolicyToggles } from "./useCardPolicyToggles";
 import { enableVoWiFi, disableVoWiFi, setFlightMode } from "./deviceActions";
 import type { CardPolicy } from "../../types";
@@ -27,7 +28,8 @@ export function CardPolicyPanel({ deviceId, iccid, policy, deviceOnline, onPolic
     onChanged: onPolicyChanged,
   });
 
-  const sourceLabel = policy ? (policy.source === "user" ? t("手动设置") : t("自动默认")) : "";
+  const isManual = policy?.source === "user" || policy?.source === "manual";
+  const sourceLabel = policy ? (isManual ? t("手动设置") : t("自动默认")) : "";
   const { local } = toggles;
 
   return (
@@ -56,7 +58,7 @@ export function CardPolicyPanel({ deviceId, iccid, policy, deviceOnline, onPolic
               <div className="mb-0.5 text-xs font-bold uppercase tracking-wider text-gray-500">{t("当前卡 ICCID")}</div>
               <div className="font-mono text-sm text-gray-800 dark:text-gray-100">{iccid}</div>
             </div>
-            {sourceLabel ? <Tag type={policy?.source === "user" ? "primary" : "info"}>{sourceLabel}</Tag> : null}
+            {sourceLabel ? <Tag type={isManual ? "primary" : "info"}>{sourceLabel}</Tag> : null}
           </div>
           <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
             <PolicySwitchCard
@@ -80,6 +82,13 @@ export function CardPolicyPanel({ deviceId, iccid, policy, deviceOnline, onPolic
               onToggle={toggles.onAirplaneToggle}
             />
           </div>
+          <CardPolicyAPN
+            deviceId={deviceId}
+            iccid={iccid}
+            policy={policy}
+            deviceOnline={deviceOnline}
+            onSaved={onPolicyChanged}
+          />
         </div>
       ) : null}
     </div>

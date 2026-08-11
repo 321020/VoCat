@@ -23,6 +23,9 @@ func setQMINetwork(
 	enabled bool,
 	apn string,
 	ipVersion string,
+	username string,
+	password string,
+	authentication string,
 ) (NetworkResult, error) {
 	qmiNetwork, err := exec.LookPath("qmi-network")
 	if err != nil {
@@ -38,6 +41,15 @@ func setQMINetwork(
 	profileText := fmt.Sprintf("IP_TYPE=%s\nPROXY=yes\n", ipType)
 	if apn != "" {
 		profileText = "APN=" + apn + "\n" + profileText
+	}
+	if username != "" {
+		profileText += "APN_USER=" + shellProfileValue(username) + "\n"
+	}
+	if password != "" {
+		profileText += "APN_PASS=" + shellProfileValue(password) + "\n"
+	}
+	if authentication != "" && authentication != "NONE" {
+		profileText += "APN_AUTH=" + shellProfileValue(strings.ToLower(authentication)) + "\n"
 	}
 	if _, err := fmt.Fprint(profile, profileText); err != nil {
 		_ = profile.Close()
@@ -108,6 +120,10 @@ func setQMINetwork(
 		IPVersion:     ipVersion,
 		Detail:        detail,
 	}, nil
+}
+
+func shellProfileValue(value string) string {
+	return "'" + strings.ReplaceAll(value, "'", `'"'"'`) + "'"
 }
 
 // exportProxyRouteIdentity must stay in sync with the Export Proxy plugin's

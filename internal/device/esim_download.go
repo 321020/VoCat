@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"time"
 )
 
 // EsimDownloadParams are the SPA download form fields, mapped from the
@@ -130,15 +131,24 @@ func (manager *Manager) ESIMDownloadProfile(ctx context.Context, id string, para
 	if err != nil {
 		return nil, err
 	}
-	iccid, err := installationResult(installResponse)
-	if err != nil {
-		return nil, err
-	}
-
 	report("notify", "正在向运营商发送下载通知...", 90)
+	iccid, installErr := installationResult(installResponse)
 	warning := ""
-	if err := client.handleNotification(ctx, installResponse); err != nil {
-		warning = "Profile 已安装，但下载通知发送失败"
+	notification, notificationErr := parsePendingNotification(installResponse)
+	if notificationErr == nil {
+		// Loading the final BPP segment is the commit point. Finish the operator
+		// acknowledgement even if the browser closes its SSE connection now.
+		notifyContext, cancelNotify := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Minute)
+		notificationErr = channel.deliverNotification(notifyContext, notification)
+		cancelNotify()
+	}
+	if notificationErr != nil {
+		warning = "Profile 安装结果已保留在 eUICC，但向运营商上报失败，可在当前通知列表中重发"
+	}
+	// Error installation results must be reported too. Return the card-side
+	// installation failure only after making that best-effort ES9+ attempt.
+	if installErr != nil {
+		return nil, installErr
 	}
 
 	freeAfter := freeBefore

@@ -11,7 +11,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"mime"
 	"net"
 	"net/http"
 	"net/mail"
@@ -426,19 +425,13 @@ func sendEmailSMSNotification(ctx context.Context, config map[string]any, messag
 	if err != nil {
 		return fmt.Errorf("%w: SMTP message rejected", errProviderRejected)
 	}
-	email := strings.Join([]string{
-		"Date: " + time.Now().UTC().Format(time.RFC1123Z),
-		"From: " + formatMailAddress(from),
-		"To: " + joinMailAddresses(recipients),
-		"Subject: " + mime.QEncoding.Encode("UTF-8", "收到新短信 - "+message.DeviceLabel),
-		"MIME-Version: 1.0",
-		"Content-Type: text/plain; charset=UTF-8",
-		"Content-Transfer-Encoding: 8bit",
-		"",
+	if err := writePlainTextMail(
+		writer,
+		from,
+		recipients,
+		"收到新短信 - "+message.DeviceLabel,
 		message.Text(),
-		"",
-	}, "\r\n")
-	if _, err := io.WriteString(writer, email); err != nil {
+	); err != nil {
 		_ = writer.Close()
 		return fmt.Errorf("write SMTP notification: %w", err)
 	}

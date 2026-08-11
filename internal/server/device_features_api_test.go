@@ -31,6 +31,24 @@ func decodeData(t *testing.T, recorder *httptest.ResponseRecorder) map[string]an
 	return envelope.Data
 }
 
+func TestParseModemAPNProfiles(t *testing.T) {
+	profiles := parseModemAPNProfiles([]string{
+		`+CGDCONT: 1,"IPV4V6","internet","0.0.0.0",0,0`,
+		`+CGDCONT: 2,"IP","ims","0.0.0.0",0,0`,
+		`+CGDCONT: 3,"IPV4V6","internet","0.0.0.0",0,0`,
+		`+CGDCONT: 4,"IP","","0.0.0.0",0,0`,
+	})
+	if len(profiles) != 2 {
+		t.Fatalf("profiles = %#v", profiles)
+	}
+	if profiles[0].CID != 1 || profiles[0].APN != "internet" || profiles[0].IPVersion != "IPV4V6" {
+		t.Fatalf("first profile = %#v", profiles[0])
+	}
+	if profiles[1].CID != 2 || profiles[1].APN != "ims" || profiles[1].IPVersion != "IP" {
+		t.Fatalf("second profile = %#v", profiles[1])
+	}
+}
+
 type esimAIDCaptureController struct {
 	fakeDeviceController
 	switchAID  string
@@ -286,6 +304,13 @@ func TestHandleESIMShapes(t *testing.T) {
 	if err := database.UpsertDevice(context.Background(), store.Device{ID: "dev1", Name: "dev1"}); err != nil {
 		t.Fatal(err)
 	}
+	const switchedICCID = "8900000000000000001"
+	if err := database.UpsertCardPolicy(context.Background(), store.CardPolicy{
+		ICCID: switchedICCID, VoWiFiEnabled: false, AirplaneEnabled: false,
+		APN: "profile.apn", IPVersion: "IP", Source: "manual",
+	}); err != nil {
+		t.Fatal(err)
+	}
 	controller := &esimAIDCaptureController{}
 	present := &Server{store: database, logger: regionTestLogger(), maxRequestBodyBytes: 4096, devices: controller}
 	swOK := httptest.NewRecorder()
@@ -300,6 +325,14 @@ func TestHandleESIMShapes(t *testing.T) {
 	}
 	if controller.switchAID != "A0000005591010FFFFFFFF8900000177" {
 		t.Fatalf("switch AID = %q, want XeSIM camelCase AID", controller.switchAID)
+	}
+	storedPolicy, err := database.CardPolicy(context.Background(), switchedICCID)
+	if err != nil || storedPolicy.VoWiFiEnabled || storedPolicy.AirplaneEnabled || storedPolicy.APN != "profile.apn" || storedPolicy.IPVersion != "IP" {
+		t.Fatalf("switch overwrote saved policy: %+v, %v", storedPolicy, err)
+	}
+	storedDevice, err := database.Device(context.Background(), "dev1")
+	if err != nil || storedDevice.VoWiFiEnabled || storedDevice.APN != "profile.apn" {
+		t.Fatalf("switch did not restore device policy: %+v, %v", storedDevice, err)
 	}
 
 	// Disable happy path routes the active profile to ES10c DisableProfile.
@@ -337,6 +370,64 @@ func TestHandleESIMShapes(t *testing.T) {
 	present.handleESIM(dlNoSmdp, httptest.NewRequest(http.MethodGet, "/esim/actions/download", nil), []string{"actions", "download"}, "dev1", true)
 	if dlNoSmdp.Code != http.StatusBadRequest {
 		t.Fatalf("download (no smdp) status = %d, want 400", dlNoSmdp.Code)
+	}
+}
+
+type fakeEsimNotificationController struct {
+	fakeDeviceController
+	items         []device.EsimNotification
+	listErr       error
+	retryErr      error
+	retryDeviceID string
+	retryAID      string
+	retrySequence uint64
+}
+
+func (f *fakeEsimNotificationController) ESIMNotifications(context.Context, string) ([]device.EsimNotification, error) {
+	return f.items, f.listErr
+}
+
+func (f *fakeEsimNotificationController) ESIMRetryNotification(_ context.Context, deviceID, aidHex string, sequenceNumber uint64) error {
+	f.retryDeviceID = deviceID
+	f.retryAID = aidHex
+	f.retrySequence = sequenceNumber
+	return f.retryErr
+}
+
+func TestHandleESIMNotificationsListAndRetry(t *testing.T) {
+	controller := &fakeEsimNotificationController{items: []device.EsimNotification{{
+		SequenceNumber: 12,
+		Event:          "delete",
+		ICCID:          "89441000400128014257",
+		Address:        "rsp.example.com",
+		AIDHex:         "A0000005591010FFFFFFFF8900000100",
+		CanRetry:       true,
+	}}}
+	server := &Server{logger: regionTestLogger(), devices: controller}
+
+	list := httptest.NewRecorder()
+	server.handleESIM(list, httptest.NewRequest(http.MethodGet, "/esim/notifications", nil), []string{"notifications"}, "dev1", true)
+	if list.Code != http.StatusOK {
+		t.Fatalf("list status = %d, body=%s", list.Code, list.Body.String())
+	}
+	data := decodeData(t, list)
+	items, ok := data["items"].([]any)
+	if !ok || len(items) != 1 {
+		t.Fatalf("items = %#v", data["items"])
+	}
+	item := items[0].(map[string]any)
+	if item["sequenceNumber"] != float64(12) || item["event"] != "delete" || item["address"] != "rsp.example.com" {
+		t.Fatalf("item = %#v", item)
+	}
+
+	retry := httptest.NewRecorder()
+	retryRequest := httptest.NewRequest(http.MethodPost, "/esim/notifications/12/actions/retry?aid_hex=A000", nil)
+	server.handleESIM(retry, retryRequest, []string{"notifications", "12", "actions", "retry"}, "dev1", true)
+	if retry.Code != http.StatusOK {
+		t.Fatalf("retry status = %d, body=%s", retry.Code, retry.Body.String())
+	}
+	if controller.retryDeviceID != "dev1" || controller.retryAID != "A000" || controller.retrySequence != 12 {
+		t.Fatalf("retry args = (%q, %q, %d)", controller.retryDeviceID, controller.retryAID, controller.retrySequence)
 	}
 }
 

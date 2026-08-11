@@ -488,6 +488,22 @@ type CardPolicy struct {
 	UpdatedAt       time.Time
 }
 
+type CardAPNProfile struct {
+	ID               int64
+	ICCID            string
+	APN              string
+	Username         string
+	Password         string
+	Proxy            string
+	MCC              string
+	MNC              string
+	IPVersion        string
+	RoamingIPVersion string
+	AuthType         string
+	CreatedAt        time.Time
+	UpdatedAt        time.Time
+}
+
 type TrafficBucket struct {
 	DeviceID    string
 	Bucket      string

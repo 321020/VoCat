@@ -227,6 +227,34 @@ func migrationStatements(version int) []string {
 			`CREATE INDEX device_proxy_bindings_device_idx
 				ON device_proxy_bindings(device_id, iccid)`,
 		}
+	case 13:
+		return []string{
+			`CREATE TABLE IF NOT EXISTS card_apn_profiles (
+				id INTEGER PRIMARY KEY AUTOINCREMENT,
+				iccid TEXT NOT NULL,
+				apn TEXT NOT NULL,
+				ip_version TEXT NOT NULL DEFAULT 'IPV4V6'
+					CHECK (ip_version IN ('IP', 'IPV6', 'IPV4V6')),
+				created_at INTEGER NOT NULL,
+				updated_at INTEGER NOT NULL,
+				UNIQUE (iccid, apn, ip_version),
+				FOREIGN KEY (iccid) REFERENCES card_policies(iccid) ON DELETE CASCADE
+			)`,
+			`CREATE INDEX IF NOT EXISTS card_apn_profiles_iccid_idx
+				ON card_apn_profiles(iccid, id)`,
+		}
+	case 14:
+		return []string{
+			`ALTER TABLE card_apn_profiles ADD COLUMN username TEXT NOT NULL DEFAULT ''`,
+			`ALTER TABLE card_apn_profiles ADD COLUMN password TEXT NOT NULL DEFAULT ''`,
+			`ALTER TABLE card_apn_profiles ADD COLUMN proxy TEXT NOT NULL DEFAULT ''`,
+			`ALTER TABLE card_apn_profiles ADD COLUMN mcc TEXT NOT NULL DEFAULT ''`,
+			`ALTER TABLE card_apn_profiles ADD COLUMN mnc TEXT NOT NULL DEFAULT ''`,
+			`ALTER TABLE card_apn_profiles ADD COLUMN roaming_ip_version TEXT NOT NULL DEFAULT 'IP'
+				CHECK (roaming_ip_version IN ('IP', 'IPV6', 'IPV4V6'))`,
+			`ALTER TABLE card_apn_profiles ADD COLUMN auth_type TEXT NOT NULL DEFAULT 'NONE'
+				CHECK (auth_type IN ('NONE', 'PAP', 'CHAP', 'PAP_OR_CHAP'))`,
+		}
 	default:
 		return nil
 	}

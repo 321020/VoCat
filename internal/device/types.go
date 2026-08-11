@@ -24,10 +24,13 @@ var (
 )
 
 type NetworkRequest struct {
-	Enabled   bool   `json:"enabled"`
-	APN       string `json:"apn"`
-	IPVersion string `json:"ipVersion"`
-	Backend   string `json:"backend,omitempty"`
+	Enabled        bool   `json:"enabled"`
+	APN            string `json:"apn"`
+	IPVersion      string `json:"ipVersion"`
+	Username       string `json:"username,omitempty"`
+	Password       string `json:"password,omitempty"`
+	Authentication string `json:"authentication,omitempty"`
+	Backend        string `json:"backend,omitempty"`
 }
 
 type NetworkResult struct {

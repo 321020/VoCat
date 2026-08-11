@@ -438,10 +438,28 @@ func restoreConfiguredCellularData(
 		if err != nil {
 			continue
 		}
-		dataContext, cancel := context.WithTimeout(ctx, 60*time.Second)
-		_, err = manager.SetNetwork(dataContext, entry.ID, device.NetworkRequest{
+		networkRequest := device.NetworkRequest{
 			Enabled: true, APN: config.APN, IPVersion: "IPV4V6", Backend: config.DeviceBackend,
-		})
+		}
+		if entry.Snapshot != nil {
+			iccid := strings.TrimSpace(entry.Snapshot.ICCID)
+			if policy, policyErr := database.CardPolicy(ctx, iccid); policyErr == nil {
+				networkRequest.APN = policy.APN
+				if policy.IPVersion != "" {
+					networkRequest.IPVersion = policy.IPVersion
+				}
+				if profile, profileErr := database.CardAPNProfileByAPN(ctx, iccid, policy.APN, policy.IPVersion); profileErr == nil {
+					networkRequest.Username = profile.Username
+					networkRequest.Password = profile.Password
+					networkRequest.Authentication = profile.AuthType
+					if entry.Snapshot.RegistrationStatus == 5 && profile.RoamingIPVersion != "" {
+						networkRequest.IPVersion = profile.RoamingIPVersion
+					}
+				}
+			}
+		}
+		dataContext, cancel := context.WithTimeout(ctx, 60*time.Second)
+		_, err = manager.SetNetwork(dataContext, entry.ID, networkRequest)
 		cancel()
 		if err != nil {
 			logger.Warn("startup cellular data recovery failed", "device_id", config.ID, "error", err)
@@ -866,7 +884,7 @@ func enforceDefaultSafeCardPolicy(
 		return
 	}
 	iccid := strings.TrimSpace(snapshot.ICCID)
-	if _, err := database.CardPolicy(ctx, iccid); err == nil && !snapshot.SIMChanged {
+	if _, err := database.CardPolicy(ctx, iccid); err == nil {
 		return
 	} else if !errors.Is(err, store.ErrNotFound) {
 		logger.Warn("default card policy: read policy", "iccid", iccid, "error", err)
@@ -953,11 +971,19 @@ func reconcileCardPolicies(
 					continue
 				}
 			}
+			deviceChanged := false
 			if config.VoWiFiEnabled != policy.VoWiFiEnabled || (policy.VoWiFiEnabled && config.NetworkEnabled) {
 				config.VoWiFiEnabled = policy.VoWiFiEnabled
 				if policy.VoWiFiEnabled {
 					config.NetworkEnabled = false
 				}
+				deviceChanged = true
+			}
+			if config.APN != strings.TrimSpace(policy.APN) {
+				config.APN = strings.TrimSpace(policy.APN)
+				deviceChanged = true
+			}
+			if deviceChanged {
 				if err := database.UpsertDevice(ctx, config); err != nil {
 					logger.Warn("reconcile card policy: update device", "device_id", config.ID, "error", err)
 					continue
