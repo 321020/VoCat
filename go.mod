@@ -6,9 +6,9 @@ require (
 	github.com/ElMostafaIdrassi/goscard v1.0.0
 	github.com/coder/websocket v1.8.15
 	go.bug.st/serial v1.6.4
-	golang.org/x/crypto v0.41.0
+	golang.org/x/crypto v0.52.0
 	golang.org/x/sys v0.47.0
-	golang.org/x/term v0.34.0
+	golang.org/x/term v0.43.0
 	modernc.org/sqlite v1.38.2
 )
 
