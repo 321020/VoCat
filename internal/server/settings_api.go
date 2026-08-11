@@ -40,6 +40,7 @@ var notificationChannels = []string{
 	"webhook",
 	"bark",
 	"pushplus",
+	"wecom",
 }
 
 var notificationFields = map[string]map[string]string{
@@ -60,6 +61,9 @@ var notificationFields = map[string]map[string]string{
 	},
 	"pushplus": {
 		"token": "string", "topic": "string", "channel": "string",
+	},
+	"wecom": {
+		"urls": "strings", "payload_template": "string",
 	},
 }
 
@@ -291,6 +295,11 @@ func validateNotificationField(
 				return fmt.Errorf("%s is not a valid email address", field)
 			}
 		}
+		if channel == "wecom" && name == "payload_template" && value != "" {
+			if _, err := renderWecomPayload(value, wecomTestValues(time.Unix(0, 0))); err != nil {
+				return fmt.Errorf("%s is not a valid JSON template: %w", field, err)
+			}
+		}
 	case "integer":
 		var value int
 		if err := json.Unmarshal(raw, &value); err != nil {
@@ -324,6 +333,9 @@ func validateNotificationField(
 				return fmt.Errorf("%s contains an invalid value", field)
 			}
 			if name == "urls" {
+				if channel == "wecom" && value == store.SecretMask {
+					continue
+				}
 				if _, err := parseOutboundURL(value, false); err != nil {
 					return fmt.Errorf("%s contains an invalid HTTP URL", field)
 				}
@@ -375,7 +387,7 @@ func (s *Server) handleNotificationTest(
 		writeError(w, http.StatusNotFound, "not_found", "notification channel was not found")
 		return
 	}
-	if channel != "webhook" && channel != "telegram" && channel != "email" && channel != "bark" {
+	if channel != "webhook" && channel != "telegram" && channel != "email" && channel != "bark" && channel != "wecom" {
 		writeError(
 			w,
 			http.StatusNotImplemented,
@@ -426,6 +438,8 @@ func (s *Server) handleNotificationTest(
 		err = sendEmailNotificationTest(r.Context(), resolved)
 	case "bark":
 		err = sendBarkNotificationTest(r.Context(), resolved)
+	case "wecom":
+		err = sendWecomNotificationTest(r.Context(), resolved)
 	}
 	if err != nil {
 		redacted := store.RedactText(err.Error(), provider)
@@ -549,6 +563,8 @@ func validateNotificationTestConfig(channel string, config map[string]any) error
 		if len(urls) > 8 {
 			return errors.New("bark test is limited to 8 URLs")
 		}
+	case "wecom":
+		return validateWecomNotificationConfig(config)
 	case "telegram":
 		token := configString(config, "bot_token")
 		if token == "" || token == store.SecretMask {

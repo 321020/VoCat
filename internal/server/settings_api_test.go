@@ -135,6 +135,50 @@ func TestNotificationSettingsAlwaysReturnsFiveChannelsAndPreservesSecrets(t *tes
 	}
 }
 
+func TestWecomNotificationSettingsPreserveWebhookURLs(t *testing.T) {
+	test := newSettingsAPITest(t)
+	webhookURL := "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=wecom-secret"
+	template := `{"msgtype":"text","text":{"content":{{message}}}}`
+	first, err := json.Marshal(map[string]any{
+		"wecom": map[string]any{
+			"enabled": true, "urls": []string{webhookURL}, "payload_template": template,
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	recorder := test.request(t, http.MethodPut, "/api/settings/notifications", string(first))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("first PUT status = %d, body = %s", recorder.Code, recorder.Body)
+	}
+	if bytes.Contains(recorder.Body.Bytes(), []byte("wecom-secret")) {
+		t.Fatalf("PUT response leaked webhook URL: %s", recorder.Body)
+	}
+	response := decodeSettingsResponse(t, recorder)
+	wecom := response["data"].(map[string]any)["wecom"].(map[string]any)
+	urls, ok := wecom["urls"].([]any)
+	if !ok || len(urls) != 1 || urls[0] != store.SecretMask {
+		t.Fatalf("redacted WeCom URLs = %#v", wecom["urls"])
+	}
+
+	second, err := json.Marshal(map[string]any{
+		"wecom": map[string]any{
+			"enabled": true, "urls": []string{store.SecretMask}, "payload_template": template,
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	recorder = test.request(t, http.MethodPut, "/api/settings/notifications", string(second))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("masked PUT status = %d, body = %s", recorder.Code, recorder.Body)
+	}
+	stored, err := test.database.NotificationSetting(context.Background(), "wecom")
+	if err != nil || !bytes.Contains(stored.Config, []byte("wecom-secret")) {
+		t.Fatalf("stored WeCom config = %s, err = %v", stored.Config, err)
+	}
+}
+
 func TestNotificationSettingsRejectsUnknownAndMalformedInput(t *testing.T) {
 	test := newSettingsAPITest(t)
 	cases := []struct {
