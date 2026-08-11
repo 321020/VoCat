@@ -462,7 +462,7 @@ func restoreConfiguredCellularData(
 		_, err = manager.SetNetwork(dataContext, entry.ID, networkRequest)
 		cancel()
 		if err != nil {
-			logger.Warn("startup cellular data recovery failed", "device_id", config.ID, "error", err)
+			logger.Warn("startup cellular data recovery failed", "device_id", config.ID)
 			continue
 		}
 		logger.Info("restored protected cellular data route", "device_id", config.ID, "interface", config.Interface)
@@ -490,7 +490,7 @@ func disableAllDeveloperCellularData(
 		_, err = manager.SetNetwork(disableContext, entry.ID, device.NetworkRequest{Enabled: false, Backend: config.DeviceBackend})
 		cancel()
 		if err != nil && ctx.Err() == nil {
-			logger.Warn("developer cleanup: stop cellular data", "device_id", config.ID, "error", err)
+			logger.Warn("developer cleanup: stop cellular data", "device_id", config.ID)
 		}
 	}
 }

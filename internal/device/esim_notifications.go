@@ -28,7 +28,7 @@ func encodePositiveInteger(value uint64) []byte {
 	}
 	encoded := make([]byte, 8)
 	for index := len(encoded) - 1; index >= 0; index-- {
-		encoded[index] = byte(value)
+		encoded[index] = byte(value & 0xff)
 		value >>= 8
 	}
 	for len(encoded) > 1 && encoded[0] == 0 {

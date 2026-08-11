@@ -5,6 +5,16 @@ import (
 	"testing"
 )
 
+func TestPositiveIntegerEncodingRoundTripsFullUint64Range(t *testing.T) {
+	for _, value := range []uint64{0, 1, 127, 128, 255, 256, ^uint64(0)} {
+		encoded := encodePositiveInteger(value)
+		decoded, ok := decodePositiveInteger(encoded)
+		if !ok || decoded != value {
+			t.Errorf("round trip %d: encoded=%X decoded=%d ok=%t", value, encoded, decoded, ok)
+		}
+	}
+}
+
 func testNotificationMetadata(t *testing.T, sequence byte, event []byte, address, iccid string) []byte {
 	t.Helper()
 	iccidBCD, err := encodeICCID(iccid)

@@ -796,6 +796,10 @@ func sendEmailNotificationTest(ctx context.Context, config map[string]any) error
 	if err != nil {
 		return fmt.Errorf("%w: SMTP message rejected", errProviderRejected)
 	}
+	// Addresses are parsed as RFC mailboxes, the subject rejects control
+	// characters, and the body is MIME-base64 encoded by writePlainTextMail.
+	// CodeQL's email-injection query has no sanitizer model for these steps.
+	// codeql[go/email-injection]
 	if err := writePlainTextMail(
 		writer,
 		from,

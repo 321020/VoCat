@@ -99,7 +99,14 @@ func (manager *Manager) SetNetwork(
 		if candidate.QMIControl == "" || candidate.NetworkInterface == "" {
 			return NetworkResult{}, fmt.Errorf("%w: QMI control device and network interface are required", ErrDataBackendUnavailable)
 		}
-		return setQMINetwork(ctx, candidate, request.Enabled, apn, ipVersion, request.Username, request.Password, authentication)
+		result, err := setQMINetwork(ctx, candidate, request.Enabled, apn, ipVersion, request.Username, request.Password, authentication)
+		if err != nil && (request.Username != "" || request.Password != "") {
+			// qmi-network output is outside our control and may echo values read
+			// from its temporary profile. Do not return that output when the
+			// profile contains credentials.
+			return NetworkResult{}, errors.New("authenticated QMI cellular data operation failed")
+		}
+		return result, err
 	}
 
 	client, err := manager.clientLocked(ctx, state, candidate)
@@ -108,16 +115,32 @@ func (manager *Manager) SetNetwork(
 		return NetworkResult{}, err
 	}
 	if request.Enabled {
-		commands := []string{
-			fmt.Sprintf(`AT+CGDCONT=1,"%s","%s"`, ipVersion, apn),
+		type networkCommand struct {
+			value     string
+			sensitive bool
+		}
+		commands := []networkCommand{
+			{value: fmt.Sprintf(`AT+CGDCONT=1,"%s","%s"`, ipVersion, apn)},
 		}
 		if authentication != "NONE" {
 			authCode := map[string]int{"PAP": 1, "CHAP": 2, "PAP_OR_CHAP": 3}[authentication]
-			commands = append(commands, fmt.Sprintf(`AT+CGAUTH=1,%d,"%s","%s"`, authCode, request.Username, request.Password))
+			commands = append(commands, networkCommand{
+				value:     fmt.Sprintf(`AT+CGAUTH=1,%d,"%s","%s"`, authCode, request.Username, request.Password),
+				sensitive: true,
+			})
 		}
-		commands = append(commands, "AT+CGATT=1", "AT+CGACT=1,1")
+		commands = append(commands,
+			networkCommand{value: "AT+CGATT=1"},
+			networkCommand{value: "AT+CGACT=1,1"},
+		)
 		for _, command := range commands {
-			if _, err := manager.command(ctx, client, command); err != nil {
+			var err error
+			if command.sensitive {
+				_, err = manager.sensitiveCommand(ctx, client, command.value)
+			} else {
+				_, err = manager.command(ctx, client, command.value)
+			}
+			if err != nil {
 				manager.setResult(id, state, nil, err)
 				return NetworkResult{}, err
 			}

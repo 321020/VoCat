@@ -559,3 +559,20 @@ func (manager *Manager) command(
 	}
 	return response, nil
 }
+
+// sensitiveCommand executes an AT command containing credentials or other
+// authentication material. Modem errors commonly echo the complete command,
+// so neither the returned error nor the retained device state may wrap it.
+func (manager *Manager) sensitiveCommand(
+	ctx context.Context,
+	client modem.Client,
+	command string,
+) (modem.Response, error) {
+	commandCtx, cancel := manager.withTimeout(ctx, manager.commandTimeout)
+	defer cancel()
+	response, err := client.Execute(commandCtx, command)
+	if err != nil {
+		return response, errors.New("sensitive modem command failed")
+	}
+	return response, nil
+}

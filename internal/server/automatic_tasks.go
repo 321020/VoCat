@@ -129,7 +129,10 @@ func (scheduler *automaticTaskScheduler) execute(run store.AutomaticTaskRun) {
 			break
 		}
 		if attempt <= task.RetryCount {
-			scheduler.server.logger.Warn("automatic task attempt failed", "task_id", task.ID, "device_id", task.DeviceID, "attempt", attempt, "error", err)
+			// A device error may contain the full AT command, including APN
+			// credentials. The persisted run retains a user-facing outcome; logs
+			// contain only non-sensitive execution metadata.
+			scheduler.server.logger.Warn("automatic task attempt failed", "task_id", task.ID, "device_id", task.DeviceID, "attempt", attempt)
 			select {
 			case <-scheduler.ctx.Done():
 				break
@@ -274,7 +277,7 @@ func (s *Server) prepareAutomaticTaskEnvironment(ctx context.Context, config *st
 	}
 	if task.TaskType != "public_ip" {
 		if _, err := s.devices.SetNetwork(ctx, physicalID, s.cardNetworkRequest(ctx, physicalID, *config, policy, false)); err != nil {
-			s.logger.Warn("automatic task could not stop unused cellular data", "device_id", config.ID, "error", err)
+			s.logger.Warn("automatic task could not stop unused cellular data", "device_id", config.ID)
 		}
 	}
 	if _, err := s.devices.SetFlight(ctx, physicalID, false); err != nil {
@@ -441,7 +444,7 @@ func (s *Server) rollbackAutomaticNetwork(deviceID, physicalID, iccid string, co
 		policy = store.CardPolicy{ICCID: iccid, APN: config.APN, IPVersion: "IPV4V6"}
 	}
 	if _, err := s.devices.SetNetwork(cleanupContext, physicalID, s.cardNetworkRequest(cleanupContext, physicalID, config, policy, false)); err != nil {
-		s.logger.Warn("stop one-shot automatic roaming data", "device_id", deviceID, "error", err)
+		s.logger.Warn("stop one-shot automatic roaming data", "device_id", deviceID)
 	}
 	config.NetworkEnabled = false
 	if err := s.store.UpsertDevice(cleanupContext, config); err != nil {
