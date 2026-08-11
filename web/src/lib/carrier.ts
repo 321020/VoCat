@@ -57,13 +57,3 @@ export function carrierBrandIso(spn?: string, imsi?: string): string {
   if (brand.includes("lebara") && digits.startsWith("20404")) return "gb";
   return carrierIso(imsi);
 }
-
-// flagEmoji converts an alpha-2 country code to its regional-indicator flag emoji.
-export function flagEmoji(iso?: string): string {
-  const s = String(iso ?? "").trim().toUpperCase();
-  if (s.length !== 2) return "";
-  const a = s.charCodeAt(0);
-  const b = s.charCodeAt(1);
-  if (a < 65 || a > 90 || b < 65 || b > 90) return "";
-  return String.fromCodePoint(0x1f1e6 + (a - 65)) + String.fromCodePoint(0x1f1e6 + (b - 65));
-}

@@ -4,7 +4,8 @@ import { FieldRow } from "./FieldRow";
 import { useShowSensitive } from "./shared";
 import type { DeviceDetail } from "./types";
 import { useI18n } from "../../lib/i18n";
-import { carrierBrandIso, flagEmoji } from "../../lib/carrier";
+import { carrierBrandIso } from "../../lib/carrier";
+import { CountryFlag } from "../CountryFlag";
 
 export interface OverviewSimPanelProps {
   device: DeviceDetail;
@@ -20,9 +21,7 @@ export function OverviewSimPanel({ device, simOperatorDisplay, e911Starting, onS
   const sensitive = !showSensitive;
   const activeEsim = (device.activeEsimProfileName || "").trim();
   const flightOn = device.vowifiActive || modem?.operatingMode === 0 || modem?.operatingMode === 4;
-  const carrierFlag = flagEmoji(carrierBrandIso(modem?.nativeSpn, modem?.imsi));
-  const operatorValue =
-    carrierFlag && simOperatorDisplay !== "--" ? `${carrierFlag} ${simOperatorDisplay}` : simOperatorDisplay;
+  const carrierCountryCode = carrierBrandIso(modem?.nativeSpn, modem?.imsi);
   const backendLabel =
     device.backendMode === "qmi" ? "QMI" : device.backendMode === "mbim" ? "MBIM" : device.backendMode === "at" ? "AT" : "Auto";
 
@@ -51,7 +50,12 @@ export function OverviewSimPanel({ device, simOperatorDisplay, e911Starting, onS
           </div>
         ) : null}
         {activeEsim ? <FieldRow label={t("当前eSIM")} value={activeEsim} monospace copyable /> : null}
-        <FieldRow label={t("原运营商")} value={operatorValue} copyable />
+        <FieldRow
+          label={t("原运营商")}
+          value={simOperatorDisplay}
+          prefix={simOperatorDisplay !== "--" ? <CountryFlag countryCode={carrierCountryCode} /> : null}
+          copyable
+        />
         <FieldRow label={t("固件版本")} value={modem?.firmware} monospace copyable />
         <div className="flex justify-between gap-3">
           <span className="text-gray-500">{t("飞行模式")}</span>

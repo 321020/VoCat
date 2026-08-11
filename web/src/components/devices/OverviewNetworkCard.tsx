@@ -5,7 +5,7 @@ import { FieldRow } from "./FieldRow";
 import { isDeviceOnline, isRegistered, isRecoveringPhase, lifecycleLabel, signalLevel, signalTone } from "./shared";
 import type { DeviceDetail } from "./types";
 import { useI18n } from "../../lib/i18n";
-import { flagEmoji } from "../../lib/carrier";
+import { CountryFlag } from "../CountryFlag";
 
 const BAR_HEIGHTS = ["h-[28%]", "h-[46%]", "h-[64%]", "h-[82%]", "h-full"];
 const TEXT_TONE = {
@@ -81,11 +81,12 @@ export function OverviewNetworkCard({ device, onOpenOperatorSelection }: { devic
           >
 			{vowifiRegistered ? (
 			  <>{t("WiFi Calling 已注册")}</>
-			) : registered ? (
-              <>
-                {modem?.operatorCountryCode ? `${flagEmoji(modem.operatorCountryCode)} ` : ""}{modem?.operator || "--"}{" "}
+            ) : registered ? (
+              <span className="inline-flex items-center gap-1.5">
+                <CountryFlag countryCode={modem?.operatorCountryCode} />
+                <span>{modem?.operator || "--"}</span>{" "}
                 {modem?.networkMode ? <span className="opacity-70">· {netMode}</span> : null}
-              </>
+              </span>
             ) : (
               statusText
             )}
