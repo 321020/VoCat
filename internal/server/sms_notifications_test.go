@@ -46,7 +46,8 @@ func TestWecomSMSValuesIncludeRenderedSMSFields(t *testing.T) {
 	if values["event"] != "sms.received" || values["title"] != "收到新短信" || values["message"] != message.Text() {
 		t.Fatalf("common values = %#v", values)
 	}
-	if values["content"] != "hello" || values["number"] != "+447386" || values["device_label"] != "EC20" || values["time"] != "2026-08-08 17:25:35" {
+	wantLocalTime := message.Time.Local().Format("2006-01-02 15:04:05")
+	if values["content"] != "hello" || values["number"] != "+447386" || values["device_label"] != "EC20" || values["time"] != wantLocalTime {
 		t.Fatalf("SMS values = %#v", values)
 	}
 }
