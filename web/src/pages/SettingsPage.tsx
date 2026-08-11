@@ -14,13 +14,14 @@ import {
   buildBarkPayload,
   buildEmailPayload,
   buildNotificationsPayload,
+  buildWecomPayload,
   buildWebhookPayload,
   defaultNotifyForms,
   formsFromNotifications,
   type NotifyForms,
 } from "../components/settings/model";
 import { PushplusTab, TelegramTab } from "../components/settings/BotTabs";
-import { BarkTab, EmailTab, WebhookTab } from "../components/settings/PushTabs";
+import { BarkTab, EmailTab, WebhookTab, WecomTab } from "../components/settings/PushTabs";
 import { PluginsCard } from "../components/settings/PluginsCard";
 import { HTTPSCard } from "../components/settings/HTTPSCard";
 import { DeviceQuotaCard } from "../components/settings/DeviceQuotaCard";
@@ -34,6 +35,7 @@ const NOTIFY_TABS = [
   { key: "email", label: "Email" },
   { key: "pushplus", label: "Pushplus" },
   { key: "webhook", label: "Webhook" },
+  { key: "wecom", label: "企业微信消息推送" },
 ];
 
 const EMPTY_SYSTEM_INFO: SystemInfo = { version: "", buildTime: "", config: "" };
@@ -51,6 +53,7 @@ export default function SettingsPage() {
   const [testingWebhook, setTestingWebhook] = useState(false);
   const [testingBark, setTestingBark] = useState(false);
   const [testingEmail, setTestingEmail] = useState(false);
+  const [testingWecom, setTestingWecom] = useState(false);
   const [changingPassword, setChangingPassword] = useState(false);
   const [checkingUpdate, setCheckingUpdate] = useState(false);
   const [applyingUpdate, setApplyingUpdate] = useState(false);
@@ -320,6 +323,21 @@ export default function SettingsPage() {
     }
   }, [forms.email]);
 
+  const onTestWecom = useCallback(async () => {
+    setTestingWecom(true);
+    try {
+      await api("/settings/notifications/wecom/test", {
+        method: "POST",
+        body: buildWecomPayload(forms.wecom, true),
+      });
+      message.success(t("测试通知已发送"));
+    } catch (error) {
+      message.error(apiMessage(error) || t("企业微信消息推送测试失败"));
+    } finally {
+      setTestingWecom(false);
+    }
+  }, [forms.wecom]);
+
   const onCheckUpdate = useCallback(async () => {
     setCheckingUpdate(true);
     try {
@@ -448,7 +466,7 @@ export default function SettingsPage() {
               <CardIcon>
                 <AlertRegular className="text-[24px]" />
               </CardIcon>
-              <CardTitle title={t("通知")} subtitle={t("Telegram / Bark / Email / Pushplus / Webhook")} />
+              <CardTitle title={t("通知")} subtitle={t("Telegram / Bark / Email / Pushplus / Webhook / 企业微信消息推送")} />
             </div>
             <Button variant="primary" loading={savingNotif} disabled={loadingNotif} onClick={onSaveNotifications} className="!border-0" icon={<CheckmarkRegular />}>
               {t("保存通知配置")}
@@ -478,6 +496,9 @@ export default function SettingsPage() {
                   testing={testingWebhook}
                   onTest={onTestWebhook}
                 />
+              ) : null}
+              {activeTab === "wecom" ? (
+                <WecomTab value={forms.wecom} onChange={(p) => updateChannel("wecom", p)} testing={testingWecom} onTest={onTestWecom} />
               ) : null}
             </div>
           )}

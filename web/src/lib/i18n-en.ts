@@ -275,6 +275,7 @@ export const EN_DICT: Record<string, string> = {
   "Webhook 测试失败": "Webhook test failed",
   "Bark 测试失败": "Bark test failed",
   "Email 测试失败": "Email test failed",
+  "企业微信消息推送测试失败": "WeCom message push test failed",
 
   // ---- 设置页：安全卡 ----
   安全: "Security",
@@ -372,10 +373,20 @@ export const EN_DICT: Record<string, string> = {
   "启用 Bark 推送": "Enable Bark",
   "启用 Email 推送": "Enable Email",
   "启用 Webhook 推送": "Enable Webhook",
+  "企业微信消息推送": "WeCom Message Push",
+  "启用企业微信消息推送": "Enable WeCom Message Push",
+  "Telegram / Bark / Email / Pushplus / Webhook / 企业微信消息推送": "Telegram / Bark / Email / Pushplus / Webhook / WeCom Message Push",
   "目标 URLs": "Target URLs",
   "添加 URL": "Add URL",
   "尚未配置任何 Bark URL，点击右侧添加按钮。": "No Bark URLs yet. Click the add button on the right.",
   "尚未配置任何 Webhook URL，点击右侧添加按钮。": "No Webhook URLs yet. Click the add button on the right.",
+  "每个企业微信消息推送 Webhook URL 单独占一行，点击添加 URL 新增一行；不使用逗号、空格或换行分隔多个 URL。":
+    "Enter one WeCom message push Webhook URL per line. Use Add URL to add another row; do not separate URLs with commas, spaces, or line breaks.",
+  "尚未配置任何企业微信消息推送 Webhook URL，点击右侧添加按钮。": "No WeCom message push Webhook URLs yet. Click the add button on the right.",
+  "JSON 请求体模板": "JSON Request Body Template",
+  "支持完整企业微信消息推送 JSON。变量必须作为 JSON 值使用，例如": "Supports a complete WeCom message push JSON payload. Use variables as JSON values, for example",
+  "可用变量：{{event}}、{{title}}、{{message}}、{{timestamp}}、{{content}}、{{number}}、{{device_id}}、{{device_name}}、{{device_label}}、{{time}}。":
+    "Available variables: {{event}}, {{title}}, {{message}}, {{timestamp}}, {{content}}, {{number}}, {{device_id}}, {{device_name}}, {{device_label}}, {{time}}.",
   "分组 (Group)": "Group",
   "例如 vocat": "e.g. vocat",
   "iOS 设备上的通知分组。": "Notification group on iOS devices.",

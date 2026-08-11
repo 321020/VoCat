@@ -737,6 +737,43 @@ func TestNotificationAndAppSecretPreservation(t *testing.T) {
 	}
 }
 
+func TestNotificationArraySecretPreservation(t *testing.T) {
+	ctx := context.Background()
+	database := openTestStore(t, ":memory:")
+	originalURL := "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=first-secret"
+	if err := database.UpsertNotificationSetting(ctx, NotificationSetting{
+		Channel: "wecom", Enabled: true,
+		Config: json.RawMessage(`{"urls":["` + originalURL + `"]}`),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	setting, err := database.NotificationSetting(ctx, "wecom")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var redacted map[string]any
+	if err := json.Unmarshal(setting.Redacted().Config, &redacted); err != nil {
+		t.Fatal(err)
+	}
+	urls, ok := redacted["urls"].([]any)
+	if !ok || len(urls) != 1 || urls[0] != SecretMask {
+		t.Fatalf("redacted URLs = %#v", redacted["urls"])
+	}
+	if err := database.UpsertNotificationSetting(ctx, NotificationSetting{
+		Channel: "wecom", Enabled: true,
+		Config: json.RawMessage(`{"urls":["` + SecretMask + `","https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=second-secret"]}`),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	setting, err = database.NotificationSetting(ctx, "wecom")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(setting.Config, []byte(originalURL)) || !bytes.Contains(setting.Config, []byte("second-secret")) {
+		t.Fatalf("stored URLs = %s", setting.Config)
+	}
+}
+
 func TestEventsPoliciesAndTraffic(t *testing.T) {
 	ctx := context.Background()
 	database := openTestStore(t, ":memory:")

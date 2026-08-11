@@ -339,12 +339,9 @@ func (value NotificationSetting) SensitiveValues() []string {
 	}
 	values := make([]string, 0, len(value.SensitiveFields))
 	for _, field := range value.SensitiveFields {
-		if secret, ok := getJSONPath(document, field).(string); ok &&
-			secret != "" && secret != SecretMask {
-			values = append(values, secret)
-		}
+		collectJSONStringValues(getJSONPath(document, field), &values)
 	}
-	return values
+	return uniqueNonemptyStrings(values)
 }
 
 type AppSetting struct {
@@ -576,8 +573,8 @@ func redactJSONFields(value json.RawMessage, fields []string, replacement string
 		return json.RawMessage(`{}`)
 	}
 	for _, field := range fields {
-		if getJSONPath(document, field) != nil {
-			setJSONPath(document, field, replacement)
+		if current := getJSONPath(document, field); current != nil {
+			setJSONPath(document, field, redactJSONValue(current, replacement))
 		}
 	}
 	encoded, err := json.Marshal(document)
@@ -602,14 +599,53 @@ func mergeJSONSecrets(
 	}
 	for _, field := range fields {
 		value := getJSONPath(next, field)
-		text, stringValue := value.(string)
-		if value == nil || (stringValue && (text == "" || text == SecretMask)) {
-			if previous := getJSONPath(current, field); previous != nil {
-				setJSONPath(next, field, previous)
-			}
+		if previous := getJSONPath(current, field); previous != nil {
+			setJSONPath(next, field, mergeJSONSecretValue(value, previous))
 		}
 	}
 	return json.Marshal(next)
+}
+
+func redactJSONValue(value any, replacement string) any {
+	switch typed := value.(type) {
+	case string:
+		return replacement
+	case []any:
+		result := make([]any, len(typed))
+		for index, item := range typed {
+			result[index] = redactJSONValue(item, replacement)
+		}
+		return result
+	default:
+		return replacement
+	}
+}
+
+func mergeJSONSecretValue(incoming, existing any) any {
+	if incoming == nil {
+		return existing
+	}
+	switch next := incoming.(type) {
+	case string:
+		if next == "" || next == SecretMask {
+			return existing
+		}
+	case []any:
+		previous, ok := existing.([]any)
+		if !ok {
+			return incoming
+		}
+		merged := make([]any, len(next))
+		for index, value := range next {
+			if index < len(previous) {
+				merged[index] = mergeJSONSecretValue(value, previous[index])
+			} else {
+				merged[index] = value
+			}
+		}
+		return merged
+	}
+	return incoming
 }
 
 func getJSONPath(document map[string]any, path string) any {
