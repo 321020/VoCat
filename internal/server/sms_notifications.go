@@ -24,7 +24,7 @@ import (
 
 const smsNotificationPollInterval = 2 * time.Second
 
-var smsOnlyNotificationChannels = []string{"bark", "email", "pushplus", "webhook"}
+var smsOnlyNotificationChannels = []string{"bark", "email", "pushplus", "webhook", "wecom"}
 
 type smsNotification struct {
 	DeviceID    string
@@ -143,7 +143,7 @@ func (s *Server) smsNotificationConfig(ctx context.Context, channel string) (map
 
 func validateSMSNotificationConfig(channel string, config map[string]any) error {
 	switch channel {
-	case "bark", "email", "webhook":
+	case "bark", "email", "webhook", "wecom":
 		if err := validateNotificationTestConfig(channel, config); err != nil {
 			return err
 		}
@@ -202,6 +202,8 @@ func sendSMSNotification(ctx context.Context, channel string, config map[string]
 		return sendPushplusSMSNotification(ctx, config, message)
 	case "webhook":
 		return sendWebhookSMSNotification(ctx, config, message)
+	case "wecom":
+		return sendWecomNotification(ctx, config, wecomSMSValues(message))
 	default:
 		return fmt.Errorf("unsupported SMS notification channel %q", channel)
 	}

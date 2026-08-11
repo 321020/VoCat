@@ -64,6 +64,36 @@ func wecomTestValues(now time.Time) wecomTemplateValues {
 	}
 }
 
+func wecomSMSValues(message smsNotification) wecomTemplateValues {
+	return wecomTemplateValues{
+		"event":        "sms.received",
+		"title":        "收到新短信",
+		"message":      message.Text(),
+		"timestamp":    message.Time.UTC().Format(time.RFC3339),
+		"content":      message.Content,
+		"number":       message.Number,
+		"device_id":    message.DeviceID,
+		"device_name":  message.DeviceName,
+		"device_label": message.DeviceLabel,
+		"time":         message.Time.Local().Format("2006-01-02 15:04:05"),
+	}
+}
+
+func wecomAutomaticTaskValues(message automaticTaskNotification) wecomTemplateValues {
+	return wecomTemplateValues{
+		"event":        "automatic_task.completed",
+		"title":        message.Title,
+		"message":      message.Text,
+		"timestamp":    message.Time.UTC().Format(time.RFC3339),
+		"content":      "",
+		"number":       "",
+		"device_id":    "",
+		"device_name":  "",
+		"device_label": "",
+		"time":         "",
+	}
+}
+
 func validateWecomNotificationConfig(config map[string]any) error {
 	urls := configStrings(config, "urls")
 	if len(urls) == 0 {
