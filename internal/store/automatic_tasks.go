@@ -179,6 +179,43 @@ func (s *Store) UpdateAutomaticTaskRun(ctx context.Context, run AutomaticTaskRun
 	return err
 }
 
+// RecoverAutomaticTaskRuns reconciles durable run records with the in-memory
+// scheduler after a process restart. Running work cannot still be executing,
+// while queued work is safe to put back onto the per-device queues.
+func (s *Store) RecoverAutomaticTaskRuns(ctx context.Context, now time.Time) ([]AutomaticTaskRun, error) {
+	const restartError = "service restarted before the automatic task completed"
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+	if _, err = tx.ExecContext(ctx, `UPDATE automatic_task_runs SET
+		status = 'failed', finished_at = ?, error = ?, updated_at = ?
+		WHERE status = 'running'`, now.Unix(), restartError, now.Unix()); err != nil {
+		return nil, fmt.Errorf("recover running automatic tasks: %w", err)
+	}
+	if _, err = tx.ExecContext(ctx, `UPDATE automatic_tasks SET
+		last_run_at = ?, last_status = 'failed', last_error = ?, updated_at = ?
+		WHERE id IN (
+			SELECT task_id FROM automatic_task_runs
+			WHERE status = 'failed' AND error = ? AND finished_at = ?
+		)`, now.Unix(), restartError, now.Unix(), restartError, now.Unix()); err != nil {
+		return nil, fmt.Errorf("recover automatic task status: %w", err)
+	}
+	rows, err := tx.QueryContext(ctx, automaticTaskRunSelect+` WHERE status = 'queued' ORDER BY id`)
+	if err != nil {
+		return nil, fmt.Errorf("recover queued automatic tasks: %w", err)
+	}
+	queued, err := scanAutomaticTaskRuns(rows)
+	if err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	return queued, nil
+}
+
 const automaticTaskRunSelect = `
 	SELECT id, task_id, device_id, scheduled_at, started_at, finished_at,
 		status, attempts, output, error, created_at, updated_at

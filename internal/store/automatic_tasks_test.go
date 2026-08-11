@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -116,5 +117,66 @@ func TestListAutomaticTaskRunsPaginated(t *testing.T) {
 	}
 	if total != 5 || len(all) != 5 {
 		t.Fatalf("clamped page: total = %d, runs = %+v", total, all)
+	}
+}
+
+func TestRecoverAutomaticTaskRunsFailsRunningAndReturnsQueued(t *testing.T) {
+	ctx := context.Background()
+	database := openTestStore(t, filepath.Join(t.TempDir(), "automatic-task-recovery.db"))
+	mustSaveDevice(t, database, "ec20", "EC20")
+	task, err := database.SaveAutomaticTask(ctx, AutomaticTask{
+		Name: "task", Enabled: true, DeviceID: "ec20", ProfileICCID: "one",
+		TaskType: "call", Environment: "cellular", IntervalDays: 1,
+		StartDate: "2026-08-10", RunTime: "12:00", Timezone: "Asia/Shanghai", Payload: []byte(`{"phone":"10086","duration_seconds":10}`),
+		NextRunAt: time.Now().Add(time.Hour),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	running, err := database.QueueAutomaticTaskNow(ctx, task)
+	if err != nil {
+		t.Fatal(err)
+	}
+	running.Status = "running"
+	running.StartedAt = time.Now().UTC().Add(-time.Minute)
+	running.Attempts = 1
+	if err := database.UpdateAutomaticTaskRun(ctx, running); err != nil {
+		t.Fatal(err)
+	}
+	queued, err := database.QueueAutomaticTaskNow(ctx, task)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	recoveredAt := time.Now().UTC().Truncate(time.Second)
+	recovered, err := database.RecoverAutomaticTaskRuns(ctx, recoveredAt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(recovered) != 1 || recovered[0].ID != queued.ID || recovered[0].Status != "queued" {
+		t.Fatalf("recovered queued runs = %+v", recovered)
+	}
+	runs, err := database.ListAutomaticTaskRuns(ctx, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	foundRunning := false
+	for _, run := range runs {
+		if run.ID == running.ID {
+			foundRunning = true
+			if run.Status != "failed" || run.FinishedAt.IsZero() || !strings.Contains(run.Error, "service restarted") {
+				t.Fatalf("recovered running run = %+v", run)
+			}
+		}
+	}
+	if !foundRunning {
+		t.Fatal("running run was not found after recovery")
+	}
+	recoveredTask, err := database.AutomaticTask(ctx, task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if recoveredTask.LastStatus != "failed" || !strings.Contains(recoveredTask.LastError, "service restarted") {
+		t.Fatalf("recovered task status = %+v", recoveredTask)
 	}
 }

@@ -37,6 +37,13 @@ type automaticTaskExecutionError struct {
 func (value automaticTaskExecutionError) Error() string { return value.err.Error() }
 func (value automaticTaskExecutionError) Unwrap() error { return value.err }
 
+type automaticTaskProgress func(string)
+
+type automaticTaskEnvironmentSnapshot struct {
+	config store.Device
+	policy store.CardPolicy
+}
+
 type automaticTaskScheduler struct {
 	server *Server
 	ctx    context.Context
@@ -50,6 +57,14 @@ func (s *Server) StartAutomaticTasks(ctx context.Context) {
 	}
 	scheduler := &automaticTaskScheduler{server: s, ctx: ctx, queues: make(map[string]chan store.AutomaticTaskRun)}
 	s.automaticTasks = scheduler
+	queued, err := s.store.RecoverAutomaticTaskRuns(ctx, time.Now().UTC())
+	if err != nil {
+		s.logger.Warn("recover automatic tasks", "error", err)
+	} else {
+		for _, run := range queued {
+			scheduler.enqueue(run)
+		}
+	}
 	go scheduler.run()
 }
 
@@ -117,9 +132,14 @@ func (scheduler *automaticTaskScheduler) execute(run store.AutomaticTaskRun) {
 	var output string
 	for attempt := 1; attempt <= task.RetryCount+1; attempt++ {
 		run.Attempts = attempt
+		run.Output = fmt.Sprintf("第 %d 次尝试：正在检查设备和 eSIM Profile", attempt)
 		_ = scheduler.server.store.UpdateAutomaticTaskRun(context.Background(), run)
+		progress := func(message string) {
+			run.Output = fmt.Sprintf("第 %d 次尝试：%s", attempt, message)
+			_ = scheduler.server.store.UpdateAutomaticTaskRun(context.Background(), run)
+		}
 		operationContext, cancel := context.WithTimeout(scheduler.ctx, automaticTaskMaxRuntime)
-		output, err = scheduler.server.executeAutomaticTask(operationContext, task)
+		output, err = scheduler.server.executeAutomaticTask(operationContext, task, progress)
 		cancel()
 		if err == nil {
 			break
@@ -154,13 +174,35 @@ func (scheduler *automaticTaskScheduler) execute(run store.AutomaticTaskRun) {
 	}
 }
 
-func (s *Server) executeAutomaticTask(ctx context.Context, task store.AutomaticTask) (string, error) {
-	config, entry, physicalID, err := s.ensureAutomaticTaskProfile(ctx, task)
+func (s *Server) executeAutomaticTask(ctx context.Context, task store.AutomaticTask, progress automaticTaskProgress) (output string, err error) {
+	progress("正在检查设备和 eSIM Profile")
+	config, entry, physicalID, err := s.ensureAutomaticTaskProfile(ctx, task, progress)
 	if err != nil {
 		return "", err
 	}
-	networkWasEnabled := config.NetworkEnabled
-	if err := s.prepareAutomaticTaskEnvironment(ctx, &config, entry, physicalID, task); err != nil {
+	iccid := strings.TrimSpace(task.ProfileICCID)
+	policy, policyErr := s.store.CardPolicy(ctx, iccid)
+	if errors.Is(policyErr, store.ErrNotFound) {
+		policy = defaultCardPolicy(iccid)
+	} else if policyErr != nil {
+		return "", fmt.Errorf("read saved card policy: %w", policyErr)
+	}
+	snapshot := automaticTaskEnvironmentSnapshot{config: config, policy: policy}
+	actionCompleted := false
+	defer func() {
+		progress("正在恢复该 Profile 原先保存的卡策略")
+		if restoreErr := s.restoreAutomaticTaskEnvironment(physicalID, snapshot); restoreErr != nil {
+			if err == nil && actionCompleted {
+				output = ""
+				err = automaticTaskExecutionError{err: fmt.Errorf("task completed but card policy restoration failed: %w", restoreErr), retryable: false}
+			} else if err == nil {
+				err = fmt.Errorf("restore card policy: %w", restoreErr)
+			} else {
+				err = fmt.Errorf("%w; card policy restoration also failed: %v", err, restoreErr)
+			}
+		}
+	}()
+	if err := s.prepareAutomaticTaskEnvironment(ctx, &config, entry, physicalID, task, progress); err != nil {
 		return "", err
 	}
 	var payload automaticTaskPayload
@@ -169,17 +211,22 @@ func (s *Server) executeAutomaticTask(ctx context.Context, task store.AutomaticT
 	}
 	switch task.TaskType {
 	case "sms":
-		return s.executeAutomaticSMS(ctx, task, payload)
+		progress("正在发送短信")
+		output, err = s.executeAutomaticSMS(ctx, task, payload)
 	case "call":
-		return s.executeAutomaticCall(ctx, task, payload)
+		progress("正在发起通话")
+		output, err = s.executeAutomaticCall(ctx, task, payload)
 	case "public_ip":
-		return s.executeAutomaticPublicIP(ctx, config, physicalID, task.ProfileICCID, networkWasEnabled)
+		progress("蜂窝数据已连接，正在查询漫游公网 IP")
+		output, err = s.executeAutomaticPublicIP(ctx, config, task.ProfileICCID)
 	default:
 		return "", fmt.Errorf("unsupported automatic task type %q", task.TaskType)
 	}
+	actionCompleted = err == nil
+	return output, err
 }
 
-func (s *Server) ensureAutomaticTaskProfile(ctx context.Context, task store.AutomaticTask) (store.Device, device.Device, string, error) {
+func (s *Server) ensureAutomaticTaskProfile(ctx context.Context, task store.AutomaticTask, progress automaticTaskProgress) (store.Device, device.Device, string, error) {
 	config, err := s.store.Device(ctx, task.DeviceID)
 	if err != nil {
 		return store.Device{}, device.Device{}, "", fmt.Errorf("read device: %w", err)
@@ -191,6 +238,7 @@ func (s *Server) ensureAutomaticTaskProfile(ctx context.Context, task store.Auto
 	if strings.EqualFold(strings.TrimSpace(entry.Snapshot.ICCID), strings.TrimSpace(task.ProfileICCID)) {
 		return config, entry, physicalID, nil
 	}
+	progress("正在切换到任务指定的 eSIM Profile")
 	if _, err := s.devices.SetFlight(ctx, physicalID, true); err != nil {
 		return store.Device{}, device.Device{}, "", fmt.Errorf("enter airplane mode before profile switch: %w", err)
 	}
@@ -212,9 +260,10 @@ func (s *Server) ensureAutomaticTaskProfile(ctx context.Context, task store.Auto
 	return config, entry, physicalID, nil
 }
 
-func (s *Server) prepareAutomaticTaskEnvironment(ctx context.Context, config *store.Device, entry device.Device, physicalID string, task store.AutomaticTask) error {
+func (s *Server) prepareAutomaticTaskEnvironment(ctx context.Context, config *store.Device, entry device.Device, physicalID string, task store.AutomaticTask, progress automaticTaskProgress) error {
 	iccid := strings.TrimSpace(task.ProfileICCID)
 	if task.Environment == "vowifi" {
+		progress("正在准备 VoWiFi 执行环境")
 		if task.TaskType == "public_ip" {
 			return errors.New("public IP tasks cannot run over VoWiFi")
 		}
@@ -256,6 +305,7 @@ func (s *Server) prepareAutomaticTaskEnvironment(ctx context.Context, config *st
 			}
 		}
 	}
+	progress("正在开启蜂窝无线并启用自动选网")
 	config.VoWiFiEnabled = false
 	config.NetworkEnabled = task.TaskType == "public_ip"
 	if err := s.store.UpsertDevice(ctx, *config); err != nil {
@@ -289,6 +339,7 @@ func (s *Server) prepareAutomaticTaskEnvironment(ctx context.Context, config *st
 	if _, err := s.devices.ReRegisterOperator(ctx, physicalID); err != nil {
 		return fmt.Errorf("re-register cellular network: %w", err)
 	}
+	progress("正在搜索并注册蜂窝网络（漫游注册可能需要数分钟）")
 	if err := s.waitAutomaticCellular(ctx, physicalID, task.TaskType == "public_ip"); err != nil {
 		return err
 	}
@@ -296,8 +347,8 @@ func (s *Server) prepareAutomaticTaskEnvironment(ctx context.Context, config *st
 		if !s.developerActive(ctx) {
 			return errors.New("roaming public IP tasks require developer mode")
 		}
+		progress("已注册蜂窝网络，正在建立数据连接")
 		if _, err := s.devices.SetNetwork(ctx, physicalID, s.cardNetworkRequest(ctx, physicalID, *config, policy, true)); err != nil {
-			s.rollbackAutomaticNetwork(config.ID, physicalID, iccid, *config)
 			return fmt.Errorf("start roaming data: %w", err)
 		}
 	}
@@ -421,10 +472,7 @@ func (s *Server) executeAutomaticCall(ctx context.Context, task store.AutomaticT
 	return fmt.Sprintf("已拨打 %s，将在 %d 秒后自动挂断", payload.Phone, payload.DurationSeconds), nil
 }
 
-func (s *Server) executeAutomaticPublicIP(ctx context.Context, config store.Device, physicalID, iccid string, networkWasEnabled bool) (string, error) {
-	if !networkWasEnabled {
-		defer s.rollbackAutomaticNetwork(config.ID, physicalID, iccid, config)
-	}
+func (s *Server) executeAutomaticPublicIP(ctx context.Context, config store.Device, iccid string) (string, error) {
 	if strings.TrimSpace(config.Interface) == "" {
 		return "", errors.New("device has no cellular network interface")
 	}
@@ -436,27 +484,70 @@ func (s *Server) executeAutomaticPublicIP(ctx context.Context, config store.Devi
 	return strings.TrimSpace(fmt.Sprintf("公网 IP %s · %s %s", info.IP, info.CountryCode, info.Region)), nil
 }
 
-func (s *Server) rollbackAutomaticNetwork(deviceID, physicalID, iccid string, config store.Device) {
-	cleanupContext, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+func (s *Server) restoreAutomaticTaskEnvironment(physicalID string, snapshot automaticTaskEnvironmentSnapshot) error {
+	cleanupContext, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
-	policy, policyErr := s.store.CardPolicy(cleanupContext, iccid)
-	if policyErr != nil {
-		policy = store.CardPolicy{ICCID: iccid, APN: config.APN, IPVersion: "IPV4V6"}
-	}
-	if _, err := s.devices.SetNetwork(cleanupContext, physicalID, s.cardNetworkRequest(cleanupContext, physicalID, config, policy, false)); err != nil {
-		s.logger.Warn("stop one-shot automatic roaming data", "device_id", deviceID)
-	}
-	config.NetworkEnabled = false
-	if err := s.store.UpsertDevice(cleanupContext, config); err != nil {
-		s.logger.Warn("restore automatic roaming data setting", "device_id", deviceID, "error", err)
-	}
-	policy.NetworkEnabled = false
-	policy.VoWiFiEnabled = false
-	policy.AirplaneEnabled = false
-	policy.Source = "automatic_task"
+	config, policy := snapshot.config, snapshot.policy
+	desiredNetwork := policy.NetworkEnabled && !policy.VoWiFiEnabled && !policy.AirplaneEnabled
+	config.APN = policy.APN
+	config.NetworkEnabled = desiredNetwork
+	config.VoWiFiEnabled = policy.VoWiFiEnabled
+	var restoreErrors []error
 	if err := s.store.UpsertCardPolicy(cleanupContext, policy); err != nil {
-		s.logger.Warn("restore automatic roaming card policy", "device_id", deviceID, "error", err)
+		restoreErrors = append(restoreErrors, fmt.Errorf("persist card policy: %w", err))
 	}
+	if err := s.store.UpsertDevice(cleanupContext, config); err != nil {
+		restoreErrors = append(restoreErrors, fmt.Errorf("persist device policy: %w", err))
+	}
+
+	if policy.VoWiFiEnabled {
+		if _, err := s.devices.SetNetwork(cleanupContext, physicalID, s.cardNetworkRequest(cleanupContext, physicalID, config, policy, false)); err != nil {
+			restoreErrors = append(restoreErrors, fmt.Errorf("stop cellular data: %w", err))
+		}
+		if _, err := s.devices.SetFlight(cleanupContext, physicalID, true); err != nil {
+			restoreErrors = append(restoreErrors, fmt.Errorf("restore airplane mode: %w", err))
+		}
+		if s.vowifi == nil {
+			restoreErrors = append(restoreErrors, errors.New("VoWiFi runtime is unavailable"))
+		} else if state, stateErr := s.vowifi.State(config.ID); stateErr == nil && state.Enabled {
+			if _, err := s.vowifi.RequestReconnect(config.ID); err != nil {
+				restoreErrors = append(restoreErrors, fmt.Errorf("restore VoWiFi: %w", err))
+			}
+		} else if _, err := s.vowifi.RequestEnabled(config.ID, true); err != nil {
+			restoreErrors = append(restoreErrors, fmt.Errorf("restore VoWiFi: %w", err))
+		}
+		return errors.Join(restoreErrors...)
+	}
+	if s.vowifi != nil {
+		if state, stateErr := s.vowifi.State(config.ID); stateErr == nil && (state.Enabled || state.Active) {
+			if _, err := s.vowifi.RequestEnabled(config.ID, false); err != nil {
+				restoreErrors = append(restoreErrors, fmt.Errorf("stop VoWiFi: %w", err))
+			}
+		}
+	}
+	if policy.AirplaneEnabled {
+		if _, err := s.devices.SetNetwork(cleanupContext, physicalID, s.cardNetworkRequest(cleanupContext, physicalID, config, policy, false)); err != nil {
+			restoreErrors = append(restoreErrors, fmt.Errorf("stop cellular data: %w", err))
+		}
+		if _, err := s.devices.SetFlight(cleanupContext, physicalID, true); err != nil {
+			restoreErrors = append(restoreErrors, fmt.Errorf("restore airplane mode: %w", err))
+		}
+		return errors.Join(restoreErrors...)
+	}
+	if !desiredNetwork {
+		if _, err := s.devices.SetNetwork(cleanupContext, physicalID, s.cardNetworkRequest(cleanupContext, physicalID, config, policy, false)); err != nil {
+			restoreErrors = append(restoreErrors, fmt.Errorf("stop cellular data: %w", err))
+		}
+	}
+	if _, err := s.devices.SetFlight(cleanupContext, physicalID, false); err != nil {
+		restoreErrors = append(restoreErrors, fmt.Errorf("restore cellular radio: %w", err))
+	}
+	if desiredNetwork {
+		if _, err := s.devices.SetNetwork(cleanupContext, physicalID, s.cardNetworkRequest(cleanupContext, physicalID, config, policy, true)); err != nil {
+			restoreErrors = append(restoreErrors, fmt.Errorf("restore cellular data: %w", err))
+		}
+	}
+	return errors.Join(restoreErrors...)
 }
 
 func (s *Server) cardNetworkRequest(
