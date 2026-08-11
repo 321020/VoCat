@@ -35,7 +35,7 @@ const NOTIFY_TABS = [
   { key: "email", label: "Email" },
   { key: "pushplus", label: "Pushplus" },
   { key: "webhook", label: "Webhook" },
-  { key: "wecom", label: "企业微信" },
+  { key: "wecom", label: "企业微信消息推送" },
 ];
 
 const EMPTY_SYSTEM_INFO: SystemInfo = { version: "", buildTime: "", config: "" };
@@ -332,7 +332,7 @@ export default function SettingsPage() {
       });
       message.success(t("测试通知已发送"));
     } catch (error) {
-      message.error(apiMessage(error) || t("企业微信测试失败"));
+      message.error(apiMessage(error) || t("企业微信消息推送测试失败"));
     } finally {
       setTestingWecom(false);
     }
@@ -466,7 +466,7 @@ export default function SettingsPage() {
               <CardIcon>
                 <AlertRegular className="text-[24px]" />
               </CardIcon>
-              <CardTitle title={t("通知")} subtitle={t("Telegram / Bark / Email / Pushplus / Webhook / 企业微信")} />
+              <CardTitle title={t("通知")} subtitle={t("Telegram / Bark / Email / Pushplus / Webhook / 企业微信消息推送")} />
             </div>
             <Button variant="primary" loading={savingNotif} disabled={loadingNotif} onClick={onSaveNotifications} className="!border-0" icon={<CheckmarkRegular />}>
               {t("保存通知配置")}

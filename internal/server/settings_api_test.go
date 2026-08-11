@@ -179,6 +179,59 @@ func TestWecomNotificationSettingsPreserveWebhookURLs(t *testing.T) {
 	}
 }
 
+func TestResolveWecomNotificationTestConfigAcceptsUnsavedWebhookURLs(t *testing.T) {
+	test := newSettingsAPITest(t)
+	raw, err := json.Marshal(map[string]any{
+		"urls":             []string{"https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=unsaved"},
+		"payload_template": `{"msgtype":"text","text":{"content":{{message}}}}`,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolved, _, err := test.server.resolveNotificationTestConfig(context.Background(), "wecom", raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	urls, ok := resolved["urls"].([]any)
+	if !ok || len(urls) != 1 || urls[0] != "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=unsaved" {
+		t.Fatalf("resolved URLs = %#v", resolved["urls"])
+	}
+}
+
+func TestResolveWecomNotificationTestConfigMergesMaskedAndUnsavedWebhookURLs(t *testing.T) {
+	test := newSettingsAPITest(t)
+	storedURL := "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=stored"
+	unsavedURL := "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=unsaved"
+	storedConfig, err := json.Marshal(map[string]any{
+		"urls":             []string{storedURL},
+		"payload_template": `{"msgtype":"text","text":{"content":{{message}}}}`,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := test.database.UpsertNotificationSetting(context.Background(), store.NotificationSetting{
+		Channel: "wecom",
+		Config:  storedConfig,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := json.Marshal(map[string]any{
+		"urls":             []string{store.SecretMask, unsavedURL},
+		"payload_template": `{"msgtype":"text","text":{"content":{{message}}}}`,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolved, _, err := test.server.resolveNotificationTestConfig(context.Background(), "wecom", raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	urls, ok := resolved["urls"].([]any)
+	if !ok || len(urls) != 2 || urls[0] != storedURL || urls[1] != unsavedURL {
+		t.Fatalf("resolved URLs = %#v", resolved["urls"])
+	}
+}
+
 func TestNotificationSettingsRejectsUnknownAndMalformedInput(t *testing.T) {
 	test := newSettingsAPITest(t)
 	cases := []struct {

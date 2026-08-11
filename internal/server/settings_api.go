@@ -517,9 +517,7 @@ func (s *Server) resolveNotificationTestConfig(
 	}
 	for key, value := range overlay {
 		if _, secret := sensitive[key]; secret {
-			if text, ok := value.(string); !ok || text == "" || text == store.SecretMask {
-				continue
-			}
+			value = mergeNotificationTestSecretValue(value, resolved[key])
 		}
 		resolved[key] = value
 	}
@@ -543,6 +541,37 @@ func (s *Server) resolveNotificationTestConfig(
 		SensitiveFields: store.DefaultNotificationSensitiveFields(channel),
 	}
 	return resolved, provider, nil
+}
+
+// mergeNotificationTestSecretValue preserves masked values submitted by the
+// settings form while allowing newly entered sensitive values in the same
+// request. WeCom URLs are a sensitive list, unlike the string-based secrets
+// used by the other notification channels.
+func mergeNotificationTestSecretValue(incoming, existing any) any {
+	if incoming == nil {
+		return existing
+	}
+	switch next := incoming.(type) {
+	case string:
+		if next == "" || next == store.SecretMask {
+			return existing
+		}
+	case []any:
+		previous, ok := existing.([]any)
+		if !ok {
+			return incoming
+		}
+		merged := make([]any, len(next))
+		for index, value := range next {
+			if index < len(previous) {
+				merged[index] = mergeNotificationTestSecretValue(value, previous[index])
+			} else {
+				merged[index] = value
+			}
+		}
+		return merged
+	}
+	return incoming
 }
 
 func validateNotificationTestConfig(channel string, config map[string]any) error {

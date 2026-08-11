@@ -269,13 +269,13 @@ export function WebhookTab({ value, onChange, testing, onTest }: PushChannelProp
 }
 
 export function WecomTab({ value, onChange, testing, onTest }: PushChannelProps<WecomForm>) {
-  const { t } = useI18n();
+  const { t, lang } = useI18n();
   const off = !value.enabled;
   const complete = hasAnyUrl(value.urls) && !!value.payloadTemplate.trim();
   return (
     <div className="pt-2">
       <ChannelHeader
-        title={t("启用企业微信推送")}
+        title={t("启用企业微信消息推送")}
         enabled={value.enabled}
         onToggle={(enabled) => onChange({ enabled })}
         actions={
@@ -294,13 +294,13 @@ export function WecomTab({ value, onChange, testing, onTest }: PushChannelProps<
           onChange={(urls) => onChange({ urls })}
           enabled={value.enabled}
           placeholder="https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=..."
-          emptyText={t("尚未配置任何企业微信 Webhook URL，点击右侧添加按钮。")}
+          emptyText={t("尚未配置任何企业微信消息推送 Webhook URL，点击右侧添加按钮。")}
         />
         <Field
           label={t("JSON 请求体模板")}
           hint={
             <>
-              {t("支持完整企业微信消息 JSON。变量必须作为 JSON 值使用，例如")} <code>{"{{message}}"}</code>。
+              {t("支持完整企业微信消息推送 JSON。变量必须作为 JSON 值使用，例如")} <code>{"{{message}}"}</code>{lang === "zh" ? "。" : "."}
               {t("可用变量：{{event}}、{{title}}、{{message}}、{{timestamp}}、{{content}}、{{number}}、{{device_id}}、{{device_name}}、{{device_label}}、{{time}}。")}
             </>
           }
