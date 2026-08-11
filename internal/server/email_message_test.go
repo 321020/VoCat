@@ -42,3 +42,34 @@ func TestWritePlainTextMailRejectsInjectedSubject(t *testing.T) {
 		t.Fatal("injected subject was accepted")
 	}
 }
+
+func TestWritePlainTextMailRejectsDirectlyConstructedInjectedAddresses(t *testing.T) {
+	tests := []struct {
+		name       string
+		from       *mail.Address
+		recipients []*mail.Address
+	}{
+		{
+			name:       "sender address",
+			from:       &mail.Address{Address: "alerts@example.com\r\nBcc: injected@example.com"},
+			recipients: []*mail.Address{{Address: "admin@example.com"}},
+		},
+		{
+			name:       "sender display name",
+			from:       &mail.Address{Name: "Alerts\r\nBcc: injected@example.com", Address: "alerts@example.com"},
+			recipients: []*mail.Address{{Address: "admin@example.com"}},
+		},
+		{
+			name:       "recipient address",
+			from:       &mail.Address{Address: "alerts@example.com"},
+			recipients: []*mail.Address{{Address: "admin@example.com\nCc: injected@example.com"}},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if err := writePlainTextMail(&bytes.Buffer{}, test.from, test.recipients, "subject", "body"); err == nil {
+				t.Fatal("injected address was accepted")
+			}
+		})
+	}
+}

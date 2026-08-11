@@ -799,14 +799,10 @@ func sendEmailNotificationTest(ctx context.Context, config map[string]any) error
 	// Addresses are parsed as RFC mailboxes, the subject rejects control
 	// characters, and the body is MIME-base64 encoded by writePlainTextMail.
 	// CodeQL's email-injection query has no sanitizer model for these steps.
+	// Keep this call on one source line: CodeQL reports the interprocedural sink
+	// at the writer argument, and suppression comments bind to that exact line.
 	// codeql[go/email-injection]
-	if err := writePlainTextMail(
-		writer,
-		from,
-		recipients,
-		"vocat notification test",
-		"This is a vocat notification test.",
-	); err != nil {
+	if err := writePlainTextMail(writer, from, recipients, "vocat notification test", "This is a vocat notification test."); err != nil {
 		_ = writer.Close()
 		return fmt.Errorf("write SMTP test message: %w", err)
 	}
@@ -817,14 +813,6 @@ func sendEmailNotificationTest(ctx context.Context, config map[string]any) error
 		return fmt.Errorf("finish SMTP session: %w", err)
 	}
 	return nil
-}
-
-func joinMailAddresses(values []*mail.Address) string {
-	result := make([]string, 0, len(values))
-	for _, value := range values {
-		result = append(result, formatMailAddress(value))
-	}
-	return strings.Join(result, ", ")
 }
 
 func parseMailAddress(value string) (*mail.Address, error) {

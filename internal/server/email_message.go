@@ -28,11 +28,23 @@ func writePlainTextMail(
 	if strings.ContainsAny(subject, "\r\n\x00") {
 		return errors.New("email subject contains a prohibited control character")
 	}
+	fromHeader, err := validatedMailHeaderAddress(from)
+	if err != nil {
+		return fmt.Errorf("invalid email sender: %w", err)
+	}
+	recipientHeaders := make([]string, 0, len(recipients))
+	for _, recipient := range recipients {
+		header, err := validatedMailHeaderAddress(recipient)
+		if err != nil {
+			return fmt.Errorf("invalid email recipient: %w", err)
+		}
+		recipientHeaders = append(recipientHeaders, header)
+	}
 	encodedBody := wrapMIMEBase64(base64.StdEncoding.EncodeToString([]byte(body)))
 	message := strings.Join([]string{
 		"Date: " + time.Now().UTC().Format(time.RFC1123Z),
-		"From: " + formatMailAddress(from),
-		"To: " + joinMailAddresses(recipients),
+		"From: " + fromHeader,
+		"To: " + strings.Join(recipientHeaders, ", "),
 		"Subject: " + mime.QEncoding.Encode("UTF-8", subject),
 		"MIME-Version: 1.0",
 		"Content-Type: text/plain; charset=UTF-8",
@@ -50,6 +62,25 @@ func writePlainTextMail(
 		return fmt.Errorf("write email message: %w", err)
 	}
 	return nil
+}
+
+// validatedMailHeaderAddress keeps writePlainTextMail safe even if a future
+// caller constructs mail.Address directly instead of using parseMailAddress.
+func validatedMailHeaderAddress(address *mail.Address) (string, error) {
+	if address == nil || address.Address == "" || strings.TrimSpace(address.Address) != address.Address ||
+		strings.ContainsAny(address.Address, "\r\n\x00") {
+		return "", errors.New("email address contains a prohibited control character")
+	}
+	parsed, err := mail.ParseAddress(address.Address)
+	if err != nil || parsed.Name != "" || parsed.Address != address.Address {
+		return "", errors.New("invalid email address")
+	}
+	for _, character := range address.Name {
+		if character < 0x20 || character == 0x7f {
+			return "", errors.New("email display name contains a prohibited control character")
+		}
+	}
+	return formatMailAddress(address), nil
 }
 
 func wrapMIMEBase64(value string) string {
