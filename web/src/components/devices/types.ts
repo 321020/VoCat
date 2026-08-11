@@ -44,6 +44,7 @@ export interface AddDeviceForm {
   atPort: string;
   controlDevice: string;
   deviceBackend: string;
+	 simPin: string;
 }
 
 export interface LoadError {

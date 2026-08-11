@@ -24,6 +24,7 @@ type Device struct {
 	USBPath            string
 	AudioDevice        string
 	ModemIMEI          string
+	SIMPIN             string
 	APN                string
 	ProxyPort          int
 	BaudRate           int

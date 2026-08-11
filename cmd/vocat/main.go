@@ -27,6 +27,7 @@ import (
 	"vocat/internal/extensions"
 	"vocat/internal/httpsmode"
 	"vocat/internal/loghub"
+	"vocat/internal/pcsc"
 	"vocat/internal/server"
 	"vocat/internal/store"
 	"vocat/internal/update"
@@ -184,7 +185,8 @@ func run(logger *slog.Logger, logs *loghub.Hub) error {
 		return err
 	}
 
-	deviceManager, err := device.NewManager(device.Options{})
+	cardReaders := pcsc.New()
+	deviceManager, err := device.NewManager(device.Options{CardReaders: cardReaders})
 	if err != nil {
 		return fmt.Errorf("create device manager: %w", err)
 	}
@@ -220,6 +222,7 @@ func run(logger *slog.Logger, logs *loghub.Hub) error {
 		logger,
 		database,
 		deviceManager,
+		cardReaders,
 	)
 	if err != nil {
 		return fmt.Errorf("configure VoWiFi runtime: %w", err)
@@ -362,6 +365,12 @@ func configureDeviceBackends(
 		if mapErr != nil {
 			continue
 		}
+		if config.DeviceType == store.DeviceTypeUSBSIMReader {
+			if err := manager.SetSIMPin(entry.ID, config.SIMPIN); err != nil {
+				logger.Warn("configure USB SIM reader", "device_id", config.ID, "error", err)
+			}
+			continue
+		}
 		if err := manager.SetBackend(entry.ID, config.DeviceBackend); err != nil {
 			logger.Warn("configure device backend", "device_id", config.ID, "backend", config.DeviceBackend, "error", err)
 		}
@@ -384,6 +393,9 @@ func restoreDefaultCellularRadios(
 	}
 	mapper := integration.ATMapper{Store: database, Devices: manager}
 	for _, config := range configs {
+		if config.DeviceType == store.DeviceTypeUSBSIMReader {
+			continue
+		}
 		if config.VoWiFiEnabled {
 			continue
 		}
@@ -431,6 +443,9 @@ func restoreConfiguredCellularData(
 	}
 	mapper := integration.ATMapper{Store: database, Devices: manager}
 	for _, config := range configs {
+		if config.DeviceType == store.DeviceTypeUSBSIMReader {
+			continue
+		}
 		if !config.NetworkEnabled || config.VoWiFiEnabled {
 			continue
 		}
@@ -482,6 +497,9 @@ func disableAllDeveloperCellularData(
 	}
 	mapper := integration.ATMapper{Store: database, Devices: manager}
 	for _, config := range configs {
+		if config.DeviceType == store.DeviceTypeUSBSIMReader {
+			continue
+		}
 		entry, err := mapper.Get(config.ID)
 		if err != nil {
 			continue
@@ -536,12 +554,13 @@ func configureVoWiFiRuntime(
 	logger *slog.Logger,
 	database *store.Store,
 	deviceManager *device.Manager,
+	cardReaders *pcsc.Service,
 ) (*vowifiruntime.Manager, error) {
 	mapper := integration.ATMapper{
 		Store:   database,
 		Devices: deviceManager,
 	}
-	adapter, err := vowifi.NewEC20Adapter(mapper, vowifi.EC20AdapterOptions{
+	ec20Adapter, err := vowifi.NewEC20Adapter(mapper, vowifi.EC20AdapterOptions{
 		// The test deployment is deliberately non-cellular. VoWiFi teardown
 		// may restore CFUN, but it must never reactivate a PDP context.
 		RestoreCellularData: false,
@@ -552,6 +571,16 @@ func configureVoWiFiRuntime(
 			deviceConfig, configErr := database.Device(context.Background(), deviceID)
 			return configErr == nil && deviceConfig.VoWiFiEnabled
 		},
+	})
+	if err != nil {
+		return nil, err
+	}
+	pcscAdapter, err := vowifi.NewPCSCAdapter(cardReaders, func(ctx context.Context, deviceID string) (pcsc.Selector, string, error) {
+		config, resolveErr := database.Device(ctx, strings.TrimSpace(deviceID))
+		if resolveErr != nil {
+			return pcsc.Selector{}, "", resolveErr
+		}
+		return pcsc.Selector{USBPath: config.USBPath, ReaderName: config.ControlDevice}, config.SIMPIN, nil
 	})
 	if err != nil {
 		return nil, err
@@ -567,6 +596,10 @@ func configureVoWiFiRuntime(
 			deviceConfig, err := database.Device(factoryContext, deviceID)
 			if err != nil {
 				return nil, fmt.Errorf("load device %q VoWiFi config: %w", deviceID, err)
+			}
+			adapter := vowifiDeviceAdapter(ec20Adapter)
+			if deviceConfig.DeviceType == store.DeviceTypeUSBSIMReader {
+				adapter = pcscAdapter
 			}
 			return newVoWiFiOrchestrator(deviceConfig, database, adapter)
 		},
@@ -601,10 +634,16 @@ func configureVoWiFiRuntime(
 	return manager, nil
 }
 
+type vowifiDeviceAdapter interface {
+	vowifi.SIMIdentityReader
+	vowifi.AKAProvider
+	vowifi.RadioController
+}
+
 func newVoWiFiOrchestrator(
 	deviceConfig store.Device,
 	database *store.Store,
-	adapter *vowifi.EC20Adapter,
+	adapter vowifiDeviceAdapter,
 ) (*vowifi.Orchestrator, error) {
 	apn := deviceConfig.APN
 	if apn == "" {
@@ -734,9 +773,18 @@ func provisionDiscoveredDevices(
 		candidate := discovered.Candidate
 		backend := "at"
 		control := candidate.ATPort.OpenPath()
+		deviceType := store.DeviceTypePCIeEC20EC25
+		esimTransport := backend
 		if candidate.QMIControl != "" {
 			backend = "qmi"
 			control = candidate.QMIControl
+			esimTransport = backend
+		}
+		if candidate.HardwareKind == pcsc.HardwareKind {
+			backend = "pcsc"
+			control = candidate.ReaderName
+			deviceType = store.DeviceTypeUSBSIMReader
+			esimTransport = "pcsc"
 		}
 		name := candidate.Product
 		if name == "" || strings.EqualFold(name, "Android") {
@@ -745,6 +793,7 @@ func provisionDiscoveredDevices(
 		if err := database.UpsertDevice(ctx, store.Device{
 			ID:             discovered.ID,
 			Name:           name,
+			DeviceType:     deviceType,
 			Interface:      candidate.NetworkInterface,
 			ControlDevice:  control,
 			ATPort:         candidate.ATPort.OpenPath(),
@@ -755,7 +804,7 @@ func provisionDiscoveredDevices(
 			StopBits:       1,
 			Parity:         "none",
 			DeviceBackend:  backend,
-			ESIMTransport:  backend,
+			ESIMTransport:  esimTransport,
 			NetworkEnabled: false,
 			SMSEnabled:     true,
 			VoWiFiEnabled:  true,
@@ -931,6 +980,7 @@ func reconcileCardPolicies(
 	manager *device.Manager,
 	vowifiManager *vowifiruntime.Manager,
 ) {
+	observedCards := make(map[string]string)
 	reconcile := func() {
 		policies, policyListErr := database.ListCardPolicies(ctx)
 		if policyListErr == nil {
@@ -953,12 +1003,26 @@ func reconcileCardPolicies(
 		for _, config := range configs {
 			entry, mapErr := mapper.Get(config.ID)
 			if mapErr != nil || entry.Snapshot == nil {
+				if config.DeviceType == store.DeviceTypeUSBSIMReader && observedCards[config.ID] != "missing" {
+					if state, stateErr := vowifiManager.State(config.ID); stateErr == nil && state.ICCID != "" {
+						_, _ = vowifiManager.RequestReconnect(config.ID)
+					}
+					observedCards[config.ID] = "missing"
+				}
 				continue
 			}
 			iccid := strings.TrimSpace(entry.Snapshot.ICCID)
 			if iccid == "" {
+				if config.DeviceType == store.DeviceTypeUSBSIMReader && observedCards[config.ID] != "missing" {
+					if state, stateErr := vowifiManager.State(config.ID); stateErr == nil && state.ICCID != "" {
+						_, _ = vowifiManager.RequestReconnect(config.ID)
+					}
+					observedCards[config.ID] = "missing"
+				}
 				continue
 			}
+			previousObserved := observedCards[config.ID]
+			observedCards[config.ID] = iccid
 			policy, policyErr := database.CardPolicy(ctx, iccid)
 			if policyErr != nil {
 				continue
@@ -1000,6 +1064,8 @@ func reconcileCardPolicies(
 				case stateErr != nil || !state.Enabled:
 					_, _ = vowifiManager.RequestEnabled(config.ID, true)
 				case state.ICCID != "" && !strings.EqualFold(strings.TrimSpace(state.ICCID), iccid):
+					_, _ = vowifiManager.RequestReconnect(config.ID)
+				case config.DeviceType == store.DeviceTypeUSBSIMReader && previousObserved == "missing":
 					_, _ = vowifiManager.RequestReconnect(config.ID)
 				}
 				continue

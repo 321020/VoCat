@@ -108,6 +108,15 @@ func TestNormalizeSMSDeviceFilter(t *testing.T) {
 	}
 }
 
+func TestSupportsModemSMSStorageRejectsUSBReader(t *testing.T) {
+	if supportsModemSMSStorage(store.Device{DeviceType: store.DeviceTypeUSBSIMReader}) {
+		t.Fatal("USB SIM reader must not be polled with modem SMS AT commands")
+	}
+	if !supportsModemSMSStorage(store.Device{DeviceType: store.DeviceTypePCIeEC20EC25}) {
+		t.Fatal("cellular modem should retain modem SMS storage synchronization")
+	}
+}
+
 func TestSMSSendOutcome(t *testing.T) {
 	tests := []struct {
 		name      string

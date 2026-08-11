@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"vocat/internal/modem"
+	"vocat/internal/pcsc"
 )
 
 type Options struct {
@@ -19,6 +20,7 @@ type Options struct {
 	LongTimeout    time.Duration
 	SMSTimeout     time.Duration
 	ScanTimeout    time.Duration
+	CardReaders    *pcsc.Service
 }
 
 type Manager struct {
@@ -34,6 +36,7 @@ type Manager struct {
 	longTimeout    time.Duration
 	smsTimeout     time.Duration
 	scanTimeout    time.Duration
+	cardReaders    *pcsc.Service
 	started        bool
 	devices        map[string]*managedDevice
 	ussdSessions   map[string]ussdSession
@@ -59,6 +62,7 @@ type managedDevice struct {
 	discovered        bool
 	preFlightMode     *int
 	resetClientOnLock bool
+	simPIN            string
 }
 
 func NewManager(options Options) (*Manager, error) {
@@ -82,6 +86,9 @@ func NewManager(options Options) (*Manager, error) {
 		// AT+COPS=? can take well over a minute while the modem sweeps every band.
 		options.ScanTimeout = 150 * time.Second
 	}
+	if options.CardReaders == nil {
+		options.CardReaders = pcsc.New()
+	}
 	return &Manager{
 		discoverer:     options.Discoverer,
 		opener:         options.Opener,
@@ -89,6 +96,7 @@ func NewManager(options Options) (*Manager, error) {
 		longTimeout:    options.LongTimeout,
 		smsTimeout:     options.SMSTimeout,
 		scanTimeout:    options.ScanTimeout,
+		cardReaders:    options.CardReaders,
 		devices:        make(map[string]*managedDevice),
 		ussdSessions:   make(map[string]ussdSession),
 		esimRecoveries: make(map[string]chan struct{}),
@@ -146,9 +154,23 @@ func (manager *Manager) Discover(ctx context.Context) ([]Device, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	candidates, err := manager.discoverer.Discover(ctx)
-	if err != nil {
-		return nil, err
+	candidates, modemErr := manager.discoverer.Discover(ctx)
+	readers, readerErr := manager.cardReaders.Readers(ctx)
+	if readerErr == nil {
+		for _, reader := range readers {
+			candidates = append(candidates, modem.Candidate{
+				ID: pcsc.DeviceID(reader), HardwareKind: pcsc.HardwareKind,
+				ReaderName: reader.Name, USBPath: reader.USBPath,
+				VendorID: reader.VendorID, ProductID: reader.ProductID,
+				Manufacturer: reader.Manufacturer, Product: reader.Product,
+			})
+		}
+	}
+	if modemErr != nil && readerErr != nil && !errors.Is(readerErr, pcsc.ErrUnsupported) && !errors.Is(readerErr, pcsc.ErrUnavailable) {
+		return nil, errors.Join(modemErr, readerErr)
+	}
+	if modemErr != nil && len(candidates) == 0 {
+		return nil, modemErr
 	}
 	seen := make(map[string]struct{}, len(candidates))
 
@@ -360,6 +382,9 @@ func (manager *Manager) Refresh(ctx context.Context, id string) (Snapshot, error
 		return Snapshot{}, err
 	}
 	candidate := manager.candidateFor(state)
+	if candidate.HardwareKind == pcsc.HardwareKind {
+		return manager.refreshCardReader(ctx, id, state, candidate)
+	}
 	backend := manager.backendFor(state)
 	client, err := manager.clientLocked(ctx, state, candidate)
 	if err != nil {
@@ -375,11 +400,59 @@ func (manager *Manager) Refresh(ctx context.Context, id string) (Snapshot, error
 	return snapshot, err
 }
 
+func (manager *Manager) refreshCardReader(ctx context.Context, id string, state *managedDevice, candidate modem.Candidate) (Snapshot, error) {
+	result := Snapshot{
+		DeviceID: id, Port: candidate.ReaderName, Responsive: true,
+		Manufacturer: candidate.Manufacturer, Model: candidate.Product,
+		AccessTech: "Wi-Fi", RegistrationSource: "pcsc", OperatingMode: 4,
+		ModeKnown: true, FlightMode: true, RadioOff: true, UpdatedAt: time.Now().UTC(),
+	}
+	previousICCID := state.lastICCID
+	card, err := manager.cardReaders.Snapshot(ctx, pcsc.Selector{USBPath: candidate.USBPath, ReaderName: candidate.ReaderName}, state.simPIN)
+	if err != nil {
+		switch {
+		case errors.Is(err, pcsc.ErrNoCard):
+			result.SIMStatus = ""
+			err = nil
+		case errors.Is(err, pcsc.ErrPINRequired), errors.Is(err, pcsc.ErrPINTriesLow), errors.Is(err, pcsc.ErrPINRejected):
+			result.SIMStatus = "SIM PIN"
+			result.Warnings = []string{err.Error()}
+			err = nil
+		default:
+			manager.setResult(id, state, &result, err)
+			return result, err
+		}
+	} else {
+		result.SIMStatus = "READY"
+		result.SIMReady = true
+		result.ICCID = card.Identity.ICCID
+		result.IMSI = card.Identity.IMSI
+		result.SPN = card.Identity.SPN
+		result.SIMChanged = previousICCID != "" && !strings.EqualFold(previousICCID, result.ICCID)
+		state.lastICCID = result.ICCID
+	}
+	manager.setResult(id, state, &result, err)
+	return result, err
+}
+
+// SetSIMPin updates the in-memory PIN used for protected USIM files and AKA.
+// It is deliberately never retained in runtime snapshots or logs.
+func (manager *Manager) SetSIMPin(id, pin string) error {
+	manager.mu.Lock()
+	defer manager.mu.Unlock()
+	state := manager.devices[id]
+	if state == nil || !state.discovered {
+		return ErrNotFound
+	}
+	state.simPIN = strings.TrimSpace(pin)
+	return nil
+}
+
 // SetBackend selects which control plane supplies registration and data state.
 // AT remains available in either mode for UICC, RF, SMS, voice and diagnostics.
 func (manager *Manager) SetBackend(id, backend string) error {
 	backend = strings.ToLower(strings.TrimSpace(backend))
-	if backend != "at" && backend != "qmi" {
+	if backend != "at" && backend != "qmi" && backend != "pcsc" {
 		return fmt.Errorf("unsupported device backend %q", backend)
 	}
 	manager.mu.Lock()

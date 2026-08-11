@@ -260,6 +260,10 @@ func migrationStatements(version int) []string {
 			`ALTER TABLE card_policies
 				ADD COLUMN custom_phone_number TEXT NOT NULL DEFAULT ''`,
 		}
+	case 16:
+		return []string{
+			`ALTER TABLE devices ADD COLUMN sim_pin TEXT NOT NULL DEFAULT ''`,
+		}
 	default:
 		return nil
 	}

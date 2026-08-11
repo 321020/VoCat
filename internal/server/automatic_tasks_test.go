@@ -3,6 +3,8 @@ package server
 import (
 	"testing"
 	"time"
+
+	"vocat/internal/store"
 )
 
 func TestNextAutomaticRunUsesIntervalAndLocalClock(t *testing.T) {
@@ -15,6 +17,25 @@ func TestNextAutomaticRunUsesIntervalAndLocalClock(t *testing.T) {
 	want := time.Date(2026, 8, 13, 9, 30, 0, 0, location)
 	if !next.Equal(want) {
 		t.Fatalf("next run = %v, want %v", next, want)
+	}
+}
+
+func TestUSBSIMReaderAutomaticTasksRequireVoWiFi(t *testing.T) {
+	reader := store.Device{DeviceType: store.DeviceTypeUSBSIMReader}
+	for _, test := range []struct {
+		taskType    string
+		environment string
+		wantError   bool
+	}{
+		{taskType: "sms", environment: "vowifi"},
+		{taskType: "call", environment: "vowifi"},
+		{taskType: "sms", environment: "cellular", wantError: true},
+		{taskType: "public_ip", environment: "cellular", wantError: true},
+	} {
+		err := validateAutomaticTaskDeviceCapabilities(reader, test.taskType, test.environment)
+		if (err != nil) != test.wantError {
+			t.Errorf("type=%s environment=%s error=%v", test.taskType, test.environment, err)
+		}
 	}
 }
 

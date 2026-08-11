@@ -1,6 +1,6 @@
 export type ApiStatus = "ok" | "error";
 
-export type DeviceType = "wifi_410" | "dji_4g" | "pcie_ec20_ec25";
+export type DeviceType = "wifi_410" | "dji_4g" | "pcie_ec20_ec25" | "usb_sim_reader";
 
 export interface Session {
   authenticated: boolean;
@@ -167,6 +167,8 @@ export interface DeviceStatus {
 }
 
 export interface DiscoveredDevice {
+	 hardwareKind?: string;
+	 readerName?: string;
   discoveryKey: string;
   controlPath: string;
   netInterface: string;
@@ -196,14 +198,15 @@ export interface DeviceConfig {
   usbPath: string;
   audioDevice?: string;
   modemImei?: string;
+	 simPin?: string;
   apn: string;
   proxyPort: number;
   baudRate: number;
   dataBits: number;
   stopBits: number;
   parity: string;
-  deviceBackend: "at" | "qmi";
-  esimTransport: "at" | "qmi";
+  deviceBackend: "at" | "qmi" | "pcsc";
+  esimTransport: "at" | "qmi" | "pcsc" | "none";
   qmiUseProxy: boolean;
   qmiProxyPath?: string;
   qmiProxyExecutable?: string;

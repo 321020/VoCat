@@ -34,13 +34,14 @@ export function DeviceConfigTab({ editConfig, deviceStatus, saving, deleting, on
   const usbPath = deviceStatus?.usbPath || editConfig?.usbPath;
   const isQmi = isQmiControl(controlDevice);
   const isMbim = String(editConfig?.deviceBackend || "").toLowerCase() === "mbim";
+	const isReader = editConfig?.deviceType === "usb_sim_reader";
 
   useEffect(() => {
     if (isQmi && editConfig && editConfig.deviceBackend !== "qmi") onEditConfig({ ...editConfig, deviceBackend: "qmi" });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isQmi]);
 
-  const backendOptions = [
+  const backendOptions = isReader ? [{ value: "pcsc", label: "PC/SC" }] : [
     ...(isMbim
       ? []
       : [
@@ -106,6 +107,9 @@ export function DeviceConfigTab({ editConfig, deviceStatus, saving, deleting, on
           <Field label={t("控制设备")}>
             <Input value={controlDevice || ""} disabled placeholder={t("由系统自动探测")} />
           </Field>
+		  {isReader ? <Field label="SIM PIN">
+			<Input type="password" value={editConfig.simPin || ""} onChange={(e) => onEditConfig({ ...editConfig, simPin: e.target.value })} maxLength={8} inputMode="numeric" placeholder={t("留空表示不修改；仅在 SIM 启用 PIN 时填写")} />
+		  </Field> : null}
           <div className="ui-panel-muted space-y-2 p-3">
             <div className="flex items-center justify-between">
               <div>
@@ -123,7 +127,7 @@ export function DeviceConfigTab({ editConfig, deviceStatus, saving, deleting, on
                 onChange={(v) => onEditConfig({ ...editConfig, deviceBackend: v as DeviceConfig["deviceBackend"] })}
                 className="w-[120px]"
                 placeholder="AT"
-                disabled={isQmi || isMbim}
+				disabled={isQmi || isMbim || isReader}
                 options={backendOptions}
               />
             </div>

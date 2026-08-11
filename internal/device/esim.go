@@ -10,6 +10,7 @@ import (
 
 	"vocat/internal/i18n"
 	"vocat/internal/modem"
+	"vocat/internal/pcsc"
 )
 
 // eUICC / eSIM (LPA, SGP.22) access over the modem's AT+CSIM APDU passthrough.
@@ -190,9 +191,11 @@ func parseCSIM(response modem.Response) ([]byte, int, error) {
 
 // euiccChannel is an open logical channel to the eUICC's ISD-R.
 type euiccChannel struct {
-	manager *Manager
-	id      string
-	channel int
+	manager      *Manager
+	id           string
+	channel      int
+	pcscSession  *pcsc.Session
+	resetOnClose bool
 }
 
 // csimAPDUTimeout bounds a single AT+CSIM exchange. Loading a BoundProfilePackage
@@ -264,6 +267,14 @@ func (manager *Manager) openEuiccOnce(ctx context.Context, id string) (*euiccCha
 }
 
 func (manager *Manager) openEuiccOnceAID(ctx context.Context, id, aidHex string) (*euiccChannel, error) {
+	state, lookupErr := manager.lookup(id)
+	if lookupErr != nil {
+		return nil, lookupErr
+	}
+	candidate := manager.candidateFor(state)
+	if candidate.HardwareKind == pcsc.HardwareKind {
+		return manager.openPCSCEuiccOnceAID(ctx, id, candidate, aidHex)
+	}
 	// MANAGE CHANNEL (open): 00 70 00 00 01 -> "<channel> 90 00". This EC20
 	// firmware requires the explicit one-byte expected length: Le=00 opens a
 	// channel but then rejects SELECT ISD-R at the AT+CSIM layer.
@@ -296,6 +307,37 @@ func (manager *Manager) openEuiccOnceAID(ctx context.Context, id, aidHex string)
 		_, sw, _ = channel.transmit(ctx, []byte{0x80, 0xC0, 0x00, 0x00, byte(sw & 0xFF)}, 0x80)
 	}
 	if sw != 0x9000 {
+		channel.close(context.Background())
+		return nil, errNoEUICC
+	}
+	return channel, nil
+}
+
+func (manager *Manager) openPCSCEuiccOnceAID(ctx context.Context, id string, candidate modem.Candidate, aidHex string) (*euiccChannel, error) {
+	session, err := manager.cardReaders.OpenSession(ctx, pcsc.Selector{
+		USBPath: candidate.USBPath, ReaderName: candidate.ReaderName,
+	})
+	if err != nil {
+		return nil, err
+	}
+	payload, sw, err := session.Transmit(ctx, []byte{0x00, 0x70, 0x00, 0x00, 0x01})
+	if err != nil || sw != 0x9000 || len(payload) != 1 {
+		session.Close()
+		if err != nil {
+			return nil, fmt.Errorf("esim: PC/SC MANAGE CHANNEL: %w", err)
+		}
+		return nil, errNoLogicalChannel
+	}
+	channel := &euiccChannel{manager: manager, id: id, channel: int(payload[0]), pcscSession: session}
+	aidHex = strings.ToUpper(strings.TrimSpace(aidHex))
+	aid, err := hex.DecodeString(aidHex)
+	if err != nil || len(aid) == 0 || len(aid) > 255 {
+		channel.close(context.Background())
+		return nil, fmt.Errorf("esim: invalid ISD-R AID %q", aidHex)
+	}
+	selectAID := append([]byte{byte(channel.channel), 0xA4, 0x04, 0x00, byte(len(aid))}, aid...)
+	_, selectSW, err := channel.transmit(ctx, selectAID, 0x00)
+	if err != nil || selectSW != 0x9000 {
 		channel.close(context.Background())
 		return nil, errNoEUICC
 	}
@@ -352,7 +394,23 @@ func isTransientEuiccCME(err error) bool {
 // close releases the logical channel (MANAGE CHANNEL close).
 func (channel *euiccChannel) close(ctx context.Context) {
 	closeAPDU := []byte{0x00, 0x70, 0x80, byte(channel.channel), 0x00}
-	_, _, _ = channel.manager.csim(ctx, channel.id, closeAPDU)
+	_, _, _ = channel.exchange(ctx, closeAPDU)
+	if channel.pcscSession != nil {
+		if channel.resetOnClose {
+			_ = channel.pcscSession.CloseWithReset()
+		} else {
+			_ = channel.pcscSession.Close()
+		}
+		channel.pcscSession = nil
+	}
+}
+
+func (channel *euiccChannel) exchange(ctx context.Context, apdu []byte) ([]byte, int, error) {
+	if channel.pcscSession != nil {
+		payload, sw, err := channel.pcscSession.Transmit(ctx, apdu)
+		return payload, int(sw), err
+	}
+	return channel.manager.csim(ctx, channel.id, apdu)
 }
 
 // transmit sends one APDU on the logical channel (CLA high nibble from insClass,
@@ -360,7 +418,7 @@ func (channel *euiccChannel) close(ctx context.Context) {
 // and returns the assembled payload.
 func (channel *euiccChannel) transmit(ctx context.Context, apdu []byte, insClass byte) ([]byte, int, error) {
 	apdu[0] = (apdu[0] & 0xF0) | byte(channel.channel)
-	payload, sw, err := channel.manager.csim(ctx, channel.id, apdu)
+	payload, sw, err := channel.exchange(ctx, apdu)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -369,7 +427,7 @@ func (channel *euiccChannel) transmit(ctx context.Context, apdu []byte, insClass
 	for sw>>8 == 0x61 && guard < 24 {
 		guard++
 		getResponse := []byte{0x80 | byte(channel.channel), 0xC0, 0x00, 0x00, byte(sw & 0xFF)}
-		frag, nextSW, err := channel.manager.csim(ctx, channel.id, getResponse)
+		frag, nextSW, err := channel.exchange(ctx, getResponse)
 		if err != nil {
 			return nil, 0, err
 		}
@@ -610,6 +668,7 @@ func (manager *Manager) ESIMSwitchProfile(ctx context.Context, id string, iccid 
 	// Release the logical channel before any reset: openEuicc's csim holds
 	// opMu only for the duration of each APDU, so by here the lock is free.
 	closeContext, cancelClose := context.WithTimeout(context.Background(), csimAPDUTimeout)
+	channel.resetOnClose = channel.pcscSession != nil
 	channel.close(closeContext)
 	cancelClose()
 	if err != nil {
@@ -780,9 +839,11 @@ func (manager *Manager) renameCachedProfile(id, iccid, nickname string) {
 // initiating HTTP request. EC20 commonly drops the AT port while processing
 // CFUN=1,1, so the reset error is intentionally followed by discovery retries.
 func (manager *Manager) recoverAfterProfileSwitch(id string) {
-	resetContext, cancelReset := context.WithTimeout(context.Background(), manager.longTimeout)
-	_ = manager.rebootForProfileSwitch(resetContext, id)
-	cancelReset()
+	if !manager.isPCSCDevice(id) {
+		resetContext, cancelReset := context.WithTimeout(context.Background(), manager.longTimeout)
+		_ = manager.rebootForProfileSwitch(resetContext, id)
+		cancelReset()
+	}
 	manager.refreshAfterProfileSwitch(id)
 }
 
@@ -795,6 +856,20 @@ func (manager *Manager) recoverAfterProfileSwitch(id string) {
 // the next attempt. All errors are swallowed: this is best-effort self-healing
 // and setResult already records the last failure for the UI.
 func (manager *Manager) refreshAfterProfileSwitch(id string) {
+	if manager.isPCSCDevice(id) {
+		time.Sleep(750 * time.Millisecond)
+		for attempt := 0; attempt < 10; attempt++ {
+			ctx, cancel := context.WithTimeout(context.Background(), manager.commandTimeout*4)
+			_, _ = manager.Discover(ctx)
+			_, err := manager.Refresh(ctx, id)
+			cancel()
+			if err == nil {
+				return
+			}
+			time.Sleep(time.Second)
+		}
+		return
+	}
 	const (
 		settle   = 8 * time.Second
 		interval = 4 * time.Second
@@ -817,6 +892,14 @@ func (manager *Manager) refreshAfterProfileSwitch(id string) {
 		}
 		time.Sleep(interval)
 	}
+}
+
+func (manager *Manager) isPCSCDevice(id string) bool {
+	state, err := manager.lookup(id)
+	if err != nil {
+		return false
+	}
+	return manager.candidateFor(state).HardwareKind == pcsc.HardwareKind
 }
 
 // enableProfileResult extracts the EnableProfile result code (tag 80) from the
@@ -888,25 +971,37 @@ func (manager *Manager) verifySwitchedICCID(ctx context.Context, id, expected st
 	var lastICCID string
 	var lastErr error
 	for attempt := 0; attempt < attempts; attempt++ {
-		for _, command := range []string{"AT+CCID", "AT+QCCID"} {
-			commandContext, cancel := context.WithTimeout(ctx, manager.commandTimeout)
-			response, err := manager.ExecuteAT(commandContext, id, command)
-			cancel()
-			if err != nil {
-				lastErr = err
-				continue
+		if manager.isPCSCDevice(id) {
+			snapshot, err := manager.Refresh(ctx, id)
+			if err == nil {
+				lastICCID = strings.TrimSpace(snapshot.ICCID)
+				if lastICCID == expected {
+					return nil
+				}
+				err = fmt.Errorf("reader still reports ICCID %s", lastICCID)
 			}
-			live := parseICCIDIdentifier(response, []string{"+CCID:", "+QCCID:"}, 18, 22)
-			if live == "" {
-				lastErr = errors.New("modem response contained no valid ICCID")
-				continue
+			lastErr = err
+		} else {
+			for _, command := range []string{"AT+CCID", "AT+QCCID"} {
+				commandContext, cancel := context.WithTimeout(ctx, manager.commandTimeout)
+				response, err := manager.ExecuteAT(commandContext, id, command)
+				cancel()
+				if err != nil {
+					lastErr = err
+					continue
+				}
+				live := parseICCIDIdentifier(response, []string{"+CCID:", "+QCCID:"}, 18, 22)
+				if live == "" {
+					lastErr = errors.New("modem response contained no valid ICCID")
+					continue
+				}
+				lastICCID = live
+				if live == expected {
+					return nil
+				}
+				lastErr = fmt.Errorf("modem still reports ICCID %s", live)
+				break
 			}
-			lastICCID = live
-			if live == expected {
-				return nil
-			}
-			lastErr = fmt.Errorf("modem still reports ICCID %s", live)
-			break
 		}
 		if attempt+1 < attempts {
 			select {

@@ -231,6 +231,9 @@ func (s *Server) ensureAutomaticTaskProfile(ctx context.Context, task store.Auto
 	if err != nil {
 		return store.Device{}, device.Device{}, "", fmt.Errorf("read device: %w", err)
 	}
+	if err := validateAutomaticTaskDeviceCapabilities(config, task.TaskType, task.Environment); err != nil {
+		return store.Device{}, device.Device{}, "", err
+	}
 	entry, physicalID, present := s.physicalForConfig(config)
 	if !present || entry.Snapshot == nil {
 		return store.Device{}, device.Device{}, "", errors.New("configured device is offline")
@@ -511,6 +514,25 @@ func (s *Server) restoreAutomaticTaskEnvironment(physicalID string, snapshot aut
 	if err := s.store.UpsertDevice(cleanupContext, config); err != nil {
 		restoreErrors = append(restoreErrors, fmt.Errorf("persist device policy: %w", err))
 	}
+	if config.DeviceType == store.DeviceTypeUSBSIMReader {
+		if s.vowifi == nil {
+			return errors.Join(append(restoreErrors, errors.New("VoWiFi runtime is unavailable"))...)
+		}
+		state, stateErr := s.vowifi.State(config.ID)
+		if policy.VoWiFiEnabled {
+			if stateErr == nil && state.Enabled {
+				_, stateErr = s.vowifi.RequestReconnect(config.ID)
+			} else {
+				_, stateErr = s.vowifi.RequestEnabled(config.ID, true)
+			}
+		} else if stateErr == nil && (state.Enabled || state.Active) {
+			_, stateErr = s.vowifi.RequestEnabled(config.ID, false)
+		}
+		if stateErr != nil {
+			restoreErrors = append(restoreErrors, fmt.Errorf("restore reader VoWiFi: %w", stateErr))
+		}
+		return errors.Join(restoreErrors...)
+	}
 
 	if policy.VoWiFiEnabled {
 		if _, err := s.devices.SetNetwork(cleanupContext, physicalID, s.cardNetworkRequest(cleanupContext, physicalID, config, policy, false)); err != nil {
@@ -710,6 +732,15 @@ func (s *Server) handleAutomaticTaskRunNow(w http.ResponseWriter, r *http.Reques
 		s.writeStoreError(w, err)
 		return
 	}
+	config, err := s.store.Device(r.Context(), task.DeviceID)
+	if err != nil {
+		s.writeStoreError(w, err)
+		return
+	}
+	if err := validateAutomaticTaskDeviceCapabilities(config, task.TaskType, task.Environment); err != nil {
+		writeError(w, http.StatusConflict, "wifi_calling_only_device", err.Error())
+		return
+	}
 	run, err := s.store.QueueAutomaticTaskNow(r.Context(), task)
 	if err != nil {
 		s.writeStoreError(w, err)
@@ -745,7 +776,8 @@ func (s *Server) decodeAutomaticTask(r *http.Request, id int64) (store.Automatic
 	if request.Name == "" || request.DeviceID == "" || request.ProfileICCID == "" {
 		return store.AutomaticTask{}, errors.New("name, device, and eSIM profile are required")
 	}
-	if _, err := s.store.Device(r.Context(), request.DeviceID); err != nil {
+	selectedDevice, err := s.store.Device(r.Context(), request.DeviceID)
+	if err != nil {
 		return store.AutomaticTask{}, errors.New("selected device does not exist")
 	}
 	if request.Environment != "vowifi" && request.Environment != "cellular" {
@@ -756,6 +788,9 @@ func (s *Server) decodeAutomaticTask(r *http.Request, id int64) (store.Automatic
 	}
 	if request.TaskType == "public_ip" && request.Environment != "cellular" {
 		return store.AutomaticTask{}, errors.New("public IP tasks must use cellular direct mode")
+	}
+	if err := validateAutomaticTaskDeviceCapabilities(selectedDevice, request.TaskType, request.Environment); err != nil {
+		return store.AutomaticTask{}, err
 	}
 	if request.IntervalDays < 1 || request.IntervalDays > 365 || request.RetryCount < 0 || request.RetryCount > 10 {
 		return store.AutomaticTask{}, errors.New("interval_days must be 1-365 and retry_count must be 0-10")
@@ -794,6 +829,19 @@ func (s *Server) decodeAutomaticTask(r *http.Request, id int64) (store.Automatic
 		}
 	}
 	return task, nil
+}
+
+func validateAutomaticTaskDeviceCapabilities(config store.Device, taskType, environment string) error {
+	if config.DeviceType != store.DeviceTypeUSBSIMReader {
+		return nil
+	}
+	if environment != "vowifi" {
+		return errors.New("USB SIM reader tasks must use the VoWiFi environment")
+	}
+	if taskType != "sms" && taskType != "call" {
+		return errors.New("USB SIM readers support only VoWiFi SMS and call tasks")
+	}
+	return nil
 }
 
 func nextAutomaticRun(date, clock string, intervalDays int, now time.Time) (time.Time, error) {

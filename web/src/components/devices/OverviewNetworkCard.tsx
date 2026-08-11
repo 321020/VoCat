@@ -26,17 +26,20 @@ export function OverviewNetworkCard({ device, onOpenOperatorSelection }: { devic
   const modem = device.modem;
   const online = isDeviceOnline(device);
 	const cellularRegistered = isRegistered(device);
+	const simMissing = !!modem?.imei && modem?.simInserted === false;
 	// A persisted runtime may briefly describe the old session while disable is
 	// being cleaned up. Desired policy is authoritative for the overview badge.
 	const vowifiRegistered = !!device.vowifiEnabled && !!(device.vowifiActive || device.vowifiRuntime?.smsReady);
-	const registered = cellularRegistered || vowifiRegistered;
+	const registered = !simMissing && (cellularRegistered || vowifiRegistered);
 	const radioOffForVowifi = vowifiRegistered && (modem?.operatingMode === 0 || modem?.operatingMode === 4 || device.flightMode);
 	const tone = isRecoveringPhase(device.lifecyclePhase) ? "warning" : online ? (registered ? "success" : "warning") : "danger";
 
   let statusText: string;
   const phaseLabel = lifecycleLabel(device.lifecyclePhase);
   if (phaseLabel && device.lifecyclePhase !== "online" && device.lifecyclePhase !== "offline") statusText = phaseLabel;
-  else if (online) {
+	else if (online) {
+	  if (simMissing) statusText = t("SIM卡未插入");
+	  else
     statusText = registered
       ? ""
       : device.registrationStateLabel === "searching"
@@ -49,7 +52,9 @@ export function OverviewNetworkCard({ device, onOpenOperatorSelection }: { devic
   const level = signalLevel(modem?.signalDbm);
   const sigTone = signalTone(modem?.signalDbm);
 	const netMode = [modem?.networkDuplex, modem?.networkMode].filter(Boolean).join(" ");
-	const cellularRegistrationText = modem?.regStatus === 5
+	const cellularRegistrationText = simMissing
+	  ? t("SIM卡未插入")
+	  : modem?.regStatus === 5
 	  ? t("已驻网（漫游）")
 	  : modem?.regStatus === 1
 		? t("已驻网")

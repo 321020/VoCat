@@ -6,7 +6,44 @@ import (
 	"testing"
 
 	"vocat/internal/modem"
+	"vocat/internal/pcsc"
 )
+
+type testPCSCBackend struct{ readers []pcsc.Reader }
+
+func (backend testPCSCBackend) Readers(context.Context) ([]pcsc.Reader, error) {
+	return append([]pcsc.Reader(nil), backend.readers...), nil
+}
+func (testPCSCBackend) Open(context.Context, pcsc.Selector) (pcsc.Card, error) {
+	return nil, pcsc.ErrNoCard
+}
+
+func TestManagerDiscoversWiFiCallingOnlyReaderWithoutATPort(t *testing.T) {
+	manager, err := NewManager(Options{
+		Discoverer: staticDiscoverer{}, Opener: &staticOpener{},
+		CardReaders: pcsc.NewWithBackend(testPCSCBackend{readers: []pcsc.Reader{{
+			Name: "Alcor Link AK9563 00 00", USBPath: "1-3", Product: "AK9563",
+		}}}),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = manager.Stop(context.Background()) })
+	items := manager.List()
+	if len(items) != 1 || items[0].Candidate.HardwareKind != pcsc.HardwareKind || items[0].Candidate.HasATPort() {
+		t.Fatalf("discovered readers = %#v", items)
+	}
+	snapshot, err := manager.Refresh(context.Background(), items[0].ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !snapshot.Responsive || snapshot.SIMReady || snapshot.SIMStatus != "" || !snapshot.FlightMode {
+		t.Fatalf("reader snapshot = %#v", snapshot)
+	}
+}
 
 func TestManagerRefreshBuildsEC20Snapshot(t *testing.T) {
 	client := &transcriptClient{steps: []clientStep{

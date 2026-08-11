@@ -66,6 +66,7 @@ type deviceConfigPayload struct {
 	USBPath            string `json:"usb_path"`
 	AudioDevice        string `json:"audio_device"`
 	ModemIMEI          string `json:"modem_imei"`
+	SIMPIN             string `json:"sim_pin"`
 	APN                string `json:"apn"`
 	ProxyPort          int    `json:"proxy_port"`
 	BaudRate           int    `json:"baud_rate"`
@@ -97,6 +98,7 @@ func (payload deviceConfigPayload) toStoreDevice() store.Device {
 		USBPath:            strings.TrimSpace(payload.USBPath),
 		AudioDevice:        strings.TrimSpace(payload.AudioDevice),
 		ModemIMEI:          strings.TrimSpace(payload.ModemIMEI),
+		SIMPIN:             strings.TrimSpace(payload.SIMPIN),
 		APN:                strings.TrimSpace(payload.APN),
 		ProxyPort:          payload.ProxyPort,
 		BaudRate:           payload.BaudRate,
@@ -246,6 +248,12 @@ func (s *Server) handleDevices(w http.ResponseWriter, r *http.Request) bool {
 			config.NetworkEnabled = false
 		}
 		fillConfigFromPhysical(&config, *selected)
+		if pinSetter, ok := s.devices.(interface{ SetSIMPin(string, string) error }); ok {
+			if err := pinSetter.SetSIMPin(selected.ID, config.SIMPIN); err != nil {
+				s.writeDeviceError(w, err)
+				return true
+			}
+		}
 		if selector, ok := s.devices.(interface{ SetBackend(string, string) error }); ok {
 			if err := selector.SetBackend(selected.ID, config.DeviceBackend); err != nil {
 				s.writeDeviceError(w, err)
@@ -363,6 +371,8 @@ func (s *Server) handleDiscoveredDevices(w http.ResponseWriter, r *http.Request)
 			}
 		}
 		result = append(result, map[string]any{
+			"hardware_kind":   candidate.HardwareKind,
+			"reader_name":     candidate.ReaderName,
 			"discovery_key":   entry.ID,
 			"control_path":    controlPath,
 			"net_interface":   candidate.NetworkInterface,
@@ -374,10 +384,10 @@ func (s *Server) handleDiscoveredDevices(w http.ResponseWriter, r *http.Request)
 			"at_port":         candidate.ATPort.OpenPath(),
 			"imei":            snapshotString(entry.Snapshot, func(snapshot *device.Snapshot) string { return snapshot.IMEI }),
 			"mode":            backendMode(candidate),
-			"network_capable": candidate.NetworkInterface != "" || candidate.QMIControl != "",
+			"network_capable": candidate.HardwareKind != "pcsc" && (candidate.NetworkInterface != "" || candidate.QMIControl != ""),
 			"configured":      configuredID != "",
 			"configured_id":   configuredID,
-			"degraded":        !candidate.HasATPort(),
+			"degraded":        candidate.HardwareKind != "pcsc" && !candidate.HasATPort(),
 		})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"data": map[string]any{"devices": result}})
@@ -459,7 +469,16 @@ func (s *Server) handleDevicePath(
 			if next.Name == id && strings.TrimSpace(payload.Name) == "" {
 				next.Name = config.Name
 			}
+			if next.SIMPIN == "" || next.SIMPIN == store.SecretMask {
+				next.SIMPIN = config.SIMPIN
+			}
 			if _, physicalID, present := s.physicalForConfig(next); present {
+				if pinSetter, ok := s.devices.(interface{ SetSIMPin(string, string) error }); ok {
+					if err := pinSetter.SetSIMPin(physicalID, next.SIMPIN); err != nil {
+						s.writeDeviceError(w, err)
+						return true
+					}
+				}
 				if selector, ok := s.devices.(interface{ SetBackend(string, string) error }); ok {
 					if err := selector.SetBackend(physicalID, next.DeviceBackend); err != nil {
 						s.writeDeviceError(w, err)
@@ -482,6 +501,16 @@ func (s *Server) handleDevicePath(
 	}
 
 	entry, physicalID, physicalPresent := s.physicalForConfig(config)
+	if config.DeviceType == store.DeviceTypeUSBSIMReader && len(tail) > 0 {
+		operation := strings.Join(tail, "/")
+		unsupported := tail[0] == "network" || tail[0] == "operator_selection" ||
+			operation == "actions/at" || operation == "actions/ussd" || operation == "actions/ussd/continue" ||
+			operation == "actions/ussd/cancel" || operation == "actions/reboot" || operation == "usbnet-mode"
+		if unsupported {
+			writeError(w, http.StatusConflict, "wifi_calling_only_device", "USB SIM readers support WiFi Calling, IMS SMS and calls only")
+			return true
+		}
+	}
 	if len(tail) > 0 && tail[0] == "esim" {
 		return s.handleESIM(w, r, tail[1:], physicalID, physicalPresent, config.ID)
 	}
@@ -1803,6 +1832,10 @@ func deviceStatus(entry device.Device) map[string]any {
 }
 
 func storedDeviceConfig(config store.Device) map[string]any {
+	simPIN := ""
+	if strings.TrimSpace(config.SIMPIN) != "" {
+		simPIN = store.SecretMask
+	}
 	return map[string]any{
 		"id":                   config.ID,
 		"name":                 config.Name,
@@ -1813,6 +1846,7 @@ func storedDeviceConfig(config store.Device) map[string]any {
 		"usb_path":             config.USBPath,
 		"audio_device":         config.AudioDevice,
 		"modem_imei":           config.ModemIMEI,
+		"sim_pin":              simPIN,
 		"apn":                  config.APN,
 		"proxy_port":           config.ProxyPort,
 		"baud_rate":            config.BaudRate,
@@ -1832,6 +1866,17 @@ func storedDeviceConfig(config store.Device) map[string]any {
 
 func fillConfigFromPhysical(config *store.Device, entry device.Device) {
 	candidate := entry.Candidate
+	if candidate.HardwareKind == "pcsc" {
+		config.DeviceType = store.DeviceTypeUSBSIMReader
+		config.ControlDevice = candidate.ReaderName
+		config.ATPort = ""
+		config.Interface = ""
+		config.DeviceBackend = "pcsc"
+		config.ESIMTransport = "pcsc"
+		config.NetworkEnabled = false
+		config.SMSEnabled = true
+		config.VoWiFiEnabled = true
+	}
 	if config.Interface == "" {
 		config.Interface = candidate.NetworkInterface
 	}
@@ -1914,10 +1959,26 @@ func modemSummary(snapshot *device.Snapshot, phone string, phoneSource string) m
 		"reg_status":            snapshot.RegistrationStatus,
 		"reg_status_text":       registrationText(snapshot),
 		"ps_attached":           snapshot.PSAttached,
-		"sim_inserted":          snapshot.SIMStatus != "",
+		"sim_inserted":          snapshotHasSIM(snapshot),
 		"operating_mode":        snapshot.OperatingMode,
 		"phone_number":          phone,
 		"phone_number_source":   phoneSource,
+	}
+}
+
+func snapshotHasSIM(snapshot *device.Snapshot) bool {
+	if snapshot == nil {
+		return false
+	}
+	if snapshot.SIMReady || strings.TrimSpace(snapshot.ICCID) != "" || strings.TrimSpace(snapshot.IMSI) != "" {
+		return true
+	}
+	switch strings.ToLower(strings.TrimSpace(snapshot.SIMStatus)) {
+	case "", "unknown", "not_inserted", "not inserted", "absent":
+		return false
+	default:
+		// PIN/PUK and other explicit UICC states prove that a card is present.
+		return true
 	}
 }
 
@@ -1970,6 +2031,9 @@ func deviceName(entry device.Device) string {
 }
 
 func backendMode(candidate modem.Candidate) string {
+	if candidate.HardwareKind == "pcsc" {
+		return "pcsc"
+	}
 	if candidate.QMIControl != "" {
 		return "qmi"
 	}

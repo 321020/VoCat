@@ -546,6 +546,13 @@ func (s *Server) syncModemSMS(ctx context.Context, onlyDevice string) {
 		if onlyDevice != "" && config.ID != onlyDevice {
 			continue
 		}
+		// A PC/SC USB reader has no modem storage or AT command channel. Its
+		// messages are delivered by the active VoWiFi IMS session, so attempting
+		// an AT+CMGL catch-up scan would only poison the reader's health state
+		// with ErrNoATPort.
+		if !supportsModemSMSStorage(config) {
+			continue
+		}
 		// Do not queue CMGL traffic on the same serial actor while VoWiFi is
 		// reading the SIM or running AKA. Once the session is stable, resume the
 		// SM/ME scan as a catch-up path: an SMS submitted while the card was
@@ -657,6 +664,10 @@ func (s *Server) syncModemSMS(ctx context.Context, onlyDevice string) {
 			}
 		}
 	}
+}
+
+func supportsModemSMSStorage(config store.Device) bool {
+	return store.NormalizeDeviceType(config.DeviceType) != store.DeviceTypeUSBSIMReader
 }
 
 func shouldDeferModemSMSSync(state vowifi.State, stateErr error) bool {

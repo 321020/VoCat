@@ -15,9 +15,10 @@ export interface CardPolicyPanelProps {
   policy: CardPolicy | null;
   deviceOnline: boolean;
   onPolicyChanged: () => void | Promise<void>;
+	wifiCallingOnly?: boolean;
 }
 
-export function CardPolicyPanel({ deviceId, iccid, policy, deviceOnline, onPolicyChanged }: CardPolicyPanelProps) {
+export function CardPolicyPanel({ deviceId, iccid, policy, deviceOnline, onPolicyChanged, wifiCallingOnly = false }: CardPolicyPanelProps) {
   const { t } = useI18n();
   const operable = deviceOnline && !!iccid;
   const currentPolicy = policy?.iccid === iccid ? policy : null;
@@ -66,7 +67,7 @@ export function CardPolicyPanel({ deviceId, iccid, policy, deviceOnline, onPolic
         </div>
         <div>
           <div className="text-lg font-bold text-gray-900 dark:text-white">{t("卡策略")}</div>
-          <div className="text-xs text-gray-500 dark:text-gray-400">{t("VoWiFi / 飞行模式 开关跟着 SIM 卡走，切换即时生效")}</div>
+		  <div className="text-xs text-gray-500 dark:text-gray-400">{wifiCallingOnly ? t("USB SIM 读卡器仅用于 WiFi Calling，策略跟随 ICCID 保存") : t("VoWiFi / 飞行模式 开关跟着 SIM 卡走，切换即时生效")}</div>
         </div>
       </div>
       {!iccid ? (
@@ -119,7 +120,7 @@ export function CardPolicyPanel({ deviceId, iccid, policy, deviceOnline, onPolic
             </div>
           </div>
           <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
-            <PolicySwitchCard
+			<PolicySwitchCard
               title="VoWiFi"
               subtitle={t("启用时强制关闭蜂窝射频；关闭 VoWiFi 后仍保持飞行模式")}
               tone="orange"
@@ -129,7 +130,7 @@ export function CardPolicyPanel({ deviceId, iccid, policy, deviceOnline, onPolic
               failed={toggles.vowifiFailed}
               onToggle={toggles.onVoWiFiToggle}
             />
-            <PolicySwitchCard
+			{!wifiCallingOnly ? <PolicySwitchCard
               title={t("飞行模式")}
               subtitle={t("只有手动关闭此开关才允许设备连接基站")}
               tone="indigo"
@@ -138,15 +139,15 @@ export function CardPolicyPanel({ deviceId, iccid, policy, deviceOnline, onPolic
               pending={toggles.airplanePending}
               failed={toggles.airplaneFailed}
               onToggle={toggles.onAirplaneToggle}
-            />
+			/> : null}
           </div>
-          <CardPolicyAPN
+		  {!wifiCallingOnly ? <CardPolicyAPN
             deviceId={deviceId}
             iccid={iccid}
             policy={currentPolicy}
             deviceOnline={deviceOnline}
             onSaved={onPolicyChanged}
-          />
+		  /> : null}
         </div>
       ) : null}
     </div>

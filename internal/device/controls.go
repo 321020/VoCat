@@ -274,6 +274,9 @@ func (manager *Manager) SetFlight(
 	if err := manager.validateActive(id, state); err != nil {
 		return FlightResult{}, err
 	}
+	if manager.candidateFor(state).HardwareKind == "pcsc" {
+		return FlightResult{PreviousMode: 4, CurrentMode: 4, FlightMode: true, RadioOff: true}, nil
+	}
 	client, err := manager.clientLocked(ctx, state, manager.candidateFor(state))
 	if err != nil {
 		manager.setResult(id, state, nil, err)

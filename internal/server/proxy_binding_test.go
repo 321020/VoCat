@@ -93,3 +93,28 @@ func TestProfileProxyBindingRejectsSameICCIDOnDifferentProxy(t *testing.T) {
 		t.Fatalf("binding after rejected rebind = %+v, %v", binding, err)
 	}
 }
+
+func TestProfileProxyBindingSupportsPCSCReader(t *testing.T) {
+	server, database, controller := newProfileBindingTestServer(t)
+	readerICCID := "89104100000028106378"
+	if err := database.UpsertDevice(context.Background(), store.Device{
+		ID: "reader-1", Name: "USB SIM Reader", DeviceType: store.DeviceTypeUSBSIMReader,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	controller.state = vowifi.State{DeviceID: "reader-1", ICCID: readerICCID, Enabled: true}
+	response := profileBindingRequest(t, server, http.MethodPost, `{
+		"upstream_proxy_id":"route-1",
+		"bindings":[{"device_id":"reader-1","iccid":"89104100000028106378","profile_name":"Reader Profile"}]
+	}`)
+	if response.Code != http.StatusOK {
+		t.Fatalf("POST status = %d, body = %s", response.Code, response.Body.String())
+	}
+	binding, err := database.DeviceProxyBinding(context.Background(), readerICCID)
+	if err != nil || binding.DeviceID != "reader-1" || binding.UpstreamProxyID != "route-1" {
+		t.Fatalf("reader binding = %+v, %v", binding, err)
+	}
+	if controller.reconnects != 1 {
+		t.Fatalf("reader reconnects = %d, want 1", controller.reconnects)
+	}
+}

@@ -115,3 +115,24 @@ func TestConfiguredDeviceSummaryMarksIdleRuntimeAsNotInUse(t *testing.T) {
 		t.Fatalf("summary = %#v", got)
 	}
 }
+
+func TestSnapshotHasSIMDoesNotTreatUnknownStatusAsInserted(t *testing.T) {
+	for _, snapshot := range []*device.Snapshot{
+		{IMEI: "867123456789012"},
+		{IMEI: "867123456789012", SIMStatus: "unknown"},
+		{IMEI: "867123456789012", SIMStatus: "not_inserted"},
+	} {
+		if snapshotHasSIM(snapshot) {
+			t.Fatalf("snapshot was reported with a SIM: %#v", snapshot)
+		}
+	}
+	for _, snapshot := range []*device.Snapshot{
+		{SIMStatus: "pin_required"},
+		{ICCID: "89441000400128014257"},
+		{SIMReady: true},
+	} {
+		if !snapshotHasSIM(snapshot) {
+			t.Fatalf("snapshot was reported without a SIM: %#v", snapshot)
+		}
+	}
+}

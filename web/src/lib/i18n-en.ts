@@ -5,6 +5,10 @@
  * 富文本片段（嵌套链接/代码块的说明框）不走字典，在组件里按语言分支渲染。
  */
 export const EN_DICT: Record<string, string> = {
+	"USB SIM 读卡器（仅 WiFi Calling）": "USB SIM Reader (WiFi Calling only)",
+	"仅在 SIM 启用 PIN 时填写": "Only enter this when SIM PIN is enabled",
+	"留空表示不修改；仅在 SIM 启用 PIN 时填写": "Leave blank to keep unchanged; only enter this when SIM PIN is enabled",
+	"USB SIM 读卡器仅用于 WiFi Calling，策略跟随 ICCID 保存": "The USB SIM reader is for WiFi Calling only; policy is saved per ICCID",
   // Cellular APN profiles.
   "蜂窝 APN": "Cellular APN",
   "APN 列表和启用状态跟随当前 ICCID/Profile 保存": "APN profiles and the active selection are saved per ICCID/Profile",
@@ -765,7 +769,9 @@ export const EN_DICT: Record<string, string> = {
   "暂无设备": "No devices",
   "最后原因": "Last Reason",
   "最后成功：": "Last success: ",
-  "未检测到 eUICC": "No eUICC detected",
+	"未检测到 eUICC": "No eUICC detected",
+	"SIM卡未插入": "No SIM card inserted",
+	"USB SIM读卡器仅支持VoWiFi短信和通话任务": "USB SIM readers support VoWiFi SMS and call tasks only",
   "未生效": "Not in effect",
   "未知": "Unknown",
   "未知日期": "Unknown date",

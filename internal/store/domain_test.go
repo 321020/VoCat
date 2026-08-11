@@ -366,6 +366,31 @@ func TestDeviceStateRoundTripAndCascade(t *testing.T) {
 	}
 }
 
+func TestUSBSIMReaderConfigurationIsWiFiCallingOnly(t *testing.T) {
+	ctx := context.Background()
+	database := openTestStore(t, ":memory:")
+	err := database.UpsertDevice(ctx, Device{
+		ID: "reader-1", Name: "USB SIM", DeviceType: DeviceTypeUSBSIMReader,
+		USBPath: "1-3", ControlDevice: "Reader 00 00", SIMPIN: "1234",
+		DeviceBackend: "at", ESIMTransport: "at", NetworkEnabled: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := database.Device(ctx, "reader-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.DeviceBackend != "pcsc" || got.ESIMTransport != "pcsc" || got.NetworkEnabled || !got.SMSEnabled || !got.VoWiFiEnabled || got.SIMPIN != "1234" {
+		t.Fatalf("reader config = %+v", got)
+	}
+	bad := got
+	bad.SIMPIN = "12x4"
+	if err := database.UpsertDevice(ctx, bad); err == nil {
+		t.Fatal("non-numeric SIM PIN was accepted")
+	}
+}
+
 func TestSMSPersistenceAndDerivedThreads(t *testing.T) {
 	ctx := context.Background()
 	database := openTestStore(t, ":memory:")

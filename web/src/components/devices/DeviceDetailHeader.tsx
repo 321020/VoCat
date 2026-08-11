@@ -15,6 +15,7 @@ export interface DeviceDetailHeaderProps {
   onReconnectVowifi: () => void;
   onRebootModem: () => void;
   onOpenSms: () => void;
+	wifiCallingOnly?: boolean;
 }
 
 export function DeviceDetailHeader(props: DeviceDetailHeaderProps) {
@@ -42,7 +43,7 @@ export function DeviceDetailHeader(props: DeviceDetailHeaderProps) {
             <Button loading={props.reconnectingVoWiFi} onClick={props.onReconnectVowifi} className="ui-glass-border !border-0" icon={<ArrowSyncRegular />}>
               {t("重连 VoWiFi")}
             </Button>
-		  ) : device.developerEnabled ? (
+		  ) : device.developerEnabled && !props.wifiCallingOnly ? (
 			<div
 			  className="ui-glass-border flex h-8 items-center gap-2 rounded-lg px-3 text-sm text-gray-700 dark:text-gray-200"
 			  title={t("蜂窝数据仅进入 Export Proxy 的受保护路由，不会成为主机默认出口")}
@@ -58,9 +59,9 @@ export function DeviceDetailHeader(props: DeviceDetailHeaderProps) {
 			  />
 			</div>
 		  ) : null}
-          <Button loading={props.rebooting} onClick={props.onRebootModem} className="ui-glass-border !border-0 hover:!text-red-600" icon={<PowerRegular />}>
+		  {!props.wifiCallingOnly ? <Button loading={props.rebooting} onClick={props.onRebootModem} className="ui-glass-border !border-0 hover:!text-red-600" icon={<PowerRegular />}>
             {t("重启模组")}
-          </Button>
+		  </Button> : null}
           <Button onClick={props.onOpenSms} className="ui-glass-border !border-0" icon={<ChatRegular />}>
             {t("短信")}
           </Button>

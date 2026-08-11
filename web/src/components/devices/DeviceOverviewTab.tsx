@@ -26,12 +26,13 @@ export function DeviceOverviewTab(props: DeviceOverviewTabProps) {
   const { t } = useI18n();
   const [operatorOpen, setOperatorOpen] = useState(false);
   const { device } = props;
+	const wifiCallingOnly = device.deviceType === "usb_sim_reader";
   return (
     <div className="space-y-4">
-      <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
+      <div className={`grid grid-cols-1 gap-4 ${wifiCallingOnly ? "lg:grid-cols-2" : "lg:grid-cols-3"}`}>
         <div className="ui-panel-muted p-4">
           <div className="mb-3 text-xs font-bold uppercase tracking-wider text-gray-500">{t("运行状态")}</div>
-          {isVoWiFiInUse(device) ? (
+		  {isVoWiFiInUse(device) && !(device.modem?.imei && device.modem?.simInserted === false) ? (
             <OverviewVowifiCard device={device} />
           ) : (
             <OverviewNetworkCard device={device} onOpenOperatorSelection={() => setOperatorOpen(true)} />
@@ -44,16 +45,16 @@ export function DeviceOverviewTab(props: DeviceOverviewTabProps) {
           e911Starting={props.e911Starting}
           onSetupE911={props.onSetupE911}
         />
-        <OverviewNetworkPanel
+		{!wifiCallingOnly ? <OverviewNetworkPanel
           device={device}
           trafficMinuteRx={props.trafficMinuteRx}
           trafficMinuteTx={props.trafficMinuteTx}
           trafficSpeedRx={props.trafficSpeedRx}
           trafficSpeedTx={props.trafficSpeedTx}
-        />
+		/> : null}
       </div>
       {device.developerEnabled && device.networkEnabled && device.id ? <OverviewTrafficChart deviceId={device.id} /> : null}
-      {device?.id ? (
+	  {device?.id && !wifiCallingOnly ? (
         <OperatorSelectionDialog
           open={operatorOpen}
           deviceId={device.id}
