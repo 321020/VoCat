@@ -22,7 +22,7 @@
   <img alt="GitHub Actions" src="https://img.shields.io/badge/GitHub_Actions-Release-2088FF?style=flat-square&logo=githubactions&logoColor=white">
 </p>
 
-**English** | [简体中文](docs/README.zh-CN.md)
+**English** | [العربية](docs/README.ar.md) | [简体中文](docs/README.zh-CN.md) | [Français](docs/README.fr.md) | [Русский](docs/README.ru.md) | [Español](docs/README.es.md)
 
 Vocat is an open-source web control panel and engineering toolkit for Quectel EC20/EC25-class cellular modems. It combines modem discovery, live radio status, AT and USSD terminals, SMS, WiFi Calling, eSIM management, network selection, proxy routing, notifications, audit logs, and release automation in one self-contained service.
 
@@ -46,7 +46,7 @@ The backend is written in Go, the interface is built with React and TypeScript, 
 | Card policy | ICCID-based WiFi Calling and flight-mode behavior with immediate policy application. |
 | Proxy routing | Upstream SOCKS routing, device bindings, country rules, TCP reachability checks, and UDP Associate checks for WiFi Calling data paths. |
 | Notifications | New inbound SMS forwarding through Telegram, Bark, email, Pushplus, and signed webhooks. Each SMS is delivered as an individual notification. |
-| Telegram bot | Device status, installed-profile listing and switching, WiFi Calling controls, SMS sending, timed dialing with automatic hang-up, call status, answer, and hang-up commands. Sensitive actions require administrator confirmation. |
+| Telegram bot | Device status, installed-profile listing and switching, WiFi Calling controls, and SMS sending. Sensitive actions require administrator confirmation. |
 | Operations | Authentication, CSRF protection, access policies, audit events, live logs, log retention, health checks, responsive layout, dark mode, and English/Chinese application UI. |
 | Distribution | Static Linux binaries, systemd installation script, self-update with SHA-256 verification, Docker image, GHCR publishing, and GitHub Actions release builds. |
 
@@ -207,13 +207,9 @@ When Telegram notifications are enabled and both Chat ID and Admin ID are config
 /switch <device> <iccid>
 /wfc <device> <status|on|off|reconnect>
 /sms <device> <number> <message>
-/call <device> <number> <seconds>
-/calls <device>
-/answer <device>
-/hangup <device>
 ```
 
-Profile switching, SMS submission, and dialing use one-time confirmation buttons. Timed dialing performs the modem call action and automatically hangs up after 1–600 seconds; it does not capture or process call audio. The bot does not expose eSIM download, delete, or rename commands.
+Profile switching and SMS submission use one-time confirmation buttons. The bot does not expose eSIM download, delete, or rename commands.
 
 ## Updating
 

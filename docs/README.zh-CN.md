@@ -22,7 +22,7 @@
   <img alt="GitHub Actions" src="https://img.shields.io/badge/GitHub_Actions-Release-2088FF?style=flat-square&logo=githubactions&logoColor=white">
 </p>
 
-[English](../README.md) | **简体中文**
+[English](../README.md) | [العربية](README.ar.md) | **简体中文** | [Français](README.fr.md) | [Русский](README.ru.md) | [Español](README.es.md)
 
 Vocat 是一款面向 Quectel EC20/EC25 系列蜂窝模组的开源 Web 控制面板与工程工具套件。它在一个自包含的服务中整合了模组发现、实时射频状态、AT 与 USSD 终端、短信、WiFi Calling(WiFi 通话)、eSIM 管理、网络选择、代理路由、通知、审计日志以及发布自动化。
 
@@ -46,7 +46,7 @@ Vocat 是一款面向 Quectel EC20/EC25 系列蜂窝模组的开源 Web 控制�
 | 卡策略 | 基于 ICCID 的 WiFi Calling 与飞行模式行为,策略即时应用。 |
 | 代理路由 | 上游 SOCKS 路由、设备绑定、国家规则、TCP 可达性检查以及面向 WiFi Calling 数据路径的 UDP Associate 检查。 |
 | 通知 | 通过 Telegram、Bark、邮件、Pushplus 以及签名 Webhook 转发新入站短信,每条短信单独推送。 |
-| Telegram 机器人 | 设备状态、已安装配置文件列表与切换、WiFi Calling 控制、短信发送、定时拨号并自动挂断、通话状态、接听与挂断命令。敏感操作需要管理员确认。 |
+| Telegram 机器人 | 设备状态、已安装配置文件列表与切换、WiFi Calling 控制以及短信发送。敏感操作需要管理员确认。 |
 | 运维 | 鉴权、CSRF 防护、访问策略、审计事件、实时日志、日志留存、健康检查、响应式布局、深色模式以及中英文应用界面。 |
 | 分发 | 静态 Linux 二进制、systemd 安装脚本、带 SHA-256 校验的自更新、Docker 镜像、GHCR 发布以及 GitHub Actions 发布构建。 |
 
@@ -188,13 +188,9 @@ Vocat 先从 `VOCAT_CONFIG` 读取可选的 JSON 配置文件,再应用 `VOCAT_*
 /switch <设备> <iccid>
 /wfc <设备> <status|on|off|reconnect>
 /sms <设备> <号码> <内容>
-/call <设备> <号码> <秒数>
-/calls <设备>
-/answer <设备>
-/hangup <设备>
 ```
 
-配置文件切换、短信提交与拨号使用一次性确认按钮。定时拨号会执行模组拨号动作,并在 1–600 秒后自动挂断;不会捕获或处理通话音频。机器人不暴露 eSIM 下载、删除或重命名命令。
+配置文件切换与短信提交使用一次性确认按钮。机器人不暴露 eSIM 下载、删除或重命名命令。
 
 ## 更新
 
