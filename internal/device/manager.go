@@ -25,6 +25,7 @@ type Options struct {
 
 type Manager struct {
 	mu             sync.RWMutex
+	uiccMu         sync.Mutex // serializes all multi-command UICC/APDU transactions
 	esimMu         sync.Mutex // serializes eSIM card access (list/switch/download)
 	esimRecoveryMu sync.Mutex
 	esimRecoveries map[string]chan struct{}
@@ -40,6 +41,23 @@ type Manager struct {
 	started        bool
 	devices        map[string]*managedDevice
 	ussdSessions   map[string]ussdSession
+}
+
+// LockUICC and UnlockUICC allow another in-process UICC client (currently the
+// VoWiFi AKA adapter) to share the same transaction boundary as eSIM ES10.
+// Individual AT commands are already serialized per modem, but a logical-
+// channel transaction spans several commands and must not be interleaved.
+func (manager *Manager) LockUICC()   { manager.uiccMu.Lock() }
+func (manager *Manager) UnlockUICC() { manager.uiccMu.Unlock() }
+
+func (manager *Manager) lockESIM() {
+	manager.esimMu.Lock()
+	manager.uiccMu.Lock()
+}
+
+func (manager *Manager) unlockESIM() {
+	manager.uiccMu.Unlock()
+	manager.esimMu.Unlock()
 }
 
 // ussdSession tracks an open USSD dialog on a device so a follow-up Continue or

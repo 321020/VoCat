@@ -47,6 +47,11 @@ type EC20SensitiveATExecutor interface {
 	ExecuteSensitiveAT(context.Context, string, string) (modem.Response, error)
 }
 
+type EC20UICCLocker interface {
+	LockUICC()
+	UnlockUICC()
+}
+
 type EC20AdapterOptions struct {
 	// PureAirplanePolicy reports the independent user policy. The adapter only
 	// changes the transactional CFUN projection used by VoWiFi and never
@@ -339,6 +344,10 @@ func (adapter *EC20Adapter) CheckReady(
 	// cannot insert an APDU between a 61xx response and GET RESPONSE.
 	adapter.apduMu.Lock()
 	defer adapter.apduMu.Unlock()
+	if locker, ok := adapter.executor.(EC20UICCLocker); ok {
+		locker.LockUICC()
+		defer locker.UnlockUICC()
+	}
 
 	aid, application, err := adapter.discoverAKAApplication(ctx, binding.deviceID)
 	if err != nil {
@@ -402,6 +411,10 @@ func (adapter *EC20Adapter) Authenticate(
 
 	adapter.apduMu.Lock()
 	defer adapter.apduMu.Unlock()
+	if locker, ok := adapter.executor.(EC20UICCLocker); ok {
+		locker.LockUICC()
+		defer locker.UnlockUICC()
+	}
 
 	apdu := buildUSIMAuthenticateAPDU(challenge)
 	var raw []byte
