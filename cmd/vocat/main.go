@@ -622,12 +622,18 @@ func configureVoWiFiRuntime(
 		}
 		if deviceConfig.VoWiFiEnabled {
 			if entry, mapErr := mapper.Get(deviceConfig.ID); mapErr == nil {
-				flightContext, cancelFlight := context.WithTimeout(ctx, 10*time.Second)
-				_, flightErr := deviceManager.SetFlight(flightContext, entry.ID, true)
-				cancelFlight()
+				flightErr := protectVoWiFiStartupRadio(ctx, deviceManager, entry.ID)
 				if flightErr != nil {
-					_ = manager.Close(context.Background())
-					return nil, fmt.Errorf("protect device %q before VoWiFi startup: %w", deviceConfig.ID, flightErr)
+					// A modem can be temporarily unavailable while OpenWrt/procd is
+					// restarting the service (notably after loading XFRM modules). Do
+					// not take the Web/API service down with it: the orchestrator below
+					// remains fail-closed and its runtime manager retries until CFUN=4
+					// can be established.
+					logger.Warn(
+						"VoWiFi startup radio protection deferred to automatic retry",
+						"device_id", deviceConfig.ID,
+						"error", flightErr,
+					)
 				}
 			}
 			if _, err := manager.RequestEnabled(deviceConfig.ID, true); err != nil {
@@ -637,6 +643,56 @@ func configureVoWiFiRuntime(
 		}
 	}
 	return manager, nil
+}
+
+const (
+	vowifiStartupRadioAttempts = 3
+	vowifiStartupRadioDelay    = time.Second
+)
+
+type flightModeSetter interface {
+	SetFlight(context.Context, string, bool) (device.FlightResult, error)
+}
+
+func protectVoWiFiStartupRadio(ctx context.Context, manager flightModeSetter, physicalID string) error {
+	return protectVoWiFiStartupRadioWithRetry(
+		ctx,
+		manager,
+		physicalID,
+		vowifiStartupRadioAttempts,
+		vowifiStartupRadioDelay,
+	)
+}
+
+func protectVoWiFiStartupRadioWithRetry(
+	ctx context.Context,
+	manager flightModeSetter,
+	physicalID string,
+	attempts int,
+	delay time.Duration,
+) error {
+	var lastErr error
+	for attempt := 0; attempt < attempts; attempt++ {
+		flightContext, cancel := context.WithTimeout(ctx, 10*time.Second)
+		_, lastErr = manager.SetFlight(flightContext, physicalID, true)
+		cancel()
+		if lastErr == nil {
+			return nil
+		}
+		if attempt+1 == attempts {
+			break
+		}
+		timer := time.NewTimer(delay)
+		select {
+		case <-ctx.Done():
+			if !timer.Stop() {
+				<-timer.C
+			}
+			return errors.Join(lastErr, ctx.Err())
+		case <-timer.C:
+		}
+	}
+	return lastErr
 }
 
 type vowifiDeviceAdapter interface {

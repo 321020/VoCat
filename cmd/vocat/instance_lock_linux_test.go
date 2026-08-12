@@ -9,17 +9,18 @@ import (
 )
 
 func TestServerInstanceLockRejectsSecondProcess(t *testing.T) {
-	database := filepath.Join(t.TempDir(), "vocat.db")
-	first, err := lockServerInstance(database)
+	firstDatabase := filepath.Join(t.TempDir(), "vocat.db")
+	first, err := lockServerInstance(firstDatabase)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer first.Close()
-	second, err := lockServerInstance(database)
+	secondDatabase := filepath.Join(t.TempDir(), "other.db")
+	second, err := lockServerInstance(secondDatabase)
 	if second != nil {
 		second.Close()
 	}
-	if err == nil || !strings.Contains(err.Error(), "already using database") {
+	if err == nil || !strings.Contains(err.Error(), "already controls this host") {
 		t.Fatalf("second lock error = %v", err)
 	}
 }

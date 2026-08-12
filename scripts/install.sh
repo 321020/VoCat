@@ -337,6 +337,8 @@ TimeoutStartSec=30s
 # HTTP, VoWiFi, and modem cleanup have bounded shutdown contexts totalling up
 # to 30 seconds. Leave a small margin before systemd resorts to SIGKILL.
 TimeoutStopSec=40s
+RuntimeDirectory=vocat
+RuntimeDirectoryMode=0755
 
 AmbientCapabilities=CAP_NET_ADMIN CAP_NET_RAW
 CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_RAW
@@ -409,11 +411,24 @@ enable_and_start() {
     if [ -x "$OPENWRT_INIT_PATH" ] && { [ -x /sbin/procd ] || [ -x /sbin/ubusd ]; }; then
         "$OPENWRT_INIT_PATH" enable
         if "$OPENWRT_INIT_PATH" restart; then
-            sleep 2
-            if "$OPENWRT_INIT_PATH" running; then
-                rm -f "${BINARY_PATH}.bak"
-                return
-            fi
+            # Modems may need several seconds to release and reopen their AT
+            # port after procd stops the previous process. Require consecutive
+            # healthy observations so a short-lived respawn is not mistaken for
+            # a successful upgrade.
+            local attempt stable
+            stable=0
+            for attempt in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30; do
+                sleep 1
+                if "$OPENWRT_INIT_PATH" running; then
+                    stable=$((stable + 1))
+                    if [ "$stable" -ge 3 ]; then
+                        rm -f "${BINARY_PATH}.bak"
+                        return
+                    fi
+                else
+                    stable=0
+                fi
+            done
         fi
         if [ -e "${BINARY_PATH}.bak" ]; then
             cp -a "${BINARY_PATH}.bak" "$BINARY_PATH"
