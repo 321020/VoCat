@@ -27,9 +27,10 @@ export function DeviceOverviewTab(props: DeviceOverviewTabProps) {
   const [operatorOpen, setOperatorOpen] = useState(false);
   const { device } = props;
 	const wifiCallingOnly = device.deviceType === "usb_sim_reader";
+	const showNetworkDetails = !!device.developerEnabled && !wifiCallingOnly;
   return (
     <div className="space-y-4">
-      <div className={`grid grid-cols-1 gap-4 ${wifiCallingOnly ? "lg:grid-cols-2" : "lg:grid-cols-3"}`}>
+      <div className={`grid grid-cols-1 gap-4 ${showNetworkDetails ? "lg:grid-cols-3" : "lg:grid-cols-2"}`}>
         <div className="ui-panel-muted p-4">
           <div className="mb-3 text-xs font-bold uppercase tracking-wider text-gray-500">{t("运行状态")}</div>
 		  {isVoWiFiInUse(device) && !(device.modem?.imei && device.modem?.simInserted === false) ? (
@@ -45,7 +46,7 @@ export function DeviceOverviewTab(props: DeviceOverviewTabProps) {
           e911Starting={props.e911Starting}
           onSetupE911={props.onSetupE911}
         />
-		{!wifiCallingOnly ? <OverviewNetworkPanel
+		{showNetworkDetails ? <OverviewNetworkPanel
           device={device}
           trafficMinuteRx={props.trafficMinuteRx}
           trafficMinuteTx={props.trafficMinuteTx}
