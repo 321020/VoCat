@@ -36,6 +36,31 @@ func TestParseSecurityAgreementSelectsSupportedIPSec(t *testing.T) {
 	}
 }
 
+func TestParseSecurityAgreementSkipsIncompleteCarrierAlternatives(t *testing.T) {
+	proposal := securityProposal{
+		spiClient:  1001,
+		spiServer:  1002,
+		portClient: 40666,
+		portServer: 55610,
+	}
+	incomplete := []string{
+		"ipsec-3gpp;q=0.100;alg=hmac-md5-96;mod=trans",
+		"ipsec-3gpp;q=0.200;alg=hmac-sha-1-96;ealg=des-ede3-cbc;mod=trans",
+		"ipsec-3gpp;q=0.300;alg=hmac-sha-1-96;ealg=aes-cbc;mod=trans",
+	}
+	selected := "ipsec-3gpp;q=1.000;alg=hmac-sha-1-96;prot=esp;mod=trans;" +
+		"ealg=aes-cbc;spi-c=2001;spi-s=2002;port-c=50601;port-s=50600"
+	values := []string{strings.Join(append(incomplete, selected), ", ")}
+
+	agreement, err := parseSecurityAgreement(values, proposal)
+	if err != nil {
+		t.Fatalf("parseSecurityAgreement() error = %v", err)
+	}
+	if agreement.selected.spiClient != 2001 || agreement.selected.spiServer != 2002 {
+		t.Fatalf("selected mechanism = %#v", agreement.selected)
+	}
+}
+
 func TestParseSecurityAgreementFailsClosed(t *testing.T) {
 	proposal := securityProposal{
 		spiClient:  1001,
@@ -71,6 +96,12 @@ func TestParseSecurityAgreementFailsClosed(t *testing.T) {
 			name: "malformed ipsec offer poisons otherwise valid list",
 			values: []string{
 				valid + ", ipsec-3gpp;q=0.200;alg=hmac-sha-1-96;alg=hmac-sha-1-96",
+			},
+		},
+		{
+			name: "partially specified SA parameters poison otherwise valid list",
+			values: []string{
+				valid + ", ipsec-3gpp;q=0.200;alg=hmac-sha-1-96;spi-c=3001",
 			},
 		},
 		{

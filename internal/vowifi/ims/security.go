@@ -28,8 +28,9 @@ const (
 )
 
 var (
-	ErrIPSecAgreementRequired = errors.New("ims: a supported ipsec-3gpp security agreement is required")
-	ErrIPSecInstall           = errors.New("ims: install ipsec-3gpp security associations")
+	ErrIPSecAgreementRequired  = errors.New("ims: a supported ipsec-3gpp security agreement is required")
+	ErrIPSecInstall            = errors.New("ims: install ipsec-3gpp security associations")
+	errIncompleteSecurityOffer = errors.New("ims: incomplete ipsec-3gpp security offer")
 )
 
 // IPSecSAConfig is the complete, evidence-derived 3GPP transport-mode SA set.
@@ -186,6 +187,9 @@ func parseSecurityAgreement(values []string, proposal securityProposal) (securit
 		if err != nil {
 			name := strings.ToLower(strings.TrimSpace(strings.SplitN(item, ";", 2)[0]))
 			if name == "ipsec-3gpp" {
+				if errors.Is(err, errIncompleteSecurityOffer) {
+					continue
+				}
 				return securityAgreement{}, fmt.Errorf(
 					"ims: malformed ipsec-3gpp Security-Server: %w",
 					err,
@@ -262,6 +266,19 @@ func parseSecurityMechanism(value string) (securityMechanism, error) {
 	}
 	if value := parameters["ealg"]; value != "" {
 		mechanism.encryption = strings.ToLower(value)
+	}
+	saParameterKeys := []string{"spi-c", "spi-s", "port-c", "port-s"}
+	presentSAParameters := 0
+	for _, key := range saParameterKeys {
+		if parameters[key] != "" {
+			presentSAParameters++
+		}
+	}
+	if presentSAParameters == 0 {
+		return securityMechanism{}, errIncompleteSecurityOffer
+	}
+	if presentSAParameters != len(saParameterKeys) {
+		return securityMechanism{}, errors.New("ims: partially specified Security-Server SA parameters")
 	}
 	var err error
 	if mechanism.spiClient, err = decimalUint32(parameters["spi-c"]); err != nil {

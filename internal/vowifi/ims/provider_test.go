@@ -26,6 +26,53 @@ func (evidenceTunnel) Close(context.Context) error {
 	return nil
 }
 
+func TestTransportForIdentityUsesPLMNOverride(t *testing.T) {
+	t.Parallel()
+	config := Config{
+		Transport: "tcp",
+		TransportByPLMN: map[string]string{
+			"23410":  "udp",
+			"234010": "udp",
+		},
+	}
+
+	if got := transportForIdentity(config, vowifi.SIMIdentity{HomeMCC: "234", HomeMNC: "10"}); got != "udp" {
+		t.Fatalf("PLMN 234-10 transport = %q, want udp", got)
+	}
+	if got := transportForIdentity(config, vowifi.SIMIdentity{HomeMCC: "234", HomeMNC: "010"}); got != "udp" {
+		t.Fatalf("zero-padded PLMN 234-010 transport = %q, want udp", got)
+	}
+	if got := transportForIdentity(config, vowifi.SIMIdentity{HomeMCC: "234", HomeMNC: "15"}); got != "tcp" {
+		t.Fatalf("non-overridden transport = %q, want tcp", got)
+	}
+}
+
+func TestTransportForIdentityPreservesLeadingZeroMNCs(t *testing.T) {
+	t.Parallel()
+	config := Config{
+		TransportByPLMN: map[string]string{
+			"31001":  "udp",
+			"310001": "tcp",
+			"31000":  "udp",
+			"310000": "tcp",
+		},
+	}
+
+	for _, test := range []struct {
+		mnc  string
+		want string
+	}{
+		{mnc: "01", want: "udp"},
+		{mnc: "001", want: "tcp"},
+		{mnc: "00", want: "udp"},
+		{mnc: "000", want: "tcp"},
+	} {
+		if got := transportForIdentity(config, vowifi.SIMIdentity{HomeMCC: "310", HomeMNC: test.mnc}); got != test.want {
+			t.Errorf("PLMN 310-%s transport = %q, want %q", test.mnc, got, test.want)
+		}
+	}
+}
+
 func TestProviderRegisterAKAParseEvidenceAndClose(t *testing.T) {
 	for _, test := range []struct {
 		name         string
