@@ -22,7 +22,7 @@
   <img alt="GitHub Actions" src="https://img.shields.io/badge/GitHub_Actions-Release-2088FF?style=flat-square&logo=githubactions&logoColor=white">
 </p>
 
-[English](../README.md) | [العربية](README.ar.md) | [简体中文](README.zh-CN.md) | [Français](README.fr.md) | [Русский](README.ru.md) | **Español**
+[English](../README.md) | [العربية](README.ar.md) | [简体中文](README.zh-CN.md) | [繁體中文](README.zh-TW.md) | [Français](README.fr.md) | [Русский](README.ru.md) | **Español** | [日本語](README.ja.md)
 
 Vocat es un panel de control web de código abierto y un conjunto de herramientas de ingeniería para módems celulares Quectel de clase EC20/EC25. Combina, en un único servicio autocontenido, el descubrimiento de módems, el estado de radio en vivo, terminales AT y USSD, SMS, WiFi Calling, gestión de eSIM, selección de red, enrutamiento por proxy, notificaciones, registros de auditoría y automatización de versiones.
 
