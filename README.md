@@ -65,8 +65,22 @@ Available features depend on the module firmware, USB composition, SIM/eSIM capa
 
 ### One-click Linux installation
 
+As root (including OpenWrt/Kwrt, where `sudo` is normally absent):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/MengMengCode/VoCat/master/scripts/install.sh | bash
+```
+
+From a normal user on a distribution with sudo:
+
 ```bash
 curl -fsSL https://raw.githubusercontent.com/MengMengCode/VoCat/master/scripts/install.sh | sudo bash
+```
+
+Check the host's VoWiFi/XFRM prerequisites without installing VoCat:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/MengMengCode/VoCat/master/scripts/install.sh | bash -s -- --check-env
 ```
 
 Install a specific version:
@@ -75,6 +89,12 @@ Install a specific version:
 curl -fsSL https://raw.githubusercontent.com/MengMengCode/VoCat/master/scripts/install.sh -o install.sh
 sudo bash install.sh 0.0.2
 ```
+
+VoWiFi IMS requires Linux XFRM/IPsec. On OpenWrt/Kwrt the installer attempts
+to install matching `ip-full`, `kmod-ipsec`, `kmod-ipsec4/6`,
+`kmod-crypto-authenc`, AES-CBC and SHA1 packages from the firmware's own feed.
+If matching kernel modules are unavailable, use a firmware that includes them;
+never force-install kmods built for a different kernel.
 
 The installer:
 

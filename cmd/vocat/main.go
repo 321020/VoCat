@@ -112,6 +112,11 @@ func run(logger *slog.Logger, logs *loghub.Hub) error {
 	if err != nil {
 		return fmt.Errorf("load configuration: %w", err)
 	}
+	instanceLock, err := lockServerInstance(cfg.DatabasePath)
+	if err != nil {
+		return err
+	}
+	defer instanceLock.Close()
 	if cfg.UsesDefaultCredentials() {
 		logger.Warn(
 			"default admin credentials are active; set VOCAT_ADMIN_PASSWORD before exposing the service",
