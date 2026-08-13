@@ -130,9 +130,11 @@ http://<адрес-сервера>:7575
 sha256sum -c SHA256SUMS --ignore-missing
 sudo install -d -m 0755 /opt/vocat/bin /opt/vocat/data
 sudo install -m 0755 vocat-linux-amd64 /opt/vocat/bin/vocat
+read -rsp "Admin password: " VOCAT_BOOTSTRAP_PASSWORD; echo
+printf '%s\n' "$VOCAT_BOOTSTRAP_PASSWORD" | sudo /opt/vocat/bin/vocat bootstrap-admin
+unset VOCAT_BOOTSTRAP_PASSWORD
 sudo env \
   VOCAT_DATABASE_PATH=/opt/vocat/data/vocat.db \
-  VOCAT_ADMIN_PASSWORD=change-this-password \
   /opt/vocat/bin/vocat serve
 ```
 
@@ -149,13 +151,20 @@ sudo env \
 ```bash
 docker pull ghcr.io/mengmengcode/vocat:latest
 
+read -rsp "Admin password: " VOCAT_BOOTSTRAP_PASSWORD; echo
+printf '%s\n' "$VOCAT_BOOTSTRAP_PASSWORD" | docker run --rm -i \
+  --user 0:0 \
+  -v vocat-data:/opt/vocat/data \
+  --entrypoint /opt/vocat/bin/vocat \
+  ghcr.io/mengmengcode/vocat:latest bootstrap-admin
+unset VOCAT_BOOTSTRAP_PASSWORD
+
 docker run -d \
   --name vocat \
   --restart unless-stopped \
   --network host \
   --privileged \
   --user 0:0 \
-  -e VOCAT_ADMIN_PASSWORD=change-this-password \
   -v vocat-data:/opt/vocat/data \
   -v /dev:/dev \
   -v /sys:/sys:ro \
@@ -185,8 +194,6 @@ Vocat читает необязательный JSON-файл конфигура
 | --- | --- | --- |
 | `VOCAT_ADDR` | `0.0.0.0:7575` | Адрес прослушивания HTTP. |
 | `VOCAT_DATABASE_PATH` | `./data/vocat.db` | Путь к базе данных SQLite. |
-| `VOCAT_ADMIN_USERNAME` | `admin` | Начальное имя пользователя администратора. |
-| `VOCAT_ADMIN_PASSWORD` | `admin` | Начальный пароль администратора. Смените его перед публикацией сервиса. |
 | `VOCAT_SESSION_TTL` | `24h` | Время жизни сессии аутентификации. |
 | `VOCAT_SECURE_COOKIES` | `false` | Помечает cookie сессии как безопасные при использовании HTTPS. |
 | `VOCAT_SHUTDOWN_TIMEOUT` | `10s` | Тайм-аут корректного завершения работы. |

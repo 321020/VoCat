@@ -125,9 +125,11 @@ http://<服务器地址>:7575
 sha256sum -c SHA256SUMS --ignore-missing
 sudo install -d -m 0755 /opt/vocat/bin /opt/vocat/data
 sudo install -m 0755 vocat-linux-amd64 /opt/vocat/bin/vocat
+read -rsp "管理员密码: " VOCAT_BOOTSTRAP_PASSWORD; echo
+printf '%s\n' "$VOCAT_BOOTSTRAP_PASSWORD" | sudo /opt/vocat/bin/vocat bootstrap-admin
+unset VOCAT_BOOTSTRAP_PASSWORD
 sudo env \
   VOCAT_DATABASE_PATH=/opt/vocat/data/vocat.db \
-  VOCAT_ADMIN_PASSWORD=change-this-password \
   /opt/vocat/bin/vocat serve
 ```
 
@@ -140,13 +142,20 @@ sudo env \
 ```bash
 docker pull ghcr.io/mengmengcode/vocat:latest
 
+read -rsp "管理员密码: " VOCAT_BOOTSTRAP_PASSWORD; echo
+printf '%s\n' "$VOCAT_BOOTSTRAP_PASSWORD" | docker run --rm -i \
+  --user 0:0 \
+  -v vocat-data:/opt/vocat/data \
+  --entrypoint /opt/vocat/bin/vocat \
+  ghcr.io/mengmengcode/vocat:latest bootstrap-admin
+unset VOCAT_BOOTSTRAP_PASSWORD
+
 docker run -d \
   --name vocat \
   --restart unless-stopped \
   --network host \
   --privileged \
   --user 0:0 \
-  -e VOCAT_ADMIN_PASSWORD=change-this-password \
   -v vocat-data:/opt/vocat/data \
   -v /dev:/dev \
   -v /sys:/sys:ro \
@@ -167,14 +176,15 @@ Vocat 先从 `VOCAT_CONFIG` 读取可选的 JSON 配置文件,再应用 `VOCAT_*
 | --- | --- | --- |
 | `VOCAT_ADDR` | `0.0.0.0:7575` | HTTP 监听地址。 |
 | `VOCAT_DATABASE_PATH` | `./data/vocat.db` | SQLite 数据库路径。 |
-| `VOCAT_ADMIN_USERNAME` | `admin` | 初始管理员用户名。 |
-| `VOCAT_ADMIN_PASSWORD` | `admin` | 初始管理员密码。暴露服务前请务必修改。 |
 | `VOCAT_SESSION_TTL` | `24h` | 鉴权会话有效期。 |
 | `VOCAT_SECURE_COOKIES` | `false` | 在使用 HTTPS 时将会话 Cookie 标记为安全。 |
 | `VOCAT_SHUTDOWN_TIMEOUT` | `10s` | 优雅关闭超时时间。 |
 | `VOCAT_MAX_REQUEST_BODY_BYTES` | `1048576` | API 请求体最大字节数。 |
 | `VOCAT_REPO` | `MengMengCode/VoCat` | 自更新器使用的受信任 GitHub 仓库，格式为 `owner/name`。 |
 | `GITHUB_TOKEN` | 空 | 可选的 GitHub token,用于私有仓库或更高的 API 限额。 |
+
+管理员账号和密码只保存在 SQLite 数据库中。空数据库需要执行一次
+`vocat bootstrap-admin` 完成初始化；环境变量和 JSON 配置都不能设置或覆盖管理员凭据。
 
 请勿将 Telegram token、SMTP 密码、Webhook 密钥、SIM 凭据或其他私密数据存放在仓库中。请通过应用设置或受保护的环境文件来配置它们。
 

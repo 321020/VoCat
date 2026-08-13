@@ -126,9 +126,11 @@ http://<サーバーアドレス>:7575
 sha256sum -c SHA256SUMS --ignore-missing
 sudo install -d -m 0755 /opt/vocat/bin /opt/vocat/data
 sudo install -m 0755 vocat-linux-amd64 /opt/vocat/bin/vocat
+read -rsp "Admin password: " VOCAT_BOOTSTRAP_PASSWORD; echo
+printf '%s\n' "$VOCAT_BOOTSTRAP_PASSWORD" | sudo /opt/vocat/bin/vocat bootstrap-admin
+unset VOCAT_BOOTSTRAP_PASSWORD
 sudo env \
   VOCAT_DATABASE_PATH=/opt/vocat/data/vocat.db \
-  VOCAT_ADMIN_PASSWORD=change-this-password \
   /opt/vocat/bin/vocat serve
 ```
 
@@ -141,13 +143,20 @@ sudo env \
 ```bash
 docker pull ghcr.io/mengmengcode/vocat:latest
 
+read -rsp "Admin password: " VOCAT_BOOTSTRAP_PASSWORD; echo
+printf '%s\n' "$VOCAT_BOOTSTRAP_PASSWORD" | docker run --rm -i \
+  --user 0:0 \
+  -v vocat-data:/opt/vocat/data \
+  --entrypoint /opt/vocat/bin/vocat \
+  ghcr.io/mengmengcode/vocat:latest bootstrap-admin
+unset VOCAT_BOOTSTRAP_PASSWORD
+
 docker run -d \
   --name vocat \
   --restart unless-stopped \
   --network host \
   --privileged \
   --user 0:0 \
-  -e VOCAT_ADMIN_PASSWORD=change-this-password \
   -v vocat-data:/opt/vocat/data \
   -v /dev:/dev \
   -v /sys:/sys:ro \
@@ -168,8 +177,6 @@ Vocat は `VOCAT_CONFIG` からオプションの JSON 設定ファイルを読�
 | --- | --- | --- |
 | `VOCAT_ADDR` | `0.0.0.0:7575` | HTTP リッスンアドレス。 |
 | `VOCAT_DATABASE_PATH` | `./data/vocat.db` | SQLite データベースパス。 |
-| `VOCAT_ADMIN_USERNAME` | `admin` | 初期管理者ユーザー名。 |
-| `VOCAT_ADMIN_PASSWORD` | `admin` | 初期管理者パスワード。サービスを公開する前に変更してください。 |
 | `VOCAT_SESSION_TTL` | `24h` | 認証セッションの有効期間。 |
 | `VOCAT_SECURE_COOKIES` | `false` | HTTPS 使用時にセッション Cookie をセキュアとしてマークします。 |
 | `VOCAT_SHUTDOWN_TIMEOUT` | `10s` | グレースフルシャットダウンのタイムアウト。 |

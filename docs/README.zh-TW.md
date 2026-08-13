@@ -126,9 +126,11 @@ http://<伺服器位址>:7575
 sha256sum -c SHA256SUMS --ignore-missing
 sudo install -d -m 0755 /opt/vocat/bin /opt/vocat/data
 sudo install -m 0755 vocat-linux-amd64 /opt/vocat/bin/vocat
+read -rsp "管理員密碼: " VOCAT_BOOTSTRAP_PASSWORD; echo
+printf '%s\n' "$VOCAT_BOOTSTRAP_PASSWORD" | sudo /opt/vocat/bin/vocat bootstrap-admin
+unset VOCAT_BOOTSTRAP_PASSWORD
 sudo env \
   VOCAT_DATABASE_PATH=/opt/vocat/data/vocat.db \
-  VOCAT_ADMIN_PASSWORD=change-this-password \
   /opt/vocat/bin/vocat serve
 ```
 
@@ -141,13 +143,20 @@ sudo env \
 ```bash
 docker pull ghcr.io/mengmengcode/vocat:latest
 
+read -rsp "管理員密碼: " VOCAT_BOOTSTRAP_PASSWORD; echo
+printf '%s\n' "$VOCAT_BOOTSTRAP_PASSWORD" | docker run --rm -i \
+  --user 0:0 \
+  -v vocat-data:/opt/vocat/data \
+  --entrypoint /opt/vocat/bin/vocat \
+  ghcr.io/mengmengcode/vocat:latest bootstrap-admin
+unset VOCAT_BOOTSTRAP_PASSWORD
+
 docker run -d \
   --name vocat \
   --restart unless-stopped \
   --network host \
   --privileged \
   --user 0:0 \
-  -e VOCAT_ADMIN_PASSWORD=change-this-password \
   -v vocat-data:/opt/vocat/data \
   -v /dev:/dev \
   -v /sys:/sys:ro \
@@ -168,8 +177,6 @@ Vocat 先從 `VOCAT_CONFIG` 讀取可選的 JSON 配置檔,再套用 `VOCAT_*` �
 | --- | --- | --- |
 | `VOCAT_ADDR` | `0.0.0.0:7575` | HTTP 監聽位址。 |
 | `VOCAT_DATABASE_PATH` | `./data/vocat.db` | SQLite 資料庫路徑。 |
-| `VOCAT_ADMIN_USERNAME` | `admin` | 初始管理員使用者名稱。 |
-| `VOCAT_ADMIN_PASSWORD` | `admin` | 初始管理員密碼。暴露服務前請務必修改。 |
 | `VOCAT_SESSION_TTL` | `24h` | 驗證工作階段有效期。 |
 | `VOCAT_SECURE_COOKIES` | `false` | 在使用 HTTPS 時將工作階段 Cookie 標記為安全。 |
 | `VOCAT_SHUTDOWN_TIMEOUT` | `10s` | 優雅關閉逾時時間。 |

@@ -89,6 +89,13 @@ func main() {
 			logger.Error("develop failed", "error", err)
 			os.Exit(2)
 		}
+	case "bootstrap-admin":
+		// Installer-only command. The password is read from stdin so it never
+		// appears in argv, an environment file, or process listings.
+		if err := runBootstrapAdmin(rest); err != nil {
+			logger.Error("bootstrap admin failed", "error", err)
+			os.Exit(1)
+		}
 	case "help", "-h", "--help":
 		printUsage(os.Stdout)
 	default:
@@ -117,12 +124,6 @@ func run(logger *slog.Logger, logs *loghub.Hub) error {
 		return err
 	}
 	defer instanceLock.Close()
-	if cfg.UsesDefaultCredentials() {
-		logger.Warn(
-			"default admin credentials are active; set VOCAT_ADMIN_PASSWORD before exposing the service",
-		)
-	}
-
 	startupContext, cancelStartup := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancelStartup()
 
@@ -182,12 +183,11 @@ func run(logger *slog.Logger, logs *loghub.Hub) error {
 	if err != nil {
 		return err
 	}
-	if err := authService.EnsureAdmin(
-		startupContext,
-		cfg.AdminUsername,
-		cfg.AdminPassword,
-	); err != nil {
-		return err
+	if _, adminErr := database.CurrentAdmin(startupContext); adminErr != nil {
+		if errors.Is(adminErr, store.ErrNotFound) {
+			return errors.New("administrator is not initialized; run vocat bootstrap-admin before starting the service")
+		}
+		return fmt.Errorf("read administrator: %w", adminErr)
 	}
 
 	cardReaders := pcsc.New()

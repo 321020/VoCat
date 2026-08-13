@@ -5,6 +5,7 @@
  * 富文本片段（嵌套链接/代码块的说明框）不走字典，在组件里按语言分支渲染。
  */
 export const EN_DICT: Record<string, string> = {
+	硬件路径: "Hardware Path",
 	"USB SIM 读卡器（仅 WiFi Calling）": "USB SIM Reader (WiFi Calling only)",
 	"仅在 SIM 启用 PIN 时填写": "Only enter this when SIM PIN is enabled",
 	"留空表示不修改；仅在 SIM 启用 PIN 时填写": "Leave blank to keep unchanged; only enter this when SIM PIN is enabled",

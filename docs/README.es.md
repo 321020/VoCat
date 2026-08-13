@@ -130,9 +130,11 @@ Verifíquelo e instálelo:
 sha256sum -c SHA256SUMS --ignore-missing
 sudo install -d -m 0755 /opt/vocat/bin /opt/vocat/data
 sudo install -m 0755 vocat-linux-amd64 /opt/vocat/bin/vocat
+read -rsp "Admin password: " VOCAT_BOOTSTRAP_PASSWORD; echo
+printf '%s\n' "$VOCAT_BOOTSTRAP_PASSWORD" | sudo /opt/vocat/bin/vocat bootstrap-admin
+unset VOCAT_BOOTSTRAP_PASSWORD
 sudo env \
   VOCAT_DATABASE_PATH=/opt/vocat/data/vocat.db \
-  VOCAT_ADMIN_PASSWORD=change-this-password \
   /opt/vocat/bin/vocat serve
 ```
 
@@ -149,13 +151,20 @@ seguir viendo los eventos de conexión en caliente USB, ejecute Vocat en modo de
 ```bash
 docker pull ghcr.io/mengmengcode/vocat:latest
 
+read -rsp "Admin password: " VOCAT_BOOTSTRAP_PASSWORD; echo
+printf '%s\n' "$VOCAT_BOOTSTRAP_PASSWORD" | docker run --rm -i \
+  --user 0:0 \
+  -v vocat-data:/opt/vocat/data \
+  --entrypoint /opt/vocat/bin/vocat \
+  ghcr.io/mengmengcode/vocat:latest bootstrap-admin
+unset VOCAT_BOOTSTRAP_PASSWORD
+
 docker run -d \
   --name vocat \
   --restart unless-stopped \
   --network host \
   --privileged \
   --user 0:0 \
-  -e VOCAT_ADMIN_PASSWORD=change-this-password \
   -v vocat-data:/opt/vocat/data \
   -v /dev:/dev \
   -v /sys:/sys:ro \
@@ -186,8 +195,6 @@ Vocat lee un archivo de configuración JSON opcional desde `VOCAT_CONFIG` y lueg
 | --- | --- | --- |
 | `VOCAT_ADDR` | `0.0.0.0:7575` | Dirección de escucha HTTP. |
 | `VOCAT_DATABASE_PATH` | `./data/vocat.db` | Ruta de la base de datos SQLite. |
-| `VOCAT_ADMIN_USERNAME` | `admin` | Nombre de usuario administrador inicial. |
-| `VOCAT_ADMIN_PASSWORD` | `admin` | Contraseña de administrador inicial. Cámbiela antes de exponer el servicio. |
 | `VOCAT_SESSION_TTL` | `24h` | Duración de la sesión de autenticación. |
 | `VOCAT_SECURE_COOKIES` | `false` | Marca las cookies de sesión como seguras cuando se usa HTTPS. |
 | `VOCAT_SHUTDOWN_TIMEOUT` | `10s` | Tiempo de espera de apagado ordenado. |

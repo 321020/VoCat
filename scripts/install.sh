@@ -10,9 +10,9 @@
 # Behavior:
 #   - Prompts for script language (中文 / English) as soon as it runs.
 #   - If the installed version equals the target version, does nothing (unless --force).
-#   - On first install, generates a random 32-char admin password, writes it to
-#     /etc/vocat/env (0600, loaded by the systemd unit), and prints it ONCE.
-#   - On update, preserves the existing env file and credentials.
+#   - On first install, generates a random 32-char admin password, initializes
+#     it directly in SQLite through stdin, and prints it ONCE.
+#   - Administrator credentials are never stored in /etc/vocat/env.
 #   - Verifies Linux XFRM/IPsec support required by IMS; on OpenWrt it tries
 #     the matching opkg packages first.
 #   - (Re)writes a systemd or OpenWrt/procd service and restarts it.
@@ -298,21 +298,32 @@ ensure_data_dir() {
     chown -R root:root /opt/vocat
 }
 
-# --- Env file (first install only) -------------------------------------------
-# Generates a random 32-char secret, stores it in the 0600 env file, and flags
-# FIRST_INSTALL so we can print the secret once at the end.
+# --- Administrator bootstrap and non-secret environment ---------------------
 FIRST_INSTALL=0
-setup_env() {
-    if [ -f "$ENV_FILE" ]; then
-        return
-    fi
-    install -d -m 0755 "$ENV_DIR"
-    local secret
+INITIAL_ADMIN_PASSWORD=""
+
+bootstrap_admin() {
+    local secret result
     secret=$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n')
-    [ -n "$secret" ] || die "生成随机密钥失败。" "Failed to generate a random secret."
-    printf 'VOCAT_ADMIN_PASSWORD=%s\n' "$secret" > "$ENV_FILE"
+    [ -n "$secret" ] || die "Failed to generate a random secret." "Failed to generate a random secret."
+    result=$(printf '%s\n' "$secret" | "$BINARY_PATH" bootstrap-admin --database /opt/vocat/data/vocat.db --username admin) || \
+        die "Failed to initialize the administrator." "Failed to initialize the administrator."
+    if [ "$result" = "created" ]; then
+        FIRST_INSTALL=1
+        INITIAL_ADMIN_PASSWORD="$secret"
+    fi
+}
+
+setup_env() {
+    install -d -m 0755 "$ENV_DIR"
+    local temporary="${ENV_FILE}.new.$$"
+    if [ -f "$ENV_FILE" ]; then
+        grep -Ev '^VOCAT_ADMIN_(USERNAME|PASSWORD|PASSWORD_B64)=' "$ENV_FILE" > "$temporary" || true
+    else
+        : > "$temporary"
+    fi
+    mv -f "$temporary" "$ENV_FILE"
     chmod 0600 "$ENV_FILE"
-    FIRST_INSTALL=1
 }
 
 # --- systemd unit ------------------------------------------------------------
@@ -480,17 +491,17 @@ skip_if_equal
 download_and_verify
 install_binary
 ensure_data_dir
+bootstrap_admin
 setup_env
 write_service
 enable_and_start
 
 if [ "$FIRST_INSTALL" -eq 1 ]; then
-    secret=$(grep -E '^VOCAT_ADMIN_PASSWORD=' "$ENV_FILE" | cut -d= -f2-)
     echo
     msg "================ 安装完成 ================" "================ Install complete ================"
     msg "首次安装已生成管理员初始密码 (仅显示一次):" "First-install admin password (shown once):"
     echo
-    echo "    $secret"
+    echo "    $INITIAL_ADMIN_PASSWORD"
     echo
     msg "用户名为 admin。请立即记录此密码。" "Username is admin. Record this password now."
     msg "登录后或运行以下命令修改密码:" "Change it via the web UI or run:"
