@@ -754,8 +754,8 @@ export const EN_DICT: Record<string, string> = {
   "扫描中...": "Scanning...",
   "扫描可用网络": "Scan Available Networks",
   "不可注册": "Unavailable",
-  "已连接到运营商 ePDG，但运营商拒绝了此 SIM 的 EAP-AKA 鉴权。通常表示该 Profile 未开通 IMS/WiFi Calling；重复重连不会解决，需要换用支持 VoWiFi 的运营商 Profile。":
-    "The carrier ePDG was reached, but it rejected EAP-AKA authentication for this SIM. The profile usually has no IMS/Wi-Fi Calling entitlement; reconnecting will not fix it, so use a carrier profile that supports VoWiFi.",
+  "已连接到运营商 ePDG，但 EAP-AKA 流程被拒绝。可能是初始身份、运营商 IKE/EAP 兼容性或订阅策略问题；请根据错误详情确认失败阶段。":
+    "The carrier ePDG was reached, but the EAP-AKA flow was rejected. This can be caused by the initial identity, carrier IKE/EAP interoperability, or subscription policy; check the error details for the failing stage.",
   "扫描结果只代表模组在当前位置实际收到的运营商信号，不代表模组支持的全部运营商；禁用网络表示当前 SIM 不允许注册。":
     "Scan results show only networks the modem can currently receive, not every operator the hardware supports. A forbidden network cannot be used by the current SIM.",
   "扫描网络失败": "Network scan failed",

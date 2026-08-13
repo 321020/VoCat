@@ -42,15 +42,17 @@ func (reader constantReader) Read(destination []byte) (int, error) {
 }
 
 type firstAuthCaptureTransport struct {
-	t       *testing.T
-	calls   int
-	suite   negotiatedSuite
-	keys    ikeKeys
-	spii    [8]byte
-	spir    [8]byte
-	nonceI  []byte
-	nonceR  []byte
-	floated bool
+	t           *testing.T
+	wantEAPOnly bool
+	wantGroup   uint16
+	calls       int
+	suite       negotiatedSuite
+	keys        ikeKeys
+	spii        [8]byte
+	spir        [8]byte
+	nonceI      []byte
+	nonceR      []byte
+	floated     bool
 }
 
 func (transport *firstAuthCaptureTransport) LocalAddr() *net.UDPAddr {
@@ -96,8 +98,16 @@ func (transport *firstAuthCaptureTransport) answerIKEInit(packet []byte) ([]byte
 		return nil, err
 	}
 	group := uint16(ke.Body[0])<<8 | uint16(ke.Body[1])
-	if group != dhMODP1024 || len(ke.Body[4:]) != 128 {
-		transport.t.Fatalf("Vodafone init KE = group %d length %d", group, len(ke.Body[4:]))
+	wantGroup := transport.wantGroup
+	if wantGroup == 0 {
+		wantGroup = dhMODP1024
+	}
+	wantKELength := 128
+	if wantGroup == dhMODP2048 {
+		wantKELength = 256
+	}
+	if group != wantGroup || len(ke.Body[4:]) != wantKELength {
+		transport.t.Fatalf("init KE = group %d length %d, want group %d length %d", group, len(ke.Body[4:]), wantGroup, wantKELength)
 	}
 	serverDH, err := newDHExchange(group, constantReader{value: 0x77})
 	if err != nil {
@@ -108,6 +118,15 @@ func (transport *firstAuthCaptureTransport) answerIKEInit(packet []byte) ([]byte
 		return nil, err
 	}
 	transport.suite = legacyTestSuite()
+	if group == dhMODP2048 {
+		transport.suite = negotiatedSuite{
+			EncryptionID:   encryptionAESCBC,
+			EncryptionBits: 128,
+			PRFID:          prfHMACSHA256,
+			IntegrityID:    integrityHMACSHA256_128,
+			DHID:           dhMODP2048,
+		}
+	}
 	transport.spii = header.InitiatorSPI
 	transport.spir = [8]byte{0x80, 1, 2, 3, 4, 5, 6, 7}
 	transport.nonceI = append([]byte(nil), nonce.Body...)
@@ -128,9 +147,9 @@ func (transport *firstAuthCaptureTransport) answerIKEInit(packet []byte) ([]byte
 		Protocol: protocolIKE,
 		Transforms: []transform{
 			{Type: transformEncryption, ID: encryptionAESCBC, KeyLength: 128},
-			{Type: transformPRF, ID: prfHMACSHA1},
-			{Type: transformIntegrity, ID: integrityHMACSHA1_96},
-			{Type: transformDH, ID: dhMODP1024},
+			{Type: transformPRF, ID: transport.suite.PRFID},
+			{Type: transformIntegrity, ID: transport.suite.IntegrityID},
+			{Type: transformDH, ID: group},
 		},
 	}})
 	keBody := make([]byte, 4+len(serverDH.Public))
@@ -180,8 +199,8 @@ func (transport *firstAuthCaptureTransport) observeFirstAuth(packet []byte) erro
 			foundEAPOnly = true
 		}
 	}
-	if !foundEAPOnly {
-		transport.t.Fatal("first IKE_AUTH omitted EAP_ONLY_AUTHENTICATION")
+	if foundEAPOnly != transport.wantEAPOnly {
+		transport.t.Fatalf("first IKE_AUTH EAP_ONLY_AUTHENTICATION present=%v, want %v", foundEAPOnly, transport.wantEAPOnly)
 	}
 	for _, kind := range []uint8{payloadIDi, payloadSA, payloadTSi, payloadTSr, payloadCP} {
 		if _, err := onePayload(payloads, kind); err != nil {
@@ -212,7 +231,7 @@ func (unusedInstaller) Install(context.Context, ChildSAConfig) (ChildSAHandle, e
 }
 
 func TestProviderVodafoneFirstAuthIsEAPOnlyAndRequestsIMSAPN(t *testing.T) {
-	capture := &firstAuthCaptureTransport{t: t}
+	capture := &firstAuthCaptureTransport{t: t, wantEAPOnly: true}
 	provider, err := NewProvider(Config{
 		Random:    constantReader{value: 0x42},
 		Timeout:   time.Second,
@@ -240,6 +259,45 @@ func TestProviderVodafoneFirstAuthIsEAPOnlyAndRequestsIMSAPN(t *testing.T) {
 			HomeMNC: "15",
 		},
 		EPDG: "epdg.epc.mnc015.mcc234.pub.3gppnetwork.org",
+		AKA:  aka,
+	})
+	if !errors.Is(err, errFirstAuthObserved) {
+		t.Fatalf("Start() error = %v, want capture sentinel", err)
+	}
+	if capture.calls != 2 || capture.floated || aka.calls != 0 {
+		t.Fatalf("capture calls=%d floated=%v AKA calls=%d", capture.calls, capture.floated, aka.calls)
+	}
+}
+
+func TestProviderO2GermanyFirstAuthUsesStandardEAPAndRequestsIMSAPN(t *testing.T) {
+	capture := &firstAuthCaptureTransport{t: t, wantEAPOnly: false, wantGroup: dhMODP2048}
+	provider, err := NewProvider(Config{
+		Random:    constantReader{value: 0x42},
+		Timeout:   time.Second,
+		Installer: unusedInstaller{},
+		APN:       "ims",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	provider.transportFactory = func(
+		context.Context,
+		transportConfig,
+		vowifi.ProxyRoute,
+		string,
+	) (datagramTransport, error) {
+		return capture, nil
+	}
+	aka := &testAKAProvider{}
+	_, err = provider.Start(context.Background(), vowifi.TunnelRequest{
+		DeviceID: "ec20-o2",
+		Identity: vowifi.SIMIdentity{
+			ICCID:   "8949200000000000000",
+			IMSI:    "262030123456789",
+			HomeMCC: "262",
+			HomeMNC: "03",
+		},
+		EPDG: "epdg.epc.mnc003.mcc262.pub.3gppnetwork.org",
 		AKA:  aka,
 	})
 	if !errors.Is(err, errFirstAuthObserved) {

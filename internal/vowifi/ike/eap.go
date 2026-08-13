@@ -285,6 +285,7 @@ type akaClient struct {
 	simIdentity       vowifi.SIMIdentity
 	provider          vowifi.AKAProvider
 	keys              akaKeys
+	lastResponseStage string
 	challengeComplete bool
 	resultIndication  bool
 	protectedSuccess  bool
@@ -298,7 +299,12 @@ func newAKAClient(identity vowifi.SIMIdentity, provider vowifi.AKAProvider) (*ak
 	if err != nil {
 		return nil, err
 	}
-	return &akaClient{identity: nai, simIdentity: identity, provider: provider}, nil
+	return &akaClient{
+		identity:          nai,
+		simIdentity:       identity,
+		provider:          provider,
+		lastResponseStage: "in the initial IKE_AUTH identity exchange",
+	}, nil
 }
 
 func (client *akaClient) handle(ctx context.Context, encoded []byte) (eapAction, error) {
@@ -308,9 +314,9 @@ func (client *akaClient) handle(ctx context.Context, encoded []byte) (eapAction,
 	}
 	switch packet.Code {
 	case eapFailure:
-		stage := "before the SIM AKA challenge (identity or subscription rejected)"
+		stage := client.lastResponseStage
 		if client.challengeComplete {
-			stage = "after the SIM AKA response (AKA result or subscription rejected)"
+			stage = "after the SIM AKA challenge response"
 		}
 		return eapAction{}, fmt.Errorf("%w %s", vowifi.ErrEAPAuthenticationRejected, stage)
 	case eapSuccess:
@@ -333,6 +339,7 @@ func (client *akaClient) handle(ctx context.Context, encoded []byte) (eapAction,
 			Type:       eapTypeIdentity,
 			Data:       client.identity,
 		})
+		client.lastResponseStage = "after EAP-Response/Identity"
 		return eapAction{Response: response}, err
 	case eapTypeAKA:
 		return client.handleAKARequest(ctx, packet)
@@ -405,6 +412,7 @@ func (client *akaClient) respondAKAIdentity(identifier uint8, attributes []akaAt
 		Type:       eapTypeAKA,
 		Data:       data,
 	})
+	client.lastResponseStage = "after EAP-Response/AKA-Identity"
 	return eapAction{Response: response}, err
 }
 

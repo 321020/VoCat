@@ -88,6 +88,42 @@ func TestInitialEAPOnlyAuthCarriesAPNIDrAndNotify(t *testing.T) {
 	}
 }
 
+func TestInitialStandardEAPAuthOmitsEAPOnlyNotify(t *testing.T) {
+	idi := payload{Type: payloadIDi, Body: []byte{3, 0, 0, 0, 'u'}}
+	idr := payload{Type: payloadIDr, Body: []byte{2, 0, 0, 0, 'i', 'm', 's'}}
+	payloads := buildInitialEAPAuth(
+		idi,
+		idr,
+		[]byte{1, 2, 3},
+		dualStackTrafficSelectors(payloadTSi),
+		dualStackTrafficSelectors(payloadTSr),
+		false,
+	)
+	if len(payloads) != 6 || payloads[0].Type != payloadIDi || payloads[1].Type != payloadIDr {
+		t.Fatalf("initial standard EAP payload order = %#v", payloads)
+	}
+	for _, item := range payloadsOfType(payloads, payloadNotify) {
+		kind, _, err := parseNotify(item)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if kind == notifyEAPOnlyAuth {
+			t.Fatal("standard EAP initial request contains EAP_ONLY_AUTHENTICATION")
+		}
+	}
+}
+
+func TestO2GermanyUsesStandardEAPAuthentication(t *testing.T) {
+	for _, mnc := range []string{"03", "003"} {
+		if eapOnlyAuthentication("262", mnc) {
+			t.Fatalf("O2 Germany 262-%s unexpectedly uses EAP-only", mnc)
+		}
+	}
+	if !eapOnlyAuthentication("262", "02") || !eapOnlyAuthentication("234", "15") {
+		t.Fatal("non-O2 PLMN lost the existing EAP-only policy")
+	}
+}
+
 func TestResponderIDrValidatorsSeparateEPDGAndAPN(t *testing.T) {
 	epdg := payload{
 		Type: payloadIDr,

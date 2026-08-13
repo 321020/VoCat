@@ -111,6 +111,7 @@ func (provider *Provider) Start(ctx context.Context, request vowifi.TunnelReques
 
 	group := uint16(dhMODP2048)
 	legacyFirst := legacyIKEProfile(request.Identity.HomeMCC, request.Identity.HomeMNC)
+	eapOnly := eapOnlyAuthentication(request.Identity.HomeMCC, request.Identity.HomeMNC)
 	if legacyFirst {
 		group = dhMODP1024
 	}
@@ -259,7 +260,7 @@ func (provider *Provider) Start(ctx context.Context, request vowifi.TunnelReques
 	requestedIDr := payload{Type: payloadIDr, Body: append([]byte{2, 0, 0, 0}, []byte(provider.config.APN)...)}
 	tsi := dualStackTrafficSelectors(payloadTSi)
 	tsr := dualStackTrafficSelectors(payloadTSr)
-	firstAuthPayloads := buildInitialEAPOnlyAuth(idi, requestedIDr, childOfferBody, tsi, tsr)
+	firstAuthPayloads := buildInitialEAPAuth(idi, requestedIDr, childOfferBody, tsi, tsr, eapOnly)
 	authHeader := ikeHeader{
 		InitiatorSPI: initiatorSPI,
 		ResponderSPI: responseHeader.ResponderSPI,
@@ -296,7 +297,7 @@ func (provider *Provider) Start(ctx context.Context, request vowifi.TunnelReques
 		serverName,
 		provider.config.RootCAs,
 		provider.config.ResponderPublicKey,
-		true, // RFC 5998 EAP-only authentication defers responder AUTH.
+		eapOnly, // RFC 5998 EAP-only authentication defers responder AUTH.
 	)
 	if err != nil {
 		return nil, err
@@ -383,10 +384,10 @@ func (provider *Provider) Start(ctx context.Context, request vowifi.TunnelReques
 	}
 	finalAUTHs := payloadsOfType(finalPayloads, payloadAuth)
 	if len(finalAUTHs) != 1 {
-		return nil, fmt.Errorf("%w: final EAP-only response must contain exactly one MSK AUTH payload", vowifi.ErrResponderAUTHRequired)
+		return nil, fmt.Errorf("%w: final EAP response must contain exactly one MSK AUTH payload", vowifi.ErrResponderAUTHRequired)
 	}
 	if len(responderID.Body) == 0 {
-		return nil, errors.New("ike: EAP-only exchange has no initial ePDG IDr for the responder AUTH transcript")
+		return nil, errors.New("ike: EAP exchange has no responder IDr for the AUTH transcript")
 	}
 	finalIDs := payloadsOfType(finalPayloads, payloadIDr)
 	if len(finalIDs) > 1 {
@@ -553,6 +554,36 @@ func legacyIKEProfile(mcc, mnc string) bool {
 	return plmn == "23415" || plmn == "2044"
 }
 
+func eapOnlyAuthentication(mcc, mnc string) bool {
+	// Android exposes the ePDG authentication method as carrier policy rather
+	// than unconditionally requesting RFC 5998 EAP-only authentication. O2
+	// Germany's 262-03 ePDG rejects an EAP-only initial IKE_AUTH before it sends
+	// an EAP-AKA identity or challenge. Use the certificate-authenticated EAP
+	// flow for that PLMN while preserving the established behavior elsewhere.
+	plmn := strings.TrimSpace(mcc) + strings.TrimLeft(strings.TrimSpace(mnc), "0")
+	return plmn != "2623"
+}
+
+func buildInitialEAPAuth(
+	idi payload,
+	requestedIDr payload,
+	childOfferBody []byte,
+	tsi payload,
+	tsr payload,
+	eapOnly bool,
+) []payload {
+	payloads := []payload{idi, requestedIDr}
+	if eapOnly {
+		payloads = append(payloads, makeNotify(notifyEAPOnlyAuth, nil))
+	}
+	return append(payloads,
+		payload{Type: payloadSA, Body: append([]byte(nil), childOfferBody...)},
+		tsi,
+		tsr,
+		configurationRequest(),
+	)
+}
+
 func buildInitialEAPOnlyAuth(
 	idi payload,
 	requestedIDr payload,
@@ -560,15 +591,7 @@ func buildInitialEAPOnlyAuth(
 	tsi payload,
 	tsr payload,
 ) []payload {
-	return []payload{
-		idi,
-		requestedIDr,
-		makeNotify(notifyEAPOnlyAuth, nil),
-		{Type: payloadSA, Body: append([]byte(nil), childOfferBody...)},
-		tsi,
-		tsr,
-		configurationRequest(),
-	}
+	return buildInitialEAPAuth(idi, requestedIDr, childOfferBody, tsi, tsr, true)
 }
 
 func ikeOffer(group uint16, legacyFirst bool) proposal {

@@ -106,13 +106,31 @@ func TestEAPFailureReportsAuthenticationStage(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, err = client.handle(context.Background(), failure)
-	if !errors.Is(err, vowifi.ErrEAPAuthenticationRejected) || !strings.Contains(err.Error(), "before the SIM AKA challenge") {
+	if !errors.Is(err, vowifi.ErrEAPAuthenticationRejected) || !strings.Contains(err.Error(), "initial IKE_AUTH identity exchange") {
 		t.Fatalf("pre-challenge failure = %v", err)
 	}
 	client.challengeComplete = true
 	_, err = client.handle(context.Background(), failure)
-	if !errors.Is(err, vowifi.ErrEAPAuthenticationRejected) || !strings.Contains(err.Error(), "after the SIM AKA response") {
+	if !errors.Is(err, vowifi.ErrEAPAuthenticationRejected) || !strings.Contains(err.Error(), "after the SIM AKA challenge response") {
 		t.Fatalf("post-challenge failure = %v", err)
+	}
+}
+
+func TestEAPFailureReportsIdentityResponseStage(t *testing.T) {
+	client, err := newAKAClient(testSIMIdentity(), &testAKAProvider{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	identityRequest, _ := marshalEAPPacket(eapPacket{
+		Code: eapRequest, Identifier: 4, Type: eapTypeIdentity,
+	})
+	if _, err := client.handle(context.Background(), identityRequest); err != nil {
+		t.Fatal(err)
+	}
+	failure, _ := marshalEAPPacket(eapPacket{Code: eapFailure, Identifier: 5})
+	_, err = client.handle(context.Background(), failure)
+	if !errors.Is(err, vowifi.ErrEAPAuthenticationRejected) || !strings.Contains(err.Error(), "after EAP-Response/Identity") {
+		t.Fatalf("identity-stage failure = %v", err)
 	}
 }
 
