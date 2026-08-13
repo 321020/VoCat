@@ -275,28 +275,66 @@ install_cellular_control_support() {
     fi
 
     # Linux's upstream serial tables do not consistently include EM7430 PID
-    # 9077. Register only this exact ID, with MBIM loaded first so option cannot
-    # claim the MBIM control/data interfaces.
-    command -v modprobe >/dev/null 2>&1 && modprobe cdc_mbim >/dev/null 2>&1 || true
-    command -v modprobe >/dev/null 2>&1 && modprobe option >/dev/null 2>&1 || true
-    if [ -w /sys/bus/usb-serial/drivers/option1/new_id ]; then
-        printf '%s\n' '1199 9077' > /sys/bus/usb-serial/drivers/option1/new_id 2>/dev/null || true
-    fi
+    # 9077. Keep a small host helper because a dynamic option ID can also claim
+    # the MBIM interfaces after any later USB reset.
+    install -d -m 0755 "$INSTALL_DIR"
+    cat > "${INSTALL_DIR}/vocat-bind-em7430" <<'EOF'
+#!/bin/sh
+SYS_ROOT="${VOCAT_SYS_ROOT:-/sys}"
+USB_ROOT="$SYS_ROOT/bus/usb/devices"
+OPTION_NEW_ID="$SYS_ROOT/bus/usb-serial/drivers/option1/new_id"
+OPTION_UNBIND="$SYS_ROOT/bus/usb/drivers/option/unbind"
+MBIM_BIND="$SYS_ROOT/bus/usb/drivers/cdc_mbim/bind"
+command -v modprobe >/dev/null 2>&1 && modprobe cdc_mbim >/dev/null 2>&1 || true
+command -v modprobe >/dev/null 2>&1 && modprobe option >/dev/null 2>&1 || true
+repair() {
+    [ -d "$USB_ROOT" ] || return 0
+    for device in "$USB_ROOT"/*; do
+        [ -f "$device/idVendor" ] || continue
+        [ "$(tr '[:upper:]' '[:lower:]' < "$device/idVendor" 2>/dev/null)" = 1199 ] || continue
+        [ "$(tr '[:upper:]' '[:lower:]' < "$device/idProduct" 2>/dev/null)" = 9077 ] || continue
+        control=""; needs_bind=0
+        for interface in "${device}":*; do
+            [ -d "$interface" ] || continue
+            class=$(tr '[:upper:]' '[:lower:]' < "$interface/bInterfaceClass" 2>/dev/null || true)
+            subclass=$(tr '[:upper:]' '[:lower:]' < "$interface/bInterfaceSubClass" 2>/dev/null || true)
+            protocol=$(tr '[:upper:]' '[:lower:]' < "$interface/bInterfaceProtocol" 2>/dev/null || true)
+            is_control=0; is_data=0
+            [ "$class/$subclass" = 02/0e ] && is_control=1
+            [ "$class/$protocol" = 0a/02 ] && is_data=1
+            [ "$is_control" -eq 1 ] || [ "$is_data" -eq 1 ] || continue
+            name=$(basename "$interface"); driver=""
+            [ ! -L "$interface/driver" ] || driver=$(basename "$(readlink "$interface/driver")")
+            if [ "$is_control" -eq 1 ]; then
+                control="$name"; [ "$driver" = cdc_mbim ] || needs_bind=1
+            fi
+            if [ "$driver" = option ] && [ -w "$OPTION_UNBIND" ]; then
+                printf '%s' "$name" > "$OPTION_UNBIND" 2>/dev/null || true
+            fi
+        done
+        if [ "$needs_bind" -eq 1 ] && [ -n "$control" ] && [ -w "$MBIM_BIND" ]; then
+            printf '%s' "$control" > "$MBIM_BIND" 2>/dev/null || true
+        fi
+    done
+}
+repair
+[ ! -w "$OPTION_NEW_ID" ] || printf '%s\n' '1199 9077' > "$OPTION_NEW_ID" 2>/dev/null || true
+repair
+EOF
+    chmod 0755 "${INSTALL_DIR}/vocat-bind-em7430"
+    "${INSTALL_DIR}/vocat-bind-em7430" || true
     if is_openwrt; then
         install -d -m 0755 /etc/hotplug.d/usb
         cat > /etc/hotplug.d/usb/95-vocat-em7430 <<'EOF'
 #!/bin/sh
 [ "$ACTION" = add ] || exit 0
 case "${PRODUCT:-}" in 1199/9077/*) ;; *) exit 0 ;; esac
-modprobe cdc_mbim >/dev/null 2>&1 || true
-modprobe option >/dev/null 2>&1 || true
-[ -w /sys/bus/usb-serial/drivers/option1/new_id ] && \
-    printf '%s\n' '1199 9077' > /sys/bus/usb-serial/drivers/option1/new_id 2>/dev/null || true
+/opt/vocat/bin/vocat-bind-em7430 || true
 EOF
         chmod 0755 /etc/hotplug.d/usb/95-vocat-em7430
     elif command -v udevadm >/dev/null 2>&1 && [ -d /etc/udev/rules.d ]; then
         cat > /etc/udev/rules.d/95-vocat-em7430.rules <<'EOF'
-ACTION=="add", SUBSYSTEM=="usb", ATTR{idVendor}=="1199", ATTR{idProduct}=="9077", RUN+="/bin/sh -c 'modprobe cdc_mbim; modprobe option; printf 1199\\ 9077\\n > /sys/bus/usb-serial/drivers/option1/new_id'"
+ACTION=="add", SUBSYSTEM=="usb", ATTRS{idVendor}=="1199", ATTRS{idProduct}=="9077", RUN+="/opt/vocat/bin/vocat-bind-em7430"
 EOF
         udevadm control --reload-rules >/dev/null 2>&1 || true
     fi

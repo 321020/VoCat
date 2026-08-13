@@ -45,10 +45,11 @@ RUN mkdir -p /opt/vocat/bin /opt/vocat/data && \
 
 COPY --from=go-builder /out/vocat /opt/vocat/bin/vocat
 COPY scripts/docker-entrypoint.sh /usr/local/bin/vocat-entrypoint
+COPY scripts/bind-sierra-em7430.sh /usr/local/bin/vocat-bind-em7430
 
 # Symlink into /usr/local/bin so `docker exec <ctr> vocat ...` finds it via $PATH.
 RUN ln -s /opt/vocat/bin/vocat /usr/local/bin/vocat && \
-    chmod 0755 /usr/local/bin/vocat-entrypoint
+    chmod 0755 /usr/local/bin/vocat-entrypoint /usr/local/bin/vocat-bind-em7430
 
 # Hardware access and the bundled pcscd daemon require root inside the
 # container. The container already needs host networking and privileged device

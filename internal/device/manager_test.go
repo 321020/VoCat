@@ -218,6 +218,25 @@ func TestParseSierraGStatus(t *testing.T) {
 	}
 }
 
+func TestParseSierraSIMIdentityFromCRSM(t *testing.T) {
+	iccid := parseCRSMICCID(okResponse(`+CRSM: 144,0,"98103254769810325476"`))
+	if iccid != "89012345678901234567" {
+		t.Fatalf("ICCID = %q", iccid)
+	}
+	imsi := parseCRSMIMSI(okResponse(`+CRSM: 144,0,"080910108967452301"`))
+	if imsi != "001019876543210" {
+		t.Fatalf("IMSI = %q", imsi)
+	}
+	manufacturer, model, firmware := parseATI([]string{
+		"Manufacturer: Sierra Wireless, Incorporated",
+		"Model: EM7430",
+		"Revision: SWI9X30C_02.24.05.06 r7040",
+	})
+	if manufacturer != "Sierra Wireless, Incorporated" || model != "EM7430" || firmware != "SWI9X30C_02.24.05.06 r7040" {
+		t.Fatalf("ATI = manufacturer %q model %q firmware %q", manufacturer, model, firmware)
+	}
+}
+
 func TestManagerForcesRFOffBeforeInspectingChangedSIMNetwork(t *testing.T) {
 	client := &transcriptClient{steps: []clientStep{
 		{command: "ATI", response: okResponse("Quectel", "EC20", "Revision: test")},

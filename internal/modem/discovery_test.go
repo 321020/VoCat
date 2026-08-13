@@ -245,7 +245,7 @@ func TestSysFSDiscoveryFindsSierraEM7430MBIMComposition(t *testing.T) {
 	mustWrite(t, filepath.Join(usbRoot, deviceName, "idProduct"), "9077\n")
 	mustWrite(t, filepath.Join(usbRoot, deviceName, "manufacturer"), "Sierra Wireless, Incorporated\n")
 	mustWrite(t, filepath.Join(usbRoot, deviceName, "product"), "EM7430\n")
-	mustWrite(t, filepath.Join(usbRoot, deviceName, "serial"), "LR93228600041019\n")
+	mustWrite(t, filepath.Join(usbRoot, deviceName, "serial"), "TESTEM74300001\n")
 	for _, item := range []struct {
 		interfaceNumber string
 		tty             string
@@ -273,7 +273,7 @@ func TestSysFSDiscoveryFindsSierraEM7430MBIMComposition(t *testing.T) {
 		t.Fatalf("candidates = %#v, want one Sierra modem", candidates)
 	}
 	candidate := candidates[0]
-	if candidate.ID != "sierra-lr93228600041019-2-1" || candidate.HardwareKind != "sierra_usb" {
+	if candidate.ID != "sierra-testem74300001-2-1" || candidate.HardwareKind != "sierra_usb" {
 		t.Fatalf("identity = %#v", candidate)
 	}
 	if candidate.ATPort.Name != "ttyUSB2" || candidate.ATPort.InterfaceNumber != 3 {
@@ -284,6 +284,39 @@ func TestSysFSDiscoveryFindsSierraEM7430MBIMComposition(t *testing.T) {
 	}
 	if candidate.NetworkInterface != "wwan0" || candidate.DiscoveryIssue != "" {
 		t.Fatalf("candidate = %#v", candidate)
+	}
+}
+
+func TestRepairSierraEM7430MBIMRebindsOptionControlInterface(t *testing.T) {
+	root := t.TempDir()
+	sysRoot := filepath.Join(root, "sys")
+	usbRoot := filepath.Join(sysRoot, "bus", "usb", "devices")
+	deviceName := "1-7"
+	interfaceName := deviceName + ":1.12"
+	mustWrite(t, filepath.Join(usbRoot, deviceName, "idVendor"), "1199\n")
+	mustWrite(t, filepath.Join(usbRoot, deviceName, "idProduct"), "9077\n")
+	mustWrite(t, filepath.Join(usbRoot, interfaceName, "bInterfaceClass"), "02\n")
+	mustWrite(t, filepath.Join(usbRoot, interfaceName, "bInterfaceSubClass"), "0e\n")
+	mustWrite(t, filepath.Join(usbRoot, interfaceName, "bInterfaceProtocol"), "00\n")
+
+	optionDriver := filepath.Join(sysRoot, "bus", "usb", "drivers", "option")
+	mbimDriver := filepath.Join(sysRoot, "bus", "usb", "drivers", "cdc_mbim")
+	mustWrite(t, filepath.Join(optionDriver, "unbind"), "")
+	mustWrite(t, filepath.Join(mbimDriver, "bind"), "")
+	if err := os.Symlink(optionDriver, filepath.Join(usbRoot, interfaceName, "driver")); err != nil {
+		t.Fatal(err)
+	}
+	entries, err := os.ReadDir(usbRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	NewSysFSDiscoverer(sysRoot, filepath.Join(root, "dev")).repairSierraEM7430MBIM(usbRoot, entries)
+	if got := readTrimmed(filepath.Join(optionDriver, "unbind")); got != interfaceName {
+		t.Fatalf("option unbind = %q, want %q", got, interfaceName)
+	}
+	if got := readTrimmed(filepath.Join(mbimDriver, "bind")); got != interfaceName {
+		t.Fatalf("cdc_mbim bind = %q, want %q", got, interfaceName)
 	}
 }
 

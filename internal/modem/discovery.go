@@ -50,8 +50,9 @@ func (d *SysFSDiscoverer) Discover(ctx context.Context) ([]Candidate, error) {
 
 	aliases := readSerialAliases(filepath.Join(d.DevRoot, "serial", "by-id"))
 	// EM7430 PID 9077 is missing from several distro qcserial/option ID tables.
-	// On a real host, load MBIM first and add only this exact serial ID so the
-	// class driver keeps interfaces 12/13 while option exposes diag/NMEA/AT.
+	// On a real host, register that exact ID and then repair the MBIM binding.
+	// A dynamic option ID also matches interfaces 12/13 after a later USB reset,
+	// even when cdc_mbim was loaded first, so ordering alone is not sufficient.
 	d.prepareSierraEM7430(ctx, usbRoot, entries)
 	devices := make(map[string]*discoveredUSBDevice)
 	for _, entry := range entries {
@@ -500,6 +501,60 @@ func (d *SysFSDiscoverer) prepareSierraEM7430(ctx context.Context, usbRoot strin
 		[]byte(sierraVendorID+" 9077\n"),
 		0o200,
 	)
+	d.repairSierraEM7430MBIM(usbRoot, entries)
+}
+
+func (d *SysFSDiscoverer) repairSierraEM7430MBIM(usbRoot string, entries []os.DirEntry) {
+	devices := make(map[string]struct{})
+	for _, entry := range entries {
+		if strings.Contains(entry.Name(), ":") {
+			continue
+		}
+		path := filepath.Join(usbRoot, entry.Name())
+		if strings.EqualFold(readTrimmed(filepath.Join(path, "idVendor")), sierraVendorID) &&
+			strings.EqualFold(readTrimmed(filepath.Join(path, "idProduct")), "9077") {
+			devices[entry.Name()] = struct{}{}
+		}
+	}
+
+	var controlsToBind []string
+	for _, entry := range entries {
+		deviceName, _, ok := strings.Cut(entry.Name(), ":")
+		if !ok {
+			continue
+		}
+		if _, ok := devices[deviceName]; !ok {
+			continue
+		}
+		interfacePath := filepath.Join(usbRoot, entry.Name())
+		class := strings.ToLower(readTrimmed(filepath.Join(interfacePath, "bInterfaceClass")))
+		subclass := strings.ToLower(readTrimmed(filepath.Join(interfacePath, "bInterfaceSubClass")))
+		protocol := strings.ToLower(readTrimmed(filepath.Join(interfacePath, "bInterfaceProtocol")))
+		isControl := class == "02" && subclass == "0e"
+		isData := class == "0a" && protocol == "02"
+		if !isControl && !isData {
+			continue
+		}
+
+		driverPath, err := filepath.EvalSymlinks(filepath.Join(interfacePath, "driver"))
+		if err == nil && filepath.Base(driverPath) == "cdc_mbim" {
+			continue
+		}
+		if isControl {
+			controlsToBind = append(controlsToBind, entry.Name())
+		}
+		if err == nil && filepath.Base(driverPath) == "option" {
+			_ = os.WriteFile(filepath.Join(driverPath, "unbind"), []byte(entry.Name()), 0o200)
+		}
+	}
+
+	bindPath := filepath.Join(d.SysRoot, "bus", "usb", "drivers", "cdc_mbim", "bind")
+	for _, interfaceName := range controlsToBind {
+		// Binding the MBIM control interface also claims its paired CDC data
+		// interface. Errors are intentionally non-fatal so discovery can return a
+		// degraded device with actionable details on kernels without cdc_mbim.
+		_ = os.WriteFile(bindPath, []byte(interfaceName), 0o200)
+	}
 }
 
 func sanitizeID(value string) string {
