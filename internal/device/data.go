@@ -86,15 +86,13 @@ func (manager *Manager) SetNetwork(
 	candidate := manager.candidateFor(state)
 	backend := strings.ToLower(strings.TrimSpace(request.Backend))
 	if backend == "" {
-		if candidate.ControlProtocol == "mbim" && candidate.QMIControl != "" && candidate.NetworkInterface != "" {
-			backend = "mbim"
-		} else if candidate.QMIControl != "" && candidate.NetworkInterface != "" {
+		if candidate.QMIControl != "" && candidate.NetworkInterface != "" {
 			backend = "qmi"
 		} else {
 			backend = "at"
 		}
 	}
-	if backend != "at" && backend != "qmi" && backend != "mbim" {
+	if backend != "at" && backend != "qmi" {
 		return NetworkResult{}, fmt.Errorf("unsupported cellular data backend %q", request.Backend)
 	}
 	if backend == "qmi" {
@@ -107,16 +105,6 @@ func (manager *Manager) SetNetwork(
 			// from its temporary profile. Do not return that output when the
 			// profile contains credentials.
 			return NetworkResult{}, errors.New("authenticated QMI cellular data operation failed")
-		}
-		return result, err
-	}
-	if backend == "mbim" {
-		if candidate.QMIControl == "" || candidate.NetworkInterface == "" {
-			return NetworkResult{}, fmt.Errorf("%w: MBIM control device and network interface are required", ErrDataBackendUnavailable)
-		}
-		result, err := setMBIMNetwork(ctx, candidate, request.Enabled, apn, ipVersion, request.Username, request.Password, authentication)
-		if err != nil && (request.Username != "" || request.Password != "") {
-			return NetworkResult{}, errors.New("authenticated MBIM cellular data operation failed")
 		}
 		return result, err
 	}

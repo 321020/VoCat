@@ -45,8 +45,8 @@ function Field({ label, children }: { label: ReactNode; children: ReactNode }) {
 export function DeviceAddDialog(props: DeviceAddDialogProps) {
   const { t } = useI18n();
   const { addSelected, addConfig } = props;
+  const fixedQmi = isQmiControl(addSelected?.controlPath || addConfig?.controlDevice);
   const isMbim = String(addSelected?.mode || "").toLowerCase() === "mbim";
-	const fixedQmi = !isMbim && isQmiControl(addSelected?.controlPath || addConfig?.controlDevice);
 	const isReader = addSelected?.hardwareKind === "pcsc" || String(addSelected?.mode || "").toLowerCase() === "pcsc";
 
   useEffect(() => {

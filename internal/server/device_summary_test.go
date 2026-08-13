@@ -6,23 +6,9 @@ import (
 	"time"
 
 	"vocat/internal/device"
-	"vocat/internal/modem"
 	"vocat/internal/store"
 	"vocat/internal/vowifi"
 )
-
-func TestSierraCandidateUsesMBIMDataAndATForESIM(t *testing.T) {
-	candidate := modem.Candidate{
-		HardwareKind: "sierra_usb", QMIControl: "/dev/cdc-wdm0", ControlProtocol: "mbim",
-		ATPort: modem.Port{Path: "/dev/ttyUSB2"},
-	}
-	if got := backendMode(candidate); got != "mbim" {
-		t.Fatalf("backendMode = %q", got)
-	}
-	if got := candidateESIMTransport(candidate); got != "at" {
-		t.Fatalf("candidateESIMTransport = %q", got)
-	}
-}
 
 func TestConfiguredDeviceSummaryIgnoresVoWiFiRuntimeFromPreviousSIM(t *testing.T) {
 	database, err := store.Open(context.Background(), ":memory:")

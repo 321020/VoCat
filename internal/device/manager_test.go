@@ -151,10 +151,6 @@ func TestParseICCIDIdentifierStripsTwoFillerNibbles(t *testing.T) {
 	if got := parseICCIDIdentifier(response, []string{"+CCID:", "+QCCID:"}, 18, 22); got != "894921007608519523" {
 		t.Fatalf("parseICCIDIdentifier = %q", got)
 	}
-	sierra := okResponse("!ICCID: 89441000400316048687")
-	if got := parseICCIDIdentifier(sierra, []string{"+CCID:", "+QCCID:", "!ICCID:"}, 18, 22); got != "89441000400316048687" {
-		t.Fatalf("parse Sierra ICCID = %q", got)
-	}
 }
 
 func TestManagerRequiresStartAndKnownDevice(t *testing.T) {
@@ -188,52 +184,8 @@ func TestManagerBackendSelectionIsExplicit(t *testing.T) {
 	if got := manager.backendFor(state); got != "qmi" {
 		t.Fatalf("backend = %q, want qmi", got)
 	}
-	if err := manager.SetBackend(id, "mbim"); err != nil {
-		t.Fatalf("MBIM backend was rejected: %v", err)
-	}
-	if got := manager.backendFor(state); got != "mbim" {
-		t.Fatalf("backend = %q, want mbim", got)
-	}
-	if err := manager.SetBackend(id, "invalid"); err == nil {
+	if err := manager.SetBackend(id, "mbim"); err == nil {
 		t.Fatal("unsupported backend was accepted")
-	}
-}
-
-func TestParseSierraGStatus(t *testing.T) {
-	metrics := parseSierraGStatus(okResponse(
-		"!GSTATUS:",
-		"System mode: LTE        PS state: Attached",
-		"LTE band: B3           LTE bw: 20 MHz",
-		"LTE Rx chan: 1650      LTE Tx chan: 19650",
-		"RSSI (dBm): -63.0      Tx Power: --",
-		"RSRP (dBm): -92.0      RSRQ (dB): -7.2",
-		"SINR (dB): 17.6",
-	))
-	if metrics.AccessTech != "LTE" || metrics.Band != "B3" || metrics.Channel != "1650" {
-		t.Fatalf("identity metrics = %#v", metrics)
-	}
-	if metrics.RSSI == nil || *metrics.RSSI != -63 || metrics.RSRP == nil || *metrics.RSRP != -92 ||
-		metrics.RSRQ == nil || *metrics.RSRQ != -7 || metrics.SINR == nil || *metrics.SINR != 18 {
-		t.Fatalf("radio metrics = %#v", metrics)
-	}
-}
-
-func TestParseSierraSIMIdentityFromCRSM(t *testing.T) {
-	iccid := parseCRSMICCID(okResponse(`+CRSM: 144,0,"98103254769810325476"`))
-	if iccid != "89012345678901234567" {
-		t.Fatalf("ICCID = %q", iccid)
-	}
-	imsi := parseCRSMIMSI(okResponse(`+CRSM: 144,0,"080910108967452301"`))
-	if imsi != "001019876543210" {
-		t.Fatalf("IMSI = %q", imsi)
-	}
-	manufacturer, model, firmware := parseATI([]string{
-		"Manufacturer: Sierra Wireless, Incorporated",
-		"Model: EM7430",
-		"Revision: SWI9X30C_02.24.05.06 r7040",
-	})
-	if manufacturer != "Sierra Wireless, Incorporated" || model != "EM7430" || firmware != "SWI9X30C_02.24.05.06 r7040" {
-		t.Fatalf("ATI = manufacturer %q model %q firmware %q", manufacturer, model, firmware)
 	}
 }
 

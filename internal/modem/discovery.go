@@ -5,17 +5,13 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
 )
 
-const (
-	quectelVendorID = "2c7c"
-	sierraVendorID  = "1199"
-)
+const quectelVendorID = "2c7c"
 
 type SysFSDiscoverer struct {
 	SysRoot string
@@ -49,11 +45,6 @@ func (d *SysFSDiscoverer) Discover(ctx context.Context) ([]Candidate, error) {
 	}
 
 	aliases := readSerialAliases(filepath.Join(d.DevRoot, "serial", "by-id"))
-	// EM7430 PID 9077 is missing from several distro qcserial/option ID tables.
-	// On a real host, register that exact ID and then repair the MBIM binding.
-	// A dynamic option ID also matches interfaces 12/13 after a later USB reset,
-	// even when cdc_mbim was loaded first, so ordering alone is not sufficient.
-	d.prepareSierraEM7430(ctx, usbRoot, entries)
 	devices := make(map[string]*discoveredUSBDevice)
 	for _, entry := range entries {
 		if err := ctx.Err(); err != nil {
@@ -79,19 +70,17 @@ func (d *SysFSDiscoverer) Discover(ctx context.Context) ([]Candidate, error) {
 			resolvedDevice = devicePath
 		}
 		vendorID := strings.ToLower(readTrimmed(filepath.Join(resolvedDevice, "idVendor")))
-		productID := strings.ToLower(readTrimmed(filepath.Join(resolvedDevice, "idProduct")))
-		hardwareKind, idPrefix, supported := supportedUSBModem(vendorID, productID)
-		if !supported {
+		if vendorID != quectelVendorID {
 			continue
 		}
 
 		state := devices[deviceName]
 		if state == nil {
+			productID := strings.ToLower(readTrimmed(filepath.Join(resolvedDevice, "idProduct")))
 			serialNumber := readTrimmed(filepath.Join(resolvedDevice, "serial"))
 			state = &discoveredUSBDevice{
 				candidate: Candidate{
-					HardwareKind: hardwareKind,
-					ID:           candidateID(idPrefix, productID, serialNumber, deviceName),
+					ID:           candidateID(productID, serialNumber, deviceName),
 					VendorID:     vendorID,
 					ProductID:    productID,
 					Manufacturer: readTrimmed(filepath.Join(resolvedDevice, "manufacturer")),
@@ -115,12 +104,8 @@ func (d *SysFSDiscoverer) Discover(ctx context.Context) ([]Candidate, error) {
 				StablePath:      aliases[name],
 				Name:            name,
 				InterfaceNumber: interfaceNumber,
-				Role:            usbPortRole(vendorID, interfaceNumber, name),
+				Role:            quecPortRole(interfaceNumber, name),
 			}
-		}
-		if protocol := usbControlProtocol(resolvedInterface); protocol != "" &&
-			(state.candidate.ControlProtocol == "" || protocol == "mbim") {
-			state.candidate.ControlProtocol = protocol
 		}
 		if state.candidate.QMIControl == "" && len(qmiControls) > 0 {
 			state.candidate.QMIControl = filepath.Join(d.DevRoot, qmiControls[0])
@@ -143,15 +128,8 @@ func (d *SysFSDiscoverer) Discover(ctx context.Context) ([]Candidate, error) {
 			}
 			return left.Name < right.Name
 		})
-		if state.candidate.VendorID == sierraVendorID {
-			assignSierraPortRoles(state.candidate.Ports)
-		} else {
-			assignQuectelPortRoles(state.candidate.Ports)
-		}
+		assignQuectelPortRoles(state.candidate.Ports)
 		state.candidate.ATPort = selectATPort(state.candidate.Ports)
-		if state.candidate.VendorID == sierraVendorID && !state.candidate.HasATPort() {
-			state.candidate.DiscoveryIssue = "sierra_serial_driver_missing"
-		}
 		result = append(result, state.candidate)
 	}
 	wwanCandidates, err := d.discoverWWAN(ctx)
@@ -261,7 +239,6 @@ func (d *SysFSDiscoverer) discoverWWAN(ctx context.Context) ([]Candidate, error)
 		}
 		if len(group.qmiNames) > 0 {
 			candidate.QMIControl = filepath.Join(d.DevRoot, group.qmiNames[0])
-			candidate.ControlProtocol = "qmi"
 		}
 		result = append(result, candidate)
 	}
@@ -408,7 +385,7 @@ func readSerialAliases(root string) map[string]string {
 	return result
 }
 
-func candidateID(prefix, productID, serialNumber, usbName string) string {
+func candidateID(productID, serialNumber, usbName string) string {
 	serialNumber = strings.TrimSpace(serialNumber)
 	if serialNumber != "" && !strings.EqualFold(serialNumber, "android") {
 		// A surprising number of EC20/EC25 carrier boards expose the same
@@ -417,144 +394,9 @@ func candidateID(prefix, productID, serialNumber, usbName string) string {
 		// to the same hub into one entry.  Include the physical USB topology in the
 		// discovery key; configured devices remain stable through ATMapper's
 		// USB-path/IMEI matching even when Linux renumbers ttyUSB nodes.
-		return prefix + "-" + sanitizeID(serialNumber+"-"+usbName)
+		return "quectel-" + sanitizeID(serialNumber+"-"+usbName)
 	}
-	return prefix + "-" + sanitizeID(productID+"-"+usbName)
-}
-
-func supportedUSBModem(vendorID, productID string) (hardwareKind, idPrefix string, ok bool) {
-	switch strings.ToLower(vendorID) {
-	case quectelVendorID:
-		return "usb", "quectel", true
-	case sierraVendorID:
-		switch strings.ToLower(productID) {
-		case "9077", "9078", "9079", "907a", "907b":
-			return "sierra_usb", "sierra", true
-		}
-	}
-	return "", "", false
-}
-
-func usbPortRole(vendorID string, interfaceNumber int, name string) PortRole {
-	if vendorID == sierraVendorID {
-		switch interfaceNumber {
-		case 0:
-			return PortRoleDiagnostic
-		case 2:
-			return PortRoleNMEA
-		case 3:
-			return PortRoleAT
-		}
-		return PortRoleUnknown
-	}
-	return quecPortRole(interfaceNumber, name)
-}
-
-func assignSierraPortRoles(ports []Port) {
-	for index := range ports {
-		ports[index].Role = usbPortRole(sierraVendorID, ports[index].InterfaceNumber, ports[index].Name)
-	}
-}
-
-func usbControlProtocol(interfacePath string) string {
-	if target, err := filepath.EvalSymlinks(filepath.Join(interfacePath, "driver")); err == nil {
-		switch filepath.Base(target) {
-		case "cdc_mbim":
-			return "mbim"
-		case "qmi_wwan":
-			return "qmi"
-		}
-	}
-	class := strings.ToLower(readTrimmed(filepath.Join(interfacePath, "bInterfaceClass")))
-	subclass := strings.ToLower(readTrimmed(filepath.Join(interfacePath, "bInterfaceSubClass")))
-	if class == "02" && subclass == "0e" {
-		return "mbim"
-	}
-	return ""
-}
-
-func (d *SysFSDiscoverer) prepareSierraEM7430(ctx context.Context, usbRoot string, entries []os.DirEntry) {
-	if filepath.Clean(d.SysRoot) != filepath.Clean("/sys") || filepath.Clean(d.DevRoot) != filepath.Clean("/dev") {
-		return
-	}
-	found := false
-	for _, entry := range entries {
-		if strings.Contains(entry.Name(), ":") {
-			continue
-		}
-		path := filepath.Join(usbRoot, entry.Name())
-		if strings.EqualFold(readTrimmed(filepath.Join(path, "idVendor")), sierraVendorID) &&
-			strings.EqualFold(readTrimmed(filepath.Join(path, "idProduct")), "9077") {
-			found = true
-			break
-		}
-	}
-	if !found {
-		return
-	}
-	// Ignore errors here: discovery will still return a degraded candidate with
-	// a precise remediation code instead of hiding the hardware completely.
-	_ = exec.CommandContext(ctx, "modprobe", "cdc_mbim").Run()
-	_ = exec.CommandContext(ctx, "modprobe", "option").Run()
-	_ = os.WriteFile(
-		filepath.Join(d.SysRoot, "bus", "usb-serial", "drivers", "option1", "new_id"),
-		[]byte(sierraVendorID+" 9077\n"),
-		0o200,
-	)
-	d.repairSierraEM7430MBIM(usbRoot, entries)
-}
-
-func (d *SysFSDiscoverer) repairSierraEM7430MBIM(usbRoot string, entries []os.DirEntry) {
-	devices := make(map[string]struct{})
-	for _, entry := range entries {
-		if strings.Contains(entry.Name(), ":") {
-			continue
-		}
-		path := filepath.Join(usbRoot, entry.Name())
-		if strings.EqualFold(readTrimmed(filepath.Join(path, "idVendor")), sierraVendorID) &&
-			strings.EqualFold(readTrimmed(filepath.Join(path, "idProduct")), "9077") {
-			devices[entry.Name()] = struct{}{}
-		}
-	}
-
-	var controlsToBind []string
-	for _, entry := range entries {
-		deviceName, _, ok := strings.Cut(entry.Name(), ":")
-		if !ok {
-			continue
-		}
-		if _, ok := devices[deviceName]; !ok {
-			continue
-		}
-		interfacePath := filepath.Join(usbRoot, entry.Name())
-		class := strings.ToLower(readTrimmed(filepath.Join(interfacePath, "bInterfaceClass")))
-		subclass := strings.ToLower(readTrimmed(filepath.Join(interfacePath, "bInterfaceSubClass")))
-		protocol := strings.ToLower(readTrimmed(filepath.Join(interfacePath, "bInterfaceProtocol")))
-		isControl := class == "02" && subclass == "0e"
-		isData := class == "0a" && protocol == "02"
-		if !isControl && !isData {
-			continue
-		}
-
-		driverPath, err := filepath.EvalSymlinks(filepath.Join(interfacePath, "driver"))
-		if err == nil && filepath.Base(driverPath) == "cdc_mbim" {
-			continue
-		}
-		if isControl {
-			controlsToBind = append(controlsToBind, entry.Name())
-		}
-		if err == nil && filepath.Base(driverPath) == "option" {
-			_ = os.WriteFile(filepath.Join(driverPath, "unbind"), []byte(entry.Name()), 0o200)
-		}
-	}
-
-	bindPath := filepath.Join(d.SysRoot, "bus", "usb", "drivers", "cdc_mbim", "bind")
-	for _, interfaceName := range controlsToBind {
-		// Binding the MBIM control interface also claims its paired CDC data
-		// interface. Errors are intentionally non-fatal so discovery can return a
-		// degraded device with actionable details on kernels without cdc_mbim.
-		_ = os.WriteFile(bindPath, []byte(interfaceName), 0o200)
-	}
+	return "quectel-" + sanitizeID(productID+"-"+usbName)
 }
 
 func sanitizeID(value string) string {

@@ -1785,7 +1785,7 @@ func deviceSummary(entry device.Device) map[string]any {
 		"public_ip":                "",
 		"private_ip":               "",
 		"interface":                entry.Candidate.NetworkInterface,
-		"esim_transport":           candidateESIMTransport(entry.Candidate),
+		"esim_transport":           backendMode(entry.Candidate),
 		"sms_enabled":              true,
 		"network_enabled":          false,
 		"vowifi_enabled":           false,
@@ -1897,20 +1897,8 @@ func fillConfigFromPhysical(config *store.Device, entry device.Device) {
 		config.DeviceBackend = backendMode(candidate)
 	}
 	if config.ESIMTransport == "" {
-		config.ESIMTransport = candidateESIMTransport(candidate)
+		config.ESIMTransport = config.DeviceBackend
 	}
-}
-
-func candidateESIMTransport(candidate modem.Candidate) string {
-	if candidate.HardwareKind == "pcsc" {
-		return "pcsc"
-	}
-	// VoCat performs APDU/eSIM operations through the EM74xx AT serial port;
-	// MBIM remains dedicated to packet-data control.
-	if backendMode(candidate) == "mbim" {
-		return "at"
-	}
-	return backendMode(candidate)
 }
 
 func modemSummary(snapshot *device.Snapshot, phone string, phoneSource string) map[string]any {
@@ -2046,9 +2034,6 @@ func deviceName(entry device.Device) string {
 func backendMode(candidate modem.Candidate) string {
 	if candidate.HardwareKind == "pcsc" {
 		return "pcsc"
-	}
-	if candidate.ControlProtocol == "mbim" {
-		return "mbim"
 	}
 	if candidate.QMIControl != "" {
 		return "qmi"

@@ -6,8 +6,6 @@ import (
 	"encoding/hex"
 	"fmt"
 	"io"
-	"math"
-	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -53,28 +51,14 @@ func (manager *Manager) readSnapshot(
 	if response, ok := optional("AT+CPIN?"); ok {
 		snapshot.SIMStatus, snapshot.SIMReady = parseCPIN(response)
 	}
-	var ccidErr error
-	for _, command := range []string{"AT+CCID", "AT+QCCID"} {
-		response, commandErr := manager.command(ctx, client, command)
-		if commandErr != nil {
-			ccidErr = commandErr
-			continue
-		}
-		snapshot.ICCID = parseICCIDIdentifier(response, []string{"+CCID:", "+QCCID:"}, 18, 22)
-		if snapshot.ICCID != "" {
-			break
-		}
+	ccid, ccidErr := manager.command(ctx, client, "AT+CCID")
+	if ccidErr != nil {
+		ccid, ccidErr = manager.command(ctx, client, "AT+QCCID")
 	}
-	if snapshot.ICCID == "" && candidate.HardwareKind == "sierra_usb" {
-		response, commandErr := manager.command(ctx, client, "AT+CRSM=176,12258,0,0,10")
-		if commandErr == nil {
-			snapshot.ICCID = parseCRSMICCID(response)
-		} else {
-			ccidErr = commandErr
-		}
-	}
-	if snapshot.ICCID == "" && ccidErr != nil {
+	if ccidErr != nil {
 		snapshot.Warnings = append(snapshot.Warnings, "read ICCID: "+ccidErr.Error())
+	} else {
+		snapshot.ICCID = parseICCIDIdentifier(ccid, []string{"+CCID:", "+QCCID:"}, 18, 22)
 	}
 	previousICCID = strings.TrimSpace(previousICCID)
 	if previousICCID != "" && snapshot.ICCID != "" && !strings.EqualFold(previousICCID, snapshot.ICCID) {
@@ -86,18 +70,8 @@ func (manager *Manager) readSnapshot(
 		}
 		snapshot.SIMChanged = true
 	}
-	if response, commandErr := manager.command(ctx, client, "AT+CIMI"); commandErr == nil {
+	if response, ok := optional("AT+CIMI"); ok {
 		snapshot.IMSI = parseIdentifier(response, []string{"+CIMI:"}, 10, 18)
-	} else if candidate.HardwareKind != "sierra_usb" {
-		snapshot.Warnings = append(snapshot.Warnings, commandErr.Error())
-	}
-	if snapshot.IMSI == "" && candidate.HardwareKind == "sierra_usb" {
-		response, commandErr := manager.command(ctx, client, "AT+CRSM=176,28423,0,0,9")
-		if commandErr == nil {
-			snapshot.IMSI = parseCRSMIMSI(response)
-		} else {
-			snapshot.Warnings = append(snapshot.Warnings, "read IMSI: "+commandErr.Error())
-		}
 	}
 	// EF_SPN is the SIM-issued brand (for example "Lebara"), which is distinct
 	// from the IMSI sponsor/core PLMN. A Lebara UK subscription may therefore
@@ -111,15 +85,8 @@ func (manager *Manager) readSnapshot(
 		snapshot.SignalRaw, snapshot.SignalPercent, snapshot.RSSIDBm = parseCSQ(response)
 	}
 	servingPLMN := ""
-	servingCommand := `AT+QENG="servingcell"`
-	if candidate.HardwareKind == "sierra_usb" {
-		servingCommand = "AT!GSTATUS?"
-	}
-	if response, ok := optional(servingCommand); ok {
+	if response, ok := optional(`AT+QENG="servingcell"`); ok {
 		metrics := parseQENG(response)
-		if candidate.HardwareKind == "sierra_usb" {
-			metrics = parseSierraGStatus(response)
-		}
 		servingPLMN = metrics.PLMN
 		snapshot.AccessTech = metrics.AccessTech
 		snapshot.Band = metrics.Band
@@ -244,48 +211,6 @@ func parseSPN(response modem.Response) string {
 	return strings.TrimSpace(string(printable))
 }
 
-func parseCRSMICCID(response modem.Response) string {
-	digits := decodeICCID(crsmPayload(response))
-	if !decimalDigits(digits, 18, 22) {
-		return ""
-	}
-	return digits
-}
-
-func parseCRSMIMSI(response modem.Response) string {
-	raw := crsmPayload(response)
-	if len(raw) < 2 {
-		return ""
-	}
-	length := int(raw[0])
-	if length < 1 || length > len(raw)-1 {
-		return ""
-	}
-	encoded := raw[1 : 1+length]
-	var digits strings.Builder
-	// EF_IMSI stores the first digit in the high nibble of byte 1; its low
-	// nibble contains parity/type metadata. Remaining bytes are normal swapped
-	// BCD, as specified by 3GPP TS 31.102.
-	if first := encoded[0] >> 4; first <= 9 {
-		digits.WriteByte('0' + first)
-	} else {
-		return ""
-	}
-	for _, value := range encoded[1:] {
-		if low := value & 0x0f; low <= 9 {
-			digits.WriteByte('0' + low)
-		}
-		if high := value >> 4; high <= 9 {
-			digits.WriteByte('0' + high)
-		}
-	}
-	result := digits.String()
-	if !decimalDigits(result, 10, 18) {
-		return ""
-	}
-	return result
-}
-
 func parseRegistrationStatus(response modem.Response) (int, bool) {
 	for _, prefix := range []string{"+CEREG:", "+CGREG:", "+CREG:"} {
 		values := csvValues(valueAfterPrefix(response, prefix))
@@ -310,10 +235,6 @@ func parseATI(lines []string) (manufacturer, model, firmware string) {
 		line = strings.TrimSpace(line)
 		upper := strings.ToUpper(line)
 		switch {
-		case strings.HasPrefix(upper, "MANUFACTURER:"):
-			manufacturer = strings.TrimSpace(strings.SplitN(line, ":", 2)[1])
-		case strings.HasPrefix(upper, "MODEL:"):
-			model = strings.TrimSpace(strings.SplitN(line, ":", 2)[1])
 		case strings.HasPrefix(upper, "REVISION:"):
 			firmware = strings.TrimSpace(strings.SplitN(line, ":", 2)[1])
 		case strings.Contains(upper, "QUECTEL"):
@@ -397,48 +318,6 @@ func parseQENG(response modem.Response) qengMetrics {
 		return result
 	}
 	return qengMetrics{}
-}
-
-var sierraGStatusFields = map[string]*regexp.Regexp{
-	"mode":    regexp.MustCompile(`(?i)System mode:\s*([^\s]+)`),
-	"band":    regexp.MustCompile(`(?i)LTE band:\s*([^\s]+)`),
-	"channel": regexp.MustCompile(`(?i)LTE Rx chan:\s*([0-9]+)`),
-	"rssi":    regexp.MustCompile(`(?i)RSSI \(dBm\):\s*(-?[0-9]+(?:\.[0-9]+)?)`),
-	"rsrp":    regexp.MustCompile(`(?i)RSRP \(dBm\):\s*(-?[0-9]+(?:\.[0-9]+)?)`),
-	"rsrq":    regexp.MustCompile(`(?i)RSRQ \(dB\):\s*(-?[0-9]+(?:\.[0-9]+)?)`),
-	"sinr":    regexp.MustCompile(`(?i)SINR \(dB\):\s*(-?[0-9]+(?:\.[0-9]+)?)`),
-}
-
-func parseSierraGStatus(response modem.Response) qengMetrics {
-	text := strings.Join(response.Lines, "\n")
-	result := qengMetrics{}
-	if match := sierraGStatusFields["mode"].FindStringSubmatch(text); len(match) == 2 {
-		result.AccessTech = strings.ToUpper(strings.TrimSpace(match[1]))
-	}
-	if match := sierraGStatusFields["band"].FindStringSubmatch(text); len(match) == 2 {
-		result.Band = strings.ToUpper(strings.TrimSpace(match[1]))
-	}
-	if match := sierraGStatusFields["channel"].FindStringSubmatch(text); len(match) == 2 {
-		result.Channel = match[1]
-	}
-	result.RSSI = parseSierraDecimalMetric(text, "rssi")
-	result.RSRP = parseSierraDecimalMetric(text, "rsrp")
-	result.RSRQ = parseSierraDecimalMetric(text, "rsrq")
-	result.SINR = parseSierraDecimalMetric(text, "sinr")
-	return result
-}
-
-func parseSierraDecimalMetric(text, field string) *int {
-	match := sierraGStatusFields[field].FindStringSubmatch(text)
-	if len(match) != 2 {
-		return nil
-	}
-	value, err := strconv.ParseFloat(match[1], 64)
-	if err != nil {
-		return nil
-	}
-	result := int(math.Round(value))
-	return &result
 }
 
 func decimalDigits(value string, minimum, maximum int) bool {
