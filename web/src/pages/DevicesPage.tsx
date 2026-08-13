@@ -375,10 +375,6 @@ export default function DevicesPage() {
       message.warning(t("系统已发现 USB 读卡器，但 PC/SC 驱动未加载；请安装 libccid 或厂商驱动后重新扫描。"));
       return;
     }
-    if (d.discoveryIssue === "sierra_serial_driver_missing") {
-      message.warning(t("已发现 Sierra EM7430，但 AT 串口驱动未绑定；请安装 option/qcserial 驱动后重新插拔设备。"));
-      return;
-    }
     if (d.degraded) {
       message.warning(t("无法读取该设备 IMEI（可能控制口挂死），请执行 AT!RESET 或切换组态后重试"));
       return;
@@ -387,7 +383,6 @@ export default function DevicesPage() {
     setAddConfig((prev) => {
       const mode = String(d.mode || "").toLowerCase();
       const isReader = d.hardwareKind === "pcsc" || mode === "pcsc";
-	  const isSierra = d.hardwareKind === "sierra_usb";
       const backend = isReader ? "pcsc" : mode === "mbim" ? "mbim" : isQmiControl(d.controlPath) || (mode === "qmi" && d.controlPath) ? "qmi" : "at";
       return {
         ...prev,
@@ -397,8 +392,8 @@ export default function DevicesPage() {
         modemImei: d.imei || "",
         usbPath: d.usbPath || "",
         deviceBackend: backend,
-		deviceType: isReader ? "usb_sim_reader" : isSierra ? "sierra_em74xx" : prev.deviceType,
-		esimTransport: isReader ? "pcsc" : backend === "mbim" ? "at" : backend,
+		deviceType: isReader ? "usb_sim_reader" : prev.deviceType,
+		esimTransport: isReader ? "pcsc" : backend,
       };
     });
   }, []);

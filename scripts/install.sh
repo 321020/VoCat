@@ -237,109 +237,6 @@ install_pcsc_support() {
     fi
 }
 
-install_cellular_control_support() {
-    msg "正在检查 QMI/MBIM 蜂窝控制环境..." "Checking the QMI/MBIM cellular control environment..."
-    if is_openwrt && command -v opkg >/dev/null 2>&1; then
-        opkg update >/dev/null 2>&1 || true
-        local packages=""
-        local package
-        for package in \
-            kmod-usb-net-cdc-mbim kmod-usb-serial-option \
-            kmod-usb-serial-qualcomm umbim; do
-            if opkg_has_package "$package"; then
-                packages="$packages $package"
-            fi
-        done
-        if [ -n "$packages" ]; then
-            # Never override OpenWrt's kernel ABI checks.
-            # shellcheck disable=SC2086
-            opkg install $packages >/dev/null 2>&1 || true
-        fi
-    elif command -v apt-get >/dev/null 2>&1; then
-        apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y busybox iproute2 libmbim-utils || true
-    elif command -v dnf >/dev/null 2>&1; then
-        dnf install -y busybox iproute libmbim-utils || true
-    elif command -v yum >/dev/null 2>&1; then
-        yum install -y busybox iproute libmbim-utils || true
-    elif command -v pacman >/dev/null 2>&1; then
-        pacman -Sy --noconfirm busybox iproute2 libmbim || true
-    elif command -v apk >/dev/null 2>&1; then
-        apk add --no-cache iproute2 libmbim-tools || true
-    fi
-    if command -v mbim-network >/dev/null 2>&1 || command -v umbim >/dev/null 2>&1; then
-        msg "MBIM 蜂窝控制环境已就绪。" "The MBIM cellular control environment is ready."
-    else
-        msg \
-            "警告：未找到 mbim-network/umbim；MBIM 模组仍可进行 AT、SIM/eSIM 与 VoWiFi 操作，但蜂窝数据拨号不可用。" \
-            "Warning: mbim-network/umbim is unavailable; AT, SIM/eSIM and VoWiFi still work, but MBIM data dialing is unavailable."
-    fi
-
-    # Linux's upstream serial tables do not consistently include EM7430 PID
-    # 9077. Keep a small host helper because a dynamic option ID can also claim
-    # the MBIM interfaces after any later USB reset.
-    install -d -m 0755 "$INSTALL_DIR"
-    cat > "${INSTALL_DIR}/vocat-bind-em7430" <<'EOF'
-#!/bin/sh
-SYS_ROOT="${VOCAT_SYS_ROOT:-/sys}"
-USB_ROOT="$SYS_ROOT/bus/usb/devices"
-OPTION_NEW_ID="$SYS_ROOT/bus/usb-serial/drivers/option1/new_id"
-OPTION_UNBIND="$SYS_ROOT/bus/usb/drivers/option/unbind"
-MBIM_BIND="$SYS_ROOT/bus/usb/drivers/cdc_mbim/bind"
-command -v modprobe >/dev/null 2>&1 && modprobe cdc_mbim >/dev/null 2>&1 || true
-command -v modprobe >/dev/null 2>&1 && modprobe option >/dev/null 2>&1 || true
-repair() {
-    [ -d "$USB_ROOT" ] || return 0
-    for device in "$USB_ROOT"/*; do
-        [ -f "$device/idVendor" ] || continue
-        [ "$(tr '[:upper:]' '[:lower:]' < "$device/idVendor" 2>/dev/null)" = 1199 ] || continue
-        [ "$(tr '[:upper:]' '[:lower:]' < "$device/idProduct" 2>/dev/null)" = 9077 ] || continue
-        control=""; needs_bind=0
-        for interface in "${device}":*; do
-            [ -d "$interface" ] || continue
-            class=$(tr '[:upper:]' '[:lower:]' < "$interface/bInterfaceClass" 2>/dev/null || true)
-            subclass=$(tr '[:upper:]' '[:lower:]' < "$interface/bInterfaceSubClass" 2>/dev/null || true)
-            protocol=$(tr '[:upper:]' '[:lower:]' < "$interface/bInterfaceProtocol" 2>/dev/null || true)
-            is_control=0; is_data=0
-            [ "$class/$subclass" = 02/0e ] && is_control=1
-            [ "$class/$protocol" = 0a/02 ] && is_data=1
-            [ "$is_control" -eq 1 ] || [ "$is_data" -eq 1 ] || continue
-            name=$(basename "$interface"); driver=""
-            [ ! -L "$interface/driver" ] || driver=$(basename "$(readlink "$interface/driver")")
-            if [ "$is_control" -eq 1 ]; then
-                control="$name"; [ "$driver" = cdc_mbim ] || needs_bind=1
-            fi
-            if [ "$driver" = option ] && [ -w "$OPTION_UNBIND" ]; then
-                printf '%s' "$name" > "$OPTION_UNBIND" 2>/dev/null || true
-            fi
-        done
-        if [ "$needs_bind" -eq 1 ] && [ -n "$control" ] && [ -w "$MBIM_BIND" ]; then
-            printf '%s' "$control" > "$MBIM_BIND" 2>/dev/null || true
-        fi
-    done
-}
-repair
-[ ! -w "$OPTION_NEW_ID" ] || printf '%s\n' '1199 9077' > "$OPTION_NEW_ID" 2>/dev/null || true
-repair
-EOF
-    chmod 0755 "${INSTALL_DIR}/vocat-bind-em7430"
-    "${INSTALL_DIR}/vocat-bind-em7430" || true
-    if is_openwrt; then
-        install -d -m 0755 /etc/hotplug.d/usb
-        cat > /etc/hotplug.d/usb/95-vocat-em7430 <<'EOF'
-#!/bin/sh
-[ "$ACTION" = add ] || exit 0
-case "${PRODUCT:-}" in 1199/9077/*) ;; *) exit 0 ;; esac
-/opt/vocat/bin/vocat-bind-em7430 || true
-EOF
-        chmod 0755 /etc/hotplug.d/usb/95-vocat-em7430
-    elif command -v udevadm >/dev/null 2>&1 && [ -d /etc/udev/rules.d ]; then
-        cat > /etc/udev/rules.d/95-vocat-em7430.rules <<'EOF'
-ACTION=="add", SUBSYSTEM=="usb", ATTRS{idVendor}=="1199", ATTRS{idProduct}=="9077", RUN+="/opt/vocat/bin/vocat-bind-em7430"
-EOF
-        udevadm control --reload-rules >/dev/null 2>&1 || true
-    fi
-}
-
 check_vowifi_environment() {
     if [ "$SKIP_VOWIFI_CHECK" = "1" ]; then
         msg \
@@ -626,7 +523,6 @@ enable_and_start() {
 
 # --- Main --------------------------------------------------------------------
 detect_arch
-install_cellular_control_support
 install_pcsc_support
 check_vowifi_environment
 if [ "$CHECK_ENV" -eq 1 ]; then

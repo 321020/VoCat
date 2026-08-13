@@ -981,10 +981,6 @@ func profileSwitchVerificationTimeout(manager *Manager) time.Duration {
 // is actually exposing the requested ICCID.
 func (manager *Manager) verifySwitchedICCID(ctx context.Context, id, expected string) error {
 	expected = strings.TrimSpace(expected)
-	iccidCommands := []string{"AT+CCID", "AT+QCCID"}
-	if current, err := manager.Get(id); err == nil && current.Candidate.HardwareKind == "sierra_usb" {
-		iccidCommands = []string{"AT+CCID", "AT!ICCID?", "AT+QCCID"}
-	}
 	const attempts = 6
 	var lastICCID string
 	var lastErr error
@@ -1000,7 +996,7 @@ func (manager *Manager) verifySwitchedICCID(ctx context.Context, id, expected st
 			}
 			lastErr = err
 		} else {
-			for _, command := range iccidCommands {
+			for _, command := range []string{"AT+CCID", "AT+QCCID"} {
 				commandContext, cancel := context.WithTimeout(ctx, manager.commandTimeout)
 				response, err := manager.ExecuteAT(commandContext, id, command)
 				cancel()
@@ -1008,7 +1004,7 @@ func (manager *Manager) verifySwitchedICCID(ctx context.Context, id, expected st
 					lastErr = err
 					continue
 				}
-				live := parseICCIDIdentifier(response, []string{"+CCID:", "+QCCID:", "!ICCID:"}, 18, 22)
+				live := parseICCIDIdentifier(response, []string{"+CCID:", "+QCCID:"}, 18, 22)
 				if live == "" {
 					lastErr = errors.New("modem response contained no valid ICCID")
 					continue

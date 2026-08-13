@@ -57,12 +57,7 @@ services:
       # Required for modem, MHI/WWAN and PC/SC USB-reader discovery, including
       # devices added after the container starts.
       - /dev:/dev
-      # Writable sysfs lets VoCat bind the exact Sierra EM7430 1199:9077 ID to
-      # the serial driver when a distro's kernel table does not contain it.
-      - /sys:/sys
-      # modprobe inside the privileged container uses the host kernel's module
-      # tree; keep the tree itself read-only.
-      - /lib/modules:/lib/modules:ro
+      - /sys:/sys:ro
 
 volumes:
   vocat-data:

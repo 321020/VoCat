@@ -8,7 +8,6 @@ export const EN_DICT: Record<string, string> = {
 	"未知设备": "Unknown device",
 	"系统已发现 USB 读卡器，但 PC/SC 服务未运行；请安装并启动 pcscd 后重新扫描。": "The USB card reader was found, but the PC/SC service is not running. Install and start pcscd, then scan again.",
 	"系统已发现 USB 读卡器，但 PC/SC 驱动未加载；请安装 libccid 或厂商驱动后重新扫描。": "The USB card reader was found, but its PC/SC driver is not loaded. Install libccid or the vendor driver, then scan again.",
-	"已发现 Sierra EM7430，但 AT 串口驱动未绑定；请安装 option/qcserial 驱动后重新插拔设备。": "A Sierra EM7430 was found, but its AT serial driver is not bound. Install the option/qcserial driver and reconnect the device.",
 	硬件路径: "Hardware Path",
 	"USB SIM 读卡器（仅 WiFi Calling）": "USB SIM Reader (WiFi Calling only)",
 	"仅在 SIM 启用 PIN 时填写": "Only enter this when SIM PIN is enabled",

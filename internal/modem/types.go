@@ -44,22 +44,18 @@ func (p Port) OpenPath() string {
 }
 
 type Candidate struct {
-	HardwareKind string `json:"hardwareKind,omitempty"`
-	ReaderName   string `json:"readerName,omitempty"`
-	ID           string `json:"id"`
-	VendorID     string `json:"vendorId"`
-	ProductID    string `json:"productId"`
-	Manufacturer string `json:"manufacturer,omitempty"`
-	Product      string `json:"product,omitempty"`
-	SerialNumber string `json:"serialNumber,omitempty"`
-	USBPath      string `json:"usbPath"`
-	ATPort       Port   `json:"atPort"`
-	Ports        []Port `json:"ports"`
-	QMIControl   string `json:"qmiControl,omitempty"`
-	// ControlProtocol identifies the protocol carried by QMIControl. The
-	// historical field name is retained for API/database compatibility because
-	// both QMI and MBIM use cdc-wdm device nodes on Linux.
-	ControlProtocol  string `json:"controlProtocol,omitempty"`
+	HardwareKind     string `json:"hardwareKind,omitempty"`
+	ReaderName       string `json:"readerName,omitempty"`
+	ID               string `json:"id"`
+	VendorID         string `json:"vendorId"`
+	ProductID        string `json:"productId"`
+	Manufacturer     string `json:"manufacturer,omitempty"`
+	Product          string `json:"product,omitempty"`
+	SerialNumber     string `json:"serialNumber,omitempty"`
+	USBPath          string `json:"usbPath"`
+	ATPort           Port   `json:"atPort"`
+	Ports            []Port `json:"ports"`
+	QMIControl       string `json:"qmiControl,omitempty"`
 	NetworkInterface string `json:"networkInterface,omitempty"`
 	DiscoveryIssue   string `json:"discoveryIssue,omitempty"`
 }

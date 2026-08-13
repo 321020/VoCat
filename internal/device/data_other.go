@@ -21,16 +21,3 @@ func setQMINetwork(
 ) (NetworkResult, error) {
 	return NetworkResult{}, fmt.Errorf("%w: QMI control is supported only on Linux", ErrDataBackendUnavailable)
 }
-
-func setMBIMNetwork(
-	context.Context,
-	modem.Candidate,
-	bool,
-	string,
-	string,
-	string,
-	string,
-	string,
-) (NetworkResult, error) {
-	return NetworkResult{}, fmt.Errorf("%w: MBIM control is supported only on Linux", ErrDataBackendUnavailable)
-}
