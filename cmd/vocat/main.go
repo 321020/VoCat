@@ -715,9 +715,13 @@ func newVoWiFiOrchestrator(
 		return nil, fmt.Errorf("device %q IKE provider: %w", deviceConfig.ID, err)
 	}
 	imsProvider, err := ims.NewProvider(adapter, ims.Config{
-		// The userspace SWu data plane currently carries the protected P-CSCF
-		// signalling path over TCP.
+		// The userspace SWu data plane carries protected P-CSCF signalling over
+		// TCP by default. UK PLMN 234-10 exposes its P-CSCF over UDP/5060 on SWu.
 		Transport: "tcp",
+		TransportByPLMN: map[string]string{
+			"23410":  "udp",
+			"234010": "udp",
+		},
 		// Some Vodafone UK SIM profiles leave AT+CSCA empty; Vodafone publishes
 		// this service-centre number for manual SMS setup.
 		SMSCenter: "+447785016005",

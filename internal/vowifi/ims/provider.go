@@ -38,6 +38,7 @@ type Config struct {
 	PCSCF               string
 	LocalAddress        string
 	Transport           string
+	TransportByPLMN     map[string]string
 	Port                int
 	RegistrationExpiry  time.Duration
 	TransactionTimeout  time.Duration
@@ -106,6 +107,19 @@ func normalizeConfig(config Config) (Config, error) {
 	if config.Transport != "" && config.Transport != "udp" && config.Transport != "tcp" {
 		return Config{}, fmt.Errorf("ims: unsupported SIP transport %q", config.Transport)
 	}
+	transportByPLMN := make(map[string]string, len(config.TransportByPLMN))
+	for plmn, transport := range config.TransportByPLMN {
+		plmn = strings.TrimSpace(plmn)
+		transport = strings.ToLower(strings.TrimSpace(transport))
+		if !digitsBetween(plmn, 5, 6) {
+			return Config{}, fmt.Errorf("ims: invalid transport override PLMN %q", plmn)
+		}
+		if transport != "udp" && transport != "tcp" {
+			return Config{}, fmt.Errorf("ims: unsupported SIP transport %q for PLMN %s", transport, plmn)
+		}
+		transportByPLMN[plmn] = transport
+	}
+	config.TransportByPLMN = transportByPLMN
 	if strings.TrimSpace(config.UserAgent) == "" {
 		config.UserAgent = "vocat/1"
 	}
@@ -185,7 +199,7 @@ func (provider *Provider) Start(ctx context.Context, request vowifi.IMSRequest) 
 	if provider.config.PCSCF != "" && !pcscfProvenByTunnel(endpoint, tunnel.PCSCF, provider.config.Port) {
 		return nil, errors.New("ims: configured P-CSCF is not proven by the SWu tunnel")
 	}
-	transport := provider.config.Transport
+	transport := transportForIdentity(provider.config, request.Identity)
 	if transport == "" {
 		transport = transportHint
 	}
@@ -225,6 +239,15 @@ func (provider *Provider) Start(ctx context.Context, request vowifi.IMSRequest) 
 		return nil, err
 	}
 	return session, nil
+}
+
+func transportForIdentity(config Config, identity vowifi.SIMIdentity) string {
+	mcc := strings.TrimSpace(identity.HomeMCC)
+	mnc := strings.TrimSpace(identity.HomeMNC)
+	if transport := config.TransportByPLMN[mcc+mnc]; transport != "" {
+		return transport
+	}
+	return config.Transport
 }
 
 type identitySet struct {
