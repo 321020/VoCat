@@ -4,7 +4,7 @@ import { FieldRow } from "./FieldRow";
 import { useShowSensitive } from "./shared";
 import type { DeviceDetail } from "./types";
 import { useI18n } from "../../lib/i18n";
-import { carrierBrandIso } from "../../lib/carrier";
+import { carrierIso } from "../../lib/carrier";
 import { CountryFlag } from "../CountryFlag";
 
 export interface OverviewSimPanelProps {
@@ -22,7 +22,7 @@ export function OverviewSimPanel({ device, simOperatorDisplay, customPhoneNumber
   const sensitive = !showSensitive;
   const activeEsim = (device.activeEsimProfileName || "").trim();
   const flightOn = device.vowifiActive || modem?.operatingMode === 0 || modem?.operatingMode === 4;
-  const carrierCountryCode = carrierBrandIso(modem?.nativeSpn, modem?.imsi);
+  const carrierCountryCode = String(modem?.homeCarrierCountryCode ?? "").trim() || carrierIso(modem?.imsi);
   const displayedPhoneNumber = customPhoneNumber?.trim() || device.localPhone || "--";
   const backendLabel =
     device.backendMode === "qmi" ? "QMI" : device.backendMode === "mbim" ? "MBIM" : device.backendMode === "at" ? "AT" : "Auto";

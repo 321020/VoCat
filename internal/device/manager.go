@@ -411,7 +411,14 @@ func (manager *Manager) Refresh(ctx context.Context, id string) (Snapshot, error
 		return Snapshot{}, err
 	}
 	previousICCID := state.lastICCID
-	snapshot, err := manager.readSnapshot(ctx, id, candidate, backend, previousICCID, client)
+	var previousSnapshot *Snapshot
+	manager.mu.RLock()
+	if state.snapshot != nil {
+		copy := *state.snapshot
+		previousSnapshot = &copy
+	}
+	manager.mu.RUnlock()
+	snapshot, err := manager.readSnapshot(ctx, id, candidate, backend, previousICCID, previousSnapshot, client)
 	if err == nil && strings.TrimSpace(snapshot.ICCID) != "" {
 		state.lastICCID = strings.TrimSpace(snapshot.ICCID)
 	}
@@ -447,6 +454,7 @@ func (manager *Manager) refreshCardReader(ctx context.Context, id string, state 
 		result.ICCID = card.Identity.ICCID
 		result.IMSI = card.Identity.IMSI
 		result.SPN = card.Identity.SPN
+		result.MNCLength = card.Identity.MNCLength
 		result.SIMChanged = previousICCID != "" && !strings.EqualFold(previousICCID, result.ICCID)
 		state.lastICCID = result.ICCID
 	}

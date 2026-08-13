@@ -21,6 +21,7 @@ func (manager *Manager) readSnapshot(
 	candidate modem.Candidate,
 	backend string,
 	previousICCID string,
+	previousSnapshot *Snapshot,
 	client modem.Client,
 ) (Snapshot, error) {
 	snapshot := Snapshot{
@@ -80,6 +81,25 @@ func (manager *Manager) readSnapshot(
 	// EF_SPN is optional and some physical SIMs deny CRSM access to it.
 	if response, spnErr := manager.command(ctx, client, "AT+CRSM=176,28486,0,0,17"); spnErr == nil {
 		snapshot.SPN = parseSPN(response)
+	}
+	if previousSnapshot != nil && previousSnapshot.IdentityFilesRead &&
+		strings.EqualFold(strings.TrimSpace(previousSnapshot.ICCID), strings.TrimSpace(snapshot.ICCID)) {
+		snapshot.MNCLength = previousSnapshot.MNCLength
+		snapshot.GID1 = previousSnapshot.GID1
+		snapshot.GID2 = previousSnapshot.GID2
+		snapshot.IdentityFilesRead = true
+	} else {
+		// Android's carrier resolver does not identify MVNOs from MCC/MNC alone.
+		// Read these files once per inserted ICCID and cache even an empty result;
+		// repeatedly probing unsupported EFs would add avoidable modem traffic.
+		if efAD := manager.readTransparentSIMFile(ctx, client, 28589); len(efAD) >= 4 {
+			if length := int(efAD[3] & 0x0f); length == 2 || length == 3 {
+				snapshot.MNCLength = length
+			}
+		}
+		snapshot.GID1 = encodeSIMGroupID(manager.readTransparentSIMFile(ctx, client, 28478))
+		snapshot.GID2 = encodeSIMGroupID(manager.readTransparentSIMFile(ctx, client, 28479))
+		snapshot.IdentityFilesRead = true
 	}
 	if response, ok := optional("AT+CSQ"); ok {
 		snapshot.SignalRaw, snapshot.SignalPercent, snapshot.RSSIDBm = parseCSQ(response)
@@ -162,6 +182,91 @@ func (manager *Manager) readSnapshot(
 	snapshot.Warnings = append(snapshot.Warnings, warnings...)
 	snapshot.UpdatedAt = time.Now().UTC()
 	return snapshot, nil
+}
+
+func (manager *Manager) readTransparentSIMFile(ctx context.Context, client modem.Client, fileID int) []byte {
+	response, err := manager.command(ctx, client, fmt.Sprintf("AT+CRSM=192,%d,0,0,0", fileID))
+	if err != nil {
+		return nil
+	}
+	size := transparentSIMFileSize(crsmPayload(response))
+	if size <= 0 || size > 64 {
+		return nil
+	}
+	response, err = manager.command(ctx, client, fmt.Sprintf("AT+CRSM=176,%d,0,0,%d", fileID, size))
+	if err != nil {
+		return nil
+	}
+	return crsmPayload(response)
+}
+
+func transparentSIMFileSize(payload []byte) int {
+	// USIM FCP templates contain file size in tag 0x80. Skip the outer 0x62
+	// template and walk its immediate TLVs.
+	content := payload
+	if len(content) >= 2 && content[0] == 0x62 {
+		length, header, ok := berLength(content[1:])
+		if !ok || 1+header+length > len(content) {
+			return 0
+		}
+		content = content[1+header : 1+header+length]
+	}
+	for offset := 0; offset+2 <= len(content); {
+		tag := content[offset]
+		length, header, ok := berLength(content[offset+1:])
+		start := offset + 1 + header
+		end := start + length
+		if !ok || end > len(content) {
+			break
+		}
+		if tag == 0x80 && (length == 1 || length == 2) {
+			size := 0
+			for _, value := range content[start:end] {
+				size = size<<8 | int(value)
+			}
+			return size
+		}
+		offset = end
+	}
+	// Legacy GSM GET RESPONSE data stores file size in bytes 2 and 3.
+	if len(payload) >= 4 && payload[0] != 0x62 {
+		return int(payload[2])<<8 | int(payload[3])
+	}
+	return 0
+}
+
+func berLength(value []byte) (length, header int, ok bool) {
+	if len(value) == 0 {
+		return 0, 0, false
+	}
+	if value[0] < 0x80 {
+		return int(value[0]), 1, true
+	}
+	count := int(value[0] & 0x7f)
+	if count == 0 || count > 2 || len(value) < count+1 {
+		return 0, 0, false
+	}
+	for _, item := range value[1 : count+1] {
+		length = length<<8 | int(item)
+	}
+	return length, count + 1, true
+}
+
+func encodeSIMGroupID(value []byte) string {
+	if len(value) == 0 {
+		return ""
+	}
+	allPadding := true
+	for _, item := range value {
+		if item != 0xff {
+			allPadding = false
+			break
+		}
+	}
+	if allPadding {
+		return ""
+	}
+	return strings.ToUpper(hex.EncodeToString(value))
 }
 
 func parseSPN(response modem.Response) string {
