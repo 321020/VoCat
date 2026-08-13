@@ -1,6 +1,6 @@
 export type ApiStatus = "ok" | "error";
 
-export type DeviceType = "wifi_410" | "dji_4g" | "pcie_ec20_ec25" | "usb_sim_reader";
+export type DeviceType = "wifi_410" | "dji_4g" | "pcie_ec20_ec25" | "usb_sim_reader" | "sierra_em74xx";
 
 export interface Session {
   authenticated: boolean;
@@ -206,7 +206,7 @@ export interface DeviceConfig {
   dataBits: number;
   stopBits: number;
   parity: string;
-  deviceBackend: "at" | "qmi" | "pcsc";
+  deviceBackend: "at" | "qmi" | "mbim" | "pcsc";
   esimTransport: "at" | "qmi" | "pcsc" | "none";
   qmiUseProxy: boolean;
   qmiProxyPath?: string;

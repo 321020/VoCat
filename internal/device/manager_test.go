@@ -151,6 +151,10 @@ func TestParseICCIDIdentifierStripsTwoFillerNibbles(t *testing.T) {
 	if got := parseICCIDIdentifier(response, []string{"+CCID:", "+QCCID:"}, 18, 22); got != "894921007608519523" {
 		t.Fatalf("parseICCIDIdentifier = %q", got)
 	}
+	sierra := okResponse("!ICCID: 89441000400316048687")
+	if got := parseICCIDIdentifier(sierra, []string{"+CCID:", "+QCCID:", "!ICCID:"}, 18, 22); got != "89441000400316048687" {
+		t.Fatalf("parse Sierra ICCID = %q", got)
+	}
 }
 
 func TestManagerRequiresStartAndKnownDevice(t *testing.T) {
@@ -184,8 +188,33 @@ func TestManagerBackendSelectionIsExplicit(t *testing.T) {
 	if got := manager.backendFor(state); got != "qmi" {
 		t.Fatalf("backend = %q, want qmi", got)
 	}
-	if err := manager.SetBackend(id, "mbim"); err == nil {
+	if err := manager.SetBackend(id, "mbim"); err != nil {
+		t.Fatalf("MBIM backend was rejected: %v", err)
+	}
+	if got := manager.backendFor(state); got != "mbim" {
+		t.Fatalf("backend = %q, want mbim", got)
+	}
+	if err := manager.SetBackend(id, "invalid"); err == nil {
 		t.Fatal("unsupported backend was accepted")
+	}
+}
+
+func TestParseSierraGStatus(t *testing.T) {
+	metrics := parseSierraGStatus(okResponse(
+		"!GSTATUS:",
+		"System mode: LTE        PS state: Attached",
+		"LTE band: B3           LTE bw: 20 MHz",
+		"LTE Rx chan: 1650      LTE Tx chan: 19650",
+		"RSSI (dBm): -63.0      Tx Power: --",
+		"RSRP (dBm): -92.0      RSRQ (dB): -7.2",
+		"SINR (dB): 17.6",
+	))
+	if metrics.AccessTech != "LTE" || metrics.Band != "B3" || metrics.Channel != "1650" {
+		t.Fatalf("identity metrics = %#v", metrics)
+	}
+	if metrics.RSSI == nil || *metrics.RSSI != -63 || metrics.RSRP == nil || *metrics.RSRP != -92 ||
+		metrics.RSRQ == nil || *metrics.RSRQ != -7 || metrics.SINR == nil || *metrics.SINR != 18 {
+		t.Fatalf("radio metrics = %#v", metrics)
 	}
 }
 

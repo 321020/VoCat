@@ -235,6 +235,67 @@ func TestSysFSDiscoveryIgnoresNonQuectelUSB(t *testing.T) {
 	}
 }
 
+func TestSysFSDiscoveryFindsSierraEM7430MBIMComposition(t *testing.T) {
+	root := t.TempDir()
+	sysRoot := filepath.Join(root, "sys")
+	devRoot := filepath.Join(root, "dev")
+	usbRoot := filepath.Join(sysRoot, "bus", "usb", "devices")
+	deviceName := "2-1"
+	mustWrite(t, filepath.Join(usbRoot, deviceName, "idVendor"), "1199\n")
+	mustWrite(t, filepath.Join(usbRoot, deviceName, "idProduct"), "9077\n")
+	mustWrite(t, filepath.Join(usbRoot, deviceName, "manufacturer"), "Sierra Wireless, Incorporated\n")
+	mustWrite(t, filepath.Join(usbRoot, deviceName, "product"), "EM7430\n")
+	mustWrite(t, filepath.Join(usbRoot, deviceName, "serial"), "LR93228600041019\n")
+	for _, item := range []struct {
+		interfaceNumber string
+		tty             string
+	}{
+		{"00", "ttyUSB0"},
+		{"02", "ttyUSB1"},
+		{"03", "ttyUSB2"},
+	} {
+		interfaceName := deviceName + ":1." + fmt.Sprint(mustHexInt(t, item.interfaceNumber))
+		mustWrite(t, filepath.Join(usbRoot, interfaceName, "bInterfaceNumber"), item.interfaceNumber+"\n")
+		mustMkdir(t, filepath.Join(usbRoot, interfaceName, item.tty, "tty", item.tty))
+	}
+	mbimInterface := filepath.Join(usbRoot, deviceName+":1.12")
+	mustWrite(t, filepath.Join(mbimInterface, "bInterfaceNumber"), "0c\n")
+	mustWrite(t, filepath.Join(mbimInterface, "bInterfaceClass"), "02\n")
+	mustWrite(t, filepath.Join(mbimInterface, "bInterfaceSubClass"), "0e\n")
+	mustMkdir(t, filepath.Join(mbimInterface, "usbmisc", "cdc-wdm0"))
+	mustMkdir(t, filepath.Join(mbimInterface, "net", "wwan0"))
+
+	candidates, err := NewSysFSDiscoverer(sysRoot, devRoot).Discover(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(candidates) != 1 {
+		t.Fatalf("candidates = %#v, want one Sierra modem", candidates)
+	}
+	candidate := candidates[0]
+	if candidate.ID != "sierra-lr93228600041019-2-1" || candidate.HardwareKind != "sierra_usb" {
+		t.Fatalf("identity = %#v", candidate)
+	}
+	if candidate.ATPort.Name != "ttyUSB2" || candidate.ATPort.InterfaceNumber != 3 {
+		t.Fatalf("AT port = %#v", candidate.ATPort)
+	}
+	if candidate.QMIControl != filepath.Join(devRoot, "cdc-wdm0") || candidate.ControlProtocol != "mbim" {
+		t.Fatalf("MBIM control = %q protocol=%q", candidate.QMIControl, candidate.ControlProtocol)
+	}
+	if candidate.NetworkInterface != "wwan0" || candidate.DiscoveryIssue != "" {
+		t.Fatalf("candidate = %#v", candidate)
+	}
+}
+
+func mustHexInt(t *testing.T, value string) int64 {
+	t.Helper()
+	number, err := strconv.ParseInt(value, 16, 32)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return number
+}
+
 func TestSysFSDiscoveryFindsPCIeMHIWWANWithoutUSBBus(t *testing.T) {
 	root := t.TempDir()
 	sysRoot := filepath.Join(root, "sys")

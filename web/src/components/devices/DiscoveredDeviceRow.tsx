@@ -23,6 +23,8 @@ export function DiscoveredDeviceRow({
     ? t("系统已发现 USB 读卡器，但 PC/SC 服务未运行；请安装并启动 pcscd 后重新扫描。")
     : device.discoveryIssue === "pcsc_driver_missing"
       ? t("系统已发现 USB 读卡器，但 PC/SC 驱动未加载；请安装 libccid 或厂商驱动后重新扫描。")
+      : device.discoveryIssue === "sierra_serial_driver_missing"
+        ? t("已发现 Sierra EM7430，但 AT 串口驱动未绑定；请安装 option/qcserial 驱动后重新插拔设备。")
       : "";
   return (
     <button

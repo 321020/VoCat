@@ -18,6 +18,7 @@ const (
 	DeviceTypeDJI4G        = "dji_4g"
 	DeviceTypePCIeEC20EC25 = "pcie_ec20_ec25"
 	DeviceTypeUSBSIMReader = "usb_sim_reader"
+	DeviceTypeSierraEM74xx = "sierra_em74xx"
 )
 
 // NormalizeDeviceType returns a stable persisted device type identifier.
@@ -30,6 +31,8 @@ func NormalizeDeviceType(value string) string {
 		return DeviceTypeDJI4G
 	case DeviceTypeUSBSIMReader:
 		return DeviceTypeUSBSIMReader
+	case DeviceTypeSierraEM74xx:
+		return DeviceTypeSierraEM74xx
 	case "", DeviceTypePCIeEC20EC25:
 		return DeviceTypePCIeEC20EC25
 	default:
@@ -135,7 +138,7 @@ func upsertDevice(ctx context.Context, executor contextExecer, value Device) err
 		value.DeviceBackend = "at"
 	}
 	value.DeviceBackend = strings.ToLower(strings.TrimSpace(value.DeviceBackend))
-	if value.DeviceBackend != "at" && value.DeviceBackend != "qmi" && value.DeviceBackend != "pcsc" {
+	if value.DeviceBackend != "at" && value.DeviceBackend != "qmi" && value.DeviceBackend != "mbim" && value.DeviceBackend != "pcsc" {
 		return fmt.Errorf("unsupported device backend %q", value.DeviceBackend)
 	}
 	if value.ESIMTransport == "" {

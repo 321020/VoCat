@@ -32,8 +32,8 @@ export function DeviceConfigTab({ editConfig, deviceStatus, saving, deleting, on
   const interfaceName = deviceStatus?.interface || editConfig?.interface;
   const atPort = deviceStatus?.atPort || editConfig?.atPort;
   const usbPath = deviceStatus?.usbPath || editConfig?.usbPath;
-  const isQmi = isQmiControl(controlDevice);
   const isMbim = String(editConfig?.deviceBackend || "").toLowerCase() === "mbim";
+	const isQmi = !isMbim && isQmiControl(controlDevice);
 	const isReader = editConfig?.deviceType === "usb_sim_reader";
 
   useEffect(() => {

@@ -391,6 +391,26 @@ func TestUSBSIMReaderConfigurationIsWiFiCallingOnly(t *testing.T) {
 	}
 }
 
+func TestSierraMBIMConfigurationRoundTrips(t *testing.T) {
+	ctx := context.Background()
+	database := openTestStore(t, ":memory:")
+	value := Device{
+		ID: "em7430-1", Name: "EM7430", DeviceType: DeviceTypeSierraEM74xx,
+		Interface: "wwan0", ControlDevice: "/dev/cdc-wdm0", ATPort: "/dev/ttyUSB2",
+		DeviceBackend: "mbim", ESIMTransport: "at", NetworkEnabled: true,
+	}
+	if err := database.UpsertDevice(ctx, value); err != nil {
+		t.Fatal(err)
+	}
+	got, err := database.Device(ctx, value.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.DeviceType != DeviceTypeSierraEM74xx || got.DeviceBackend != "mbim" || got.ESIMTransport != "at" {
+		t.Fatalf("Sierra config = %+v", got)
+	}
+}
+
 func TestSMSPersistenceAndDerivedThreads(t *testing.T) {
 	ctx := context.Background()
 	database := openTestStore(t, ":memory:")

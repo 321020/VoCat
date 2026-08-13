@@ -237,6 +237,71 @@ install_pcsc_support() {
     fi
 }
 
+install_cellular_control_support() {
+    msg "正在检查 QMI/MBIM 蜂窝控制环境..." "Checking the QMI/MBIM cellular control environment..."
+    if is_openwrt && command -v opkg >/dev/null 2>&1; then
+        opkg update >/dev/null 2>&1 || true
+        local packages=""
+        local package
+        for package in \
+            kmod-usb-net-cdc-mbim kmod-usb-serial-option \
+            kmod-usb-serial-qualcomm umbim; do
+            if opkg_has_package "$package"; then
+                packages="$packages $package"
+            fi
+        done
+        if [ -n "$packages" ]; then
+            # Never override OpenWrt's kernel ABI checks.
+            # shellcheck disable=SC2086
+            opkg install $packages >/dev/null 2>&1 || true
+        fi
+    elif command -v apt-get >/dev/null 2>&1; then
+        apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y busybox iproute2 libmbim-utils || true
+    elif command -v dnf >/dev/null 2>&1; then
+        dnf install -y busybox iproute libmbim-utils || true
+    elif command -v yum >/dev/null 2>&1; then
+        yum install -y busybox iproute libmbim-utils || true
+    elif command -v pacman >/dev/null 2>&1; then
+        pacman -Sy --noconfirm busybox iproute2 libmbim || true
+    elif command -v apk >/dev/null 2>&1; then
+        apk add --no-cache iproute2 libmbim-tools || true
+    fi
+    if command -v mbim-network >/dev/null 2>&1 || command -v umbim >/dev/null 2>&1; then
+        msg "MBIM 蜂窝控制环境已就绪。" "The MBIM cellular control environment is ready."
+    else
+        msg \
+            "警告：未找到 mbim-network/umbim；MBIM 模组仍可进行 AT、SIM/eSIM 与 VoWiFi 操作，但蜂窝数据拨号不可用。" \
+            "Warning: mbim-network/umbim is unavailable; AT, SIM/eSIM and VoWiFi still work, but MBIM data dialing is unavailable."
+    fi
+
+    # Linux's upstream serial tables do not consistently include EM7430 PID
+    # 9077. Register only this exact ID, with MBIM loaded first so option cannot
+    # claim the MBIM control/data interfaces.
+    command -v modprobe >/dev/null 2>&1 && modprobe cdc_mbim >/dev/null 2>&1 || true
+    command -v modprobe >/dev/null 2>&1 && modprobe option >/dev/null 2>&1 || true
+    if [ -w /sys/bus/usb-serial/drivers/option1/new_id ]; then
+        printf '%s\n' '1199 9077' > /sys/bus/usb-serial/drivers/option1/new_id 2>/dev/null || true
+    fi
+    if is_openwrt; then
+        install -d -m 0755 /etc/hotplug.d/usb
+        cat > /etc/hotplug.d/usb/95-vocat-em7430 <<'EOF'
+#!/bin/sh
+[ "$ACTION" = add ] || exit 0
+case "${PRODUCT:-}" in 1199/9077/*) ;; *) exit 0 ;; esac
+modprobe cdc_mbim >/dev/null 2>&1 || true
+modprobe option >/dev/null 2>&1 || true
+[ -w /sys/bus/usb-serial/drivers/option1/new_id ] && \
+    printf '%s\n' '1199 9077' > /sys/bus/usb-serial/drivers/option1/new_id 2>/dev/null || true
+EOF
+        chmod 0755 /etc/hotplug.d/usb/95-vocat-em7430
+    elif command -v udevadm >/dev/null 2>&1 && [ -d /etc/udev/rules.d ]; then
+        cat > /etc/udev/rules.d/95-vocat-em7430.rules <<'EOF'
+ACTION=="add", SUBSYSTEM=="usb", ATTR{idVendor}=="1199", ATTR{idProduct}=="9077", RUN+="/bin/sh -c 'modprobe cdc_mbim; modprobe option; printf 1199\\ 9077\\n > /sys/bus/usb-serial/drivers/option1/new_id'"
+EOF
+        udevadm control --reload-rules >/dev/null 2>&1 || true
+    fi
+}
+
 check_vowifi_environment() {
     if [ "$SKIP_VOWIFI_CHECK" = "1" ]; then
         msg \
@@ -523,6 +588,7 @@ enable_and_start() {
 
 # --- Main --------------------------------------------------------------------
 detect_arch
+install_cellular_control_support
 install_pcsc_support
 check_vowifi_environment
 if [ "$CHECK_ENV" -eq 1 ]; then

@@ -6,6 +6,8 @@ import (
 	"encoding/hex"
 	"fmt"
 	"io"
+	"math"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -52,13 +54,16 @@ func (manager *Manager) readSnapshot(
 		snapshot.SIMStatus, snapshot.SIMReady = parseCPIN(response)
 	}
 	ccid, ccidErr := manager.command(ctx, client, "AT+CCID")
+	if ccidErr != nil && candidate.HardwareKind == "sierra_usb" {
+		ccid, ccidErr = manager.command(ctx, client, "AT!ICCID?")
+	}
 	if ccidErr != nil {
 		ccid, ccidErr = manager.command(ctx, client, "AT+QCCID")
 	}
 	if ccidErr != nil {
 		snapshot.Warnings = append(snapshot.Warnings, "read ICCID: "+ccidErr.Error())
 	} else {
-		snapshot.ICCID = parseICCIDIdentifier(ccid, []string{"+CCID:", "+QCCID:"}, 18, 22)
+		snapshot.ICCID = parseICCIDIdentifier(ccid, []string{"+CCID:", "+QCCID:", "!ICCID:"}, 18, 22)
 	}
 	previousICCID = strings.TrimSpace(previousICCID)
 	if previousICCID != "" && snapshot.ICCID != "" && !strings.EqualFold(previousICCID, snapshot.ICCID) {
@@ -85,8 +90,15 @@ func (manager *Manager) readSnapshot(
 		snapshot.SignalRaw, snapshot.SignalPercent, snapshot.RSSIDBm = parseCSQ(response)
 	}
 	servingPLMN := ""
-	if response, ok := optional(`AT+QENG="servingcell"`); ok {
+	servingCommand := `AT+QENG="servingcell"`
+	if candidate.HardwareKind == "sierra_usb" {
+		servingCommand = "AT!GSTATUS?"
+	}
+	if response, ok := optional(servingCommand); ok {
 		metrics := parseQENG(response)
+		if candidate.HardwareKind == "sierra_usb" {
+			metrics = parseSierraGStatus(response)
+		}
 		servingPLMN = metrics.PLMN
 		snapshot.AccessTech = metrics.AccessTech
 		snapshot.Band = metrics.Band
@@ -318,6 +330,48 @@ func parseQENG(response modem.Response) qengMetrics {
 		return result
 	}
 	return qengMetrics{}
+}
+
+var sierraGStatusFields = map[string]*regexp.Regexp{
+	"mode":    regexp.MustCompile(`(?i)System mode:\s*([^\s]+)`),
+	"band":    regexp.MustCompile(`(?i)LTE band:\s*([^\s]+)`),
+	"channel": regexp.MustCompile(`(?i)LTE Rx chan:\s*([0-9]+)`),
+	"rssi":    regexp.MustCompile(`(?i)RSSI \(dBm\):\s*(-?[0-9]+(?:\.[0-9]+)?)`),
+	"rsrp":    regexp.MustCompile(`(?i)RSRP \(dBm\):\s*(-?[0-9]+(?:\.[0-9]+)?)`),
+	"rsrq":    regexp.MustCompile(`(?i)RSRQ \(dB\):\s*(-?[0-9]+(?:\.[0-9]+)?)`),
+	"sinr":    regexp.MustCompile(`(?i)SINR \(dB\):\s*(-?[0-9]+(?:\.[0-9]+)?)`),
+}
+
+func parseSierraGStatus(response modem.Response) qengMetrics {
+	text := strings.Join(response.Lines, "\n")
+	result := qengMetrics{}
+	if match := sierraGStatusFields["mode"].FindStringSubmatch(text); len(match) == 2 {
+		result.AccessTech = strings.ToUpper(strings.TrimSpace(match[1]))
+	}
+	if match := sierraGStatusFields["band"].FindStringSubmatch(text); len(match) == 2 {
+		result.Band = strings.ToUpper(strings.TrimSpace(match[1]))
+	}
+	if match := sierraGStatusFields["channel"].FindStringSubmatch(text); len(match) == 2 {
+		result.Channel = match[1]
+	}
+	result.RSSI = parseSierraDecimalMetric(text, "rssi")
+	result.RSRP = parseSierraDecimalMetric(text, "rsrp")
+	result.RSRQ = parseSierraDecimalMetric(text, "rsrq")
+	result.SINR = parseSierraDecimalMetric(text, "sinr")
+	return result
+}
+
+func parseSierraDecimalMetric(text, field string) *int {
+	match := sierraGStatusFields[field].FindStringSubmatch(text)
+	if len(match) != 2 {
+		return nil
+	}
+	value, err := strconv.ParseFloat(match[1], 64)
+	if err != nil {
+		return nil
+	}
+	result := int(math.Round(value))
+	return &result
 }
 
 func decimalDigits(value string, minimum, maximum int) bool {

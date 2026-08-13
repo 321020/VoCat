@@ -122,6 +122,179 @@ func setQMINetwork(
 	}, nil
 }
 
+func setMBIMNetwork(
+	ctx context.Context,
+	candidate modem.Candidate,
+	enabled bool,
+	apn string,
+	ipVersion string,
+	username string,
+	password string,
+	authentication string,
+) (NetworkResult, error) {
+	mbimNetwork, networkErr := exec.LookPath("mbim-network")
+	umbim, umbimErr := exec.LookPath("umbim")
+	if networkErr != nil && umbimErr != nil {
+		return NetworkResult{}, fmt.Errorf("%w: install libmbim-utils or umbim to control %s", ErrDataBackendUnavailable, candidate.QMIControl)
+	}
+
+	detail := ""
+	var err error
+	if networkErr == nil {
+		detail, err = runMBIMNetwork(ctx, mbimNetwork, candidate.QMIControl, enabled, apn, username, password, authentication)
+	} else {
+		detail, err = runUMBIM(ctx, umbim, candidate.QMIControl, enabled, apn, ipVersion, username, password, authentication)
+	}
+	if err != nil {
+		return NetworkResult{}, err
+	}
+
+	ipCommand, lookErr := exec.LookPath("ip")
+	if lookErr != nil {
+		return NetworkResult{}, fmt.Errorf("%w: install iproute2 to control %s", ErrDataBackendUnavailable, candidate.NetworkInterface)
+	}
+	linkAction := "down"
+	if enabled {
+		linkAction = "up"
+	}
+	linkOutput, linkErr := exec.CommandContext(ctx, ipCommand, "link", "set", "dev", candidate.NetworkInterface, linkAction).CombinedOutput()
+	if linkErr != nil {
+		return NetworkResult{}, fmt.Errorf("set %s %s: %w: %s", candidate.NetworkInterface, linkAction, linkErr, strings.TrimSpace(string(linkOutput)))
+	}
+	if enabled {
+		busybox, busyboxErr := exec.LookPath("busybox")
+		if busyboxErr != nil {
+			return NetworkResult{}, fmt.Errorf("%w: busybox udhcpc is required for %s", ErrDataBackendUnavailable, candidate.NetworkInterface)
+		}
+		dhcpDetail, dhcpErr := configureExportProxyDHCP(ctx, busybox, ipCommand, candidate.NetworkInterface)
+		if dhcpErr != nil {
+			rollbackCtx, cancelRollback := context.WithTimeout(context.Background(), managerCommandCleanupTimeout)
+			defer cancelRollback()
+			clearExportProxyRoute(rollbackCtx, candidate.NetworkInterface)
+			if networkErr == nil {
+				_, _ = exec.CommandContext(rollbackCtx, mbimNetwork, candidate.QMIControl, "stop").CombinedOutput()
+			} else {
+				_, _ = exec.CommandContext(rollbackCtx, umbim, "-d", candidate.QMIControl, "disconnect").CombinedOutput()
+			}
+			_, _ = exec.CommandContext(rollbackCtx, ipCommand, "link", "set", "dev", candidate.NetworkInterface, "down").CombinedOutput()
+			return NetworkResult{}, fmt.Errorf("MBIM session started but protected DHCP failed: %w", dhcpErr)
+		}
+		detail = strings.TrimSpace(detail + "\n" + dhcpDetail)
+	} else {
+		clearExportProxyRoute(ctx, candidate.NetworkInterface)
+		_, _ = exec.CommandContext(ctx, ipCommand, "-4", "addr", "flush", "dev", candidate.NetworkInterface, "scope", "global").CombinedOutput()
+	}
+	if username != "" || password != "" {
+		// Both reference tools may echo profile fields; never retain them in API
+		// responses, state, or logs.
+		detail = map[bool]string{true: "authenticated MBIM session started", false: "authenticated MBIM session stopped"}[enabled]
+	}
+	return NetworkResult{
+		Enabled: enabled, Backend: "mbim", Interface: candidate.NetworkInterface,
+		ControlDevice: candidate.QMIControl, APN: apn, IPVersion: ipVersion, Detail: detail,
+	}, nil
+}
+
+func runMBIMNetwork(
+	ctx context.Context,
+	command, control string,
+	enabled bool,
+	apn, username, password, authentication string,
+) (string, error) {
+	profile, err := os.CreateTemp("", "vocat-mbim-*.conf")
+	if err != nil {
+		return "", fmt.Errorf("create temporary MBIM profile: %w", err)
+	}
+	profilePath := profile.Name()
+	defer os.Remove(profilePath)
+	profileText := "PROXY=yes\n"
+	if apn != "" {
+		profileText = "APN=" + shellProfileValue(apn) + "\n" + profileText
+	}
+	if username != "" {
+		profileText += "APN_USER=" + shellProfileValue(username) + "\n"
+	}
+	if password != "" {
+		profileText += "APN_PASS=" + shellProfileValue(password) + "\n"
+	}
+	if authentication != "" && authentication != "NONE" {
+		if authentication == "PAP_OR_CHAP" {
+			authentication = "PAP"
+		}
+		profileText += "APN_AUTH=" + shellProfileValue(authentication) + "\n"
+	}
+	if _, err := fmt.Fprint(profile, profileText); err != nil {
+		_ = profile.Close()
+		return "", fmt.Errorf("write temporary MBIM profile: %w", err)
+	}
+	if err := profile.Chmod(0o600); err != nil {
+		_ = profile.Close()
+		return "", fmt.Errorf("protect temporary MBIM profile: %w", err)
+	}
+	if err := profile.Close(); err != nil {
+		return "", fmt.Errorf("close temporary MBIM profile: %w", err)
+	}
+	action := "stop"
+	if enabled {
+		action = "start"
+	}
+	output, err := exec.CommandContext(ctx, command, "--profile="+profilePath, control, action).CombinedOutput()
+	detail := strings.TrimSpace(string(output))
+	if err != nil {
+		return "", fmt.Errorf("mbim-network %s failed: %w: %s", action, err, detail)
+	}
+	return detail, nil
+}
+
+func runUMBIM(
+	ctx context.Context,
+	command, control string,
+	enabled bool,
+	apn, ipVersion, username, password, authentication string,
+) (string, error) {
+	if !enabled {
+		output, err := exec.CommandContext(ctx, command, "-d", control, "disconnect").CombinedOutput()
+		if err != nil && !strings.Contains(strings.ToLower(string(output)), "not connected") {
+			return "", fmt.Errorf("umbim disconnect failed: %w: %s", err, strings.TrimSpace(string(output)))
+		}
+		return strings.TrimSpace(string(output)), nil
+	}
+	type umbimCommand struct {
+		name string
+		args []string
+	}
+	commands := []umbimCommand{
+		{name: "caps", args: []string{"-n", "-d", control, "caps"}},
+		{name: "subscriber", args: []string{"-n", "-t", "2", "-d", control, "subscriber"}},
+		{name: "attach", args: []string{"-n", "-t", "3", "-d", control, "attach"}},
+	}
+	pdpType := map[string]string{"IP": "ipv4", "IPV6": "ipv6", "IPV4V6": "ipv4v6"}[ipVersion]
+	auth := strings.ToLower(authentication)
+	if auth == "none" {
+		auth = ""
+	} else if auth == "pap_or_chap" {
+		auth = "pap"
+	}
+	commands = append(commands, umbimCommand{
+		name: "connect",
+		args: []string{"-n", "-t", "4", "-d", control, "connect", pdpType + ":" + apn, auth, username, password},
+	})
+	outputs := make([]string, 0, len(commands))
+	for _, operation := range commands {
+		output, err := exec.CommandContext(ctx, command, operation.args...).CombinedOutput()
+		if err != nil {
+			cleanupCtx, cancelCleanup := context.WithTimeout(context.Background(), managerCommandCleanupTimeout)
+			_, _ = exec.CommandContext(cleanupCtx, command, "-d", control, "disconnect").CombinedOutput()
+			cancelCleanup()
+			return "", fmt.Errorf("umbim %s failed: %w: %s", operation.name, err, strings.TrimSpace(string(output)))
+		}
+		if value := strings.TrimSpace(string(output)); value != "" {
+			outputs = append(outputs, value)
+		}
+	}
+	return strings.Join(outputs, "\n"), nil
+}
+
 func shellProfileValue(value string) string {
 	return "'" + strings.ReplaceAll(value, "'", `'"'"'`) + "'"
 }

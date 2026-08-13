@@ -7,6 +7,7 @@ export const DEVICE_TYPES: ReadonlyArray<{ value: DeviceType; label: string; ima
   { value: "dji_4g", label: "大疆 4G 模块（移远芯片）", image: "/dj.png" },
   { value: "pcie_ec20_ec25", label: "PCIe EC20/EC25（移远芯片）", image: "/ec20.png" },
 	{ value: "usb_sim_reader", label: "USB SIM 读卡器（仅 WiFi Calling）", image: "/sim-reader.svg" },
+  { value: "sierra_em74xx", label: "Sierra Wireless EM73xx/EM74xx", image: "/410.png" },
 ];
 
 export function normalizeDeviceType(value?: string | null): DeviceType {
