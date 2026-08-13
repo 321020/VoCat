@@ -188,6 +188,15 @@ those fixed nodes and does not provide complete multi-device or hot-plug discove
 
 The GHCR image is published for `linux/amd64` and `linux/arm64`.
 
+### USB SIM readers
+
+USB SIM readers use the Linux PC/SC service. The one-click installer installs
+and starts `pcscd` plus the CCID driver automatically on supported package
+managers. On Debian/Ubuntu, the equivalent manual setup is
+`apt install pcscd libccid`. If USB sees a CCID reader but PC/SC is unavailable,
+VoCat keeps the reader visible in the add-device dialog and reports the missing
+service or driver instead of silently hiding it.
+
 ## Configuration
 
 Vocat reads an optional JSON configuration file from `VOCAT_CONFIG`, then applies `VOCAT_*` environment variables. Environment variables take precedence.

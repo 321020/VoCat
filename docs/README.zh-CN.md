@@ -168,6 +168,13 @@ docker run -d \
 
 GHCR 镜像发布为 `linux/amd64` 与 `linux/arm64`。
 
+### USB SIM 读卡器
+
+USB SIM 读卡器通过 Linux PC/SC 服务访问。一键安装脚本会在支持的软件包管理器上
+自动安装并启动 `pcscd` 和 CCID 驱动；Debian/Ubuntu 手动安装命令为
+`apt install pcscd libccid`。如果 USB 已识别 CCID 读卡器但 PC/SC 尚未就绪，
+VoCat 会继续在添加设备窗口显示该硬件，并明确提示缺少服务或驱动，不再静默隐藏。
+
 ## 配置
 
 Vocat 先从 `VOCAT_CONFIG` 读取可选的 JSON 配置文件,再应用 `VOCAT_*` 环境变量。环境变量优先级更高。

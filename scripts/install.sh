@@ -195,6 +195,48 @@ install_linux_ip_tool() {
     fi
 }
 
+install_pcsc_support() {
+    msg "正在检查 USB SIM 读卡器的 PC/SC 运行环境..." "Checking the PC/SC environment for USB SIM readers..."
+    local installed=0
+    if is_openwrt && command -v opkg >/dev/null 2>&1; then
+        opkg update >/dev/null 2>&1 || true
+        local packages=""
+        opkg_has_package pcscd && packages="$packages pcscd"
+        opkg_has_package ccid && packages="$packages ccid"
+        if [ -n "$packages" ]; then
+            # shellcheck disable=SC2086
+            opkg install $packages >/dev/null 2>&1 && installed=1 || true
+        fi
+    elif command -v apt-get >/dev/null 2>&1; then
+        if apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y pcscd libccid; then
+            installed=1
+        fi
+    elif command -v dnf >/dev/null 2>&1; then
+        dnf install -y pcsc-lite pcsc-lite-ccid && installed=1 || true
+    elif command -v yum >/dev/null 2>&1; then
+        yum install -y pcsc-lite pcsc-lite-ccid && installed=1 || true
+    elif command -v pacman >/dev/null 2>&1; then
+        pacman -Sy --noconfirm pcsclite ccid && installed=1 || true
+    elif command -v apk >/dev/null 2>&1; then
+        apk add --no-cache pcsc-lite ccid && installed=1 || true
+    fi
+
+    if command -v systemctl >/dev/null 2>&1; then
+        systemctl enable --now pcscd.socket >/dev/null 2>&1 || \
+            systemctl restart pcscd >/dev/null 2>&1 || true
+    elif [ -x /etc/init.d/pcscd ]; then
+        /etc/init.d/pcscd enable >/dev/null 2>&1 || true
+        /etc/init.d/pcscd restart >/dev/null 2>&1 || /etc/init.d/pcscd start >/dev/null 2>&1 || true
+    fi
+    if command -v pcscd >/dev/null 2>&1 || [ "$installed" -eq 1 ]; then
+        msg "USB SIM 读卡器 PC/SC 环境已就绪。" "USB SIM reader PC/SC environment is ready."
+    else
+        msg \
+            "警告：未能自动安装 pcscd/CCID 驱动；系统仍会显示读卡器并给出修复提示。" \
+            "Warning: pcscd/CCID could not be installed automatically; VoCat will still show the reader with a remediation hint."
+    fi
+}
+
 check_vowifi_environment() {
     if [ "$SKIP_VOWIFI_CHECK" = "1" ]; then
         msg \
@@ -481,6 +523,7 @@ enable_and_start() {
 
 # --- Main --------------------------------------------------------------------
 detect_arch
+install_pcsc_support
 check_vowifi_environment
 if [ "$CHECK_ENV" -eq 1 ]; then
     msg "VoCat 运行环境检查完成。" "VoCat host environment check completed."

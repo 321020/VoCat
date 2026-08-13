@@ -16,9 +16,9 @@ import (
 	"time"
 )
 
-type nativeBackend struct{}
+type nativeBackend struct{ sysRoot string }
 
-func newNativeBackend() Backend { return &nativeBackend{} }
+func newNativeBackend() Backend { return &nativeBackend{sysRoot: "/sys"} }
 
 func (backend *nativeBackend) dial(ctx context.Context) (*pcscdClient, error) {
 	paths := []string{strings.TrimSpace(os.Getenv("PCSCLITE_CSOCK_NAME")), "/run/pcscd/pcscd.comm", "/var/run/pcscd/pcscd.comm"}
@@ -45,8 +45,15 @@ func (backend *nativeBackend) dial(ctx context.Context) (*pcscdClient, error) {
 }
 
 func (backend *nativeBackend) Readers(ctx context.Context) ([]Reader, error) {
+	physical := discoverUSBSmartCardReaders(backend.sysRoot, "pcsc_driver_missing")
 	client, err := backend.dial(ctx)
 	if err != nil {
+		if len(physical) > 0 {
+			for index := range physical {
+				physical[index].DiscoveryIssue = "pcsc_service_unavailable"
+			}
+			return physical, nil
+		}
 		return nil, err
 	}
 	defer client.closeContext(context.Background())
@@ -63,10 +70,10 @@ func (backend *nativeBackend) Readers(ctx context.Context) ([]Reader, error) {
 		}
 		if path, ok := backend.readerUSBPath(ctx, client, state.name); ok {
 			reader.USBPath = path
-			reader.VendorID = readSysfsText(path, "idVendor")
-			reader.ProductID = readSysfsText(path, "idProduct")
-			reader.Manufacturer = readSysfsText(path, "manufacturer")
-			reader.Product = readSysfsText(path, "product")
+			reader.VendorID = backend.readSysfsText(path, "idVendor")
+			reader.ProductID = backend.readSysfsText(path, "idProduct")
+			reader.Manufacturer = backend.readSysfsText(path, "manufacturer")
+			reader.Product = backend.readSysfsText(path, "product")
 		} else {
 			reader.USBPath = "pcsc:" + state.name
 		}
@@ -75,7 +82,7 @@ func (backend *nativeBackend) Readers(ctx context.Context) ([]Reader, error) {
 		}
 		readers = append(readers, reader)
 	}
-	return readers, nil
+	return mergePCSCAndUSBReaders(readers, physical), nil
 }
 
 func (backend *nativeBackend) readerUSBPath(ctx context.Context, client *pcscdClient, name string) (string, bool) {
@@ -94,7 +101,8 @@ func (backend *nativeBackend) readerUSBPath(ctx context.Context, client *pcscdCl
 		return "", false
 	}
 	bus, device := int((channel>>8)&0xff), int(channel&0xff)
-	entries, err := os.ReadDir("/sys/bus/usb/devices")
+	usbRoot := filepath.Join(backend.sysRoot, "bus", "usb", "devices")
+	entries, err := os.ReadDir(usbRoot)
 	if err != nil {
 		return "", false
 	}
@@ -102,7 +110,7 @@ func (backend *nativeBackend) readerUSBPath(ctx context.Context, client *pcscdCl
 		if !entry.IsDir() && entry.Type()&os.ModeSymlink == 0 {
 			continue
 		}
-		path := filepath.Join("/sys/bus/usb/devices", entry.Name())
+		path := filepath.Join(usbRoot, entry.Name())
 		entryBus, busErr := readSysfsInt(path, "busnum")
 		entryDevice, deviceErr := readSysfsInt(path, "devnum")
 		if busErr == nil && deviceErr == nil && entryBus == bus && entryDevice == device {
@@ -120,6 +128,9 @@ func (backend *nativeBackend) Open(ctx context.Context, selector Selector) (Card
 	reader, ok := matchReader(readers, selector)
 	if !ok {
 		return nil, ErrReaderNotFound
+	}
+	if reader.DiscoveryIssue != "" {
+		return nil, fmt.Errorf("%w: %s", ErrUnavailable, reader.DiscoveryIssue)
 	}
 	if !reader.CardPresent {
 		return nil, ErrNoCard
@@ -221,8 +232,8 @@ func (card *nativeCard) close(disposition uint32) error {
 	return errors.Join(result...)
 }
 
-func readSysfsText(usbPath, name string) string {
-	value, err := os.ReadFile(filepath.Join("/sys/bus/usb/devices", usbPath, name))
+func (backend *nativeBackend) readSysfsText(usbPath, name string) string {
+	value, err := os.ReadFile(filepath.Join(backend.sysRoot, "bus", "usb", "devices", usbPath, name))
 	if err != nil {
 		return ""
 	}

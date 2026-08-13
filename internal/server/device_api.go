@@ -379,7 +379,7 @@ func (s *Server) handleDiscoveredDevices(w http.ResponseWriter, r *http.Request)
 			"usb_path":        candidate.USBPath,
 			"vendor_id":       parseHexID(candidate.VendorID),
 			"product_id":      parseHexID(candidate.ProductID),
-			"driver_name":     "",
+			"driver_name":     candidate.Product,
 			"at_ports":        atPorts,
 			"at_port":         candidate.ATPort.OpenPath(),
 			"imei":            snapshotString(entry.Snapshot, func(snapshot *device.Snapshot) string { return snapshot.IMEI }),
@@ -387,7 +387,8 @@ func (s *Server) handleDiscoveredDevices(w http.ResponseWriter, r *http.Request)
 			"network_capable": candidate.HardwareKind != "pcsc" && (candidate.NetworkInterface != "" || candidate.QMIControl != ""),
 			"configured":      configuredID != "",
 			"configured_id":   configuredID,
-			"degraded":        candidate.HardwareKind != "pcsc" && !candidate.HasATPort(),
+			"degraded":        candidate.DiscoveryIssue != "" || (candidate.HardwareKind != "pcsc" && !candidate.HasATPort()),
+			"discovery_issue": candidate.DiscoveryIssue,
 		})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"data": map[string]any{"devices": result}})

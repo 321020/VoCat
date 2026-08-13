@@ -942,7 +942,7 @@ func pollDeviceSnapshots(
 		var refreshGroup sync.WaitGroup
 		refreshSlots := make(chan struct{}, 4)
 		for _, entry := range entries {
-			if !entry.Discovered {
+			if !entry.Discovered || entry.Candidate.DiscoveryIssue != "" {
 				continue
 			}
 			entry := entry

@@ -181,6 +181,7 @@ func (manager *Manager) Discover(ctx context.Context) ([]Device, error) {
 				ReaderName: reader.Name, USBPath: reader.USBPath,
 				VendorID: reader.VendorID, ProductID: reader.ProductID,
 				Manufacturer: reader.Manufacturer, Product: reader.Product,
+				DiscoveryIssue: reader.DiscoveryIssue,
 			})
 		}
 	}
