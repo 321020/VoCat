@@ -6,6 +6,8 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+
+	"vocat/internal/vowifi"
 )
 
 func TestParseSecurityAgreementSelectsSupportedIPSec(t *testing.T) {
@@ -33,6 +35,51 @@ func TestParseSecurityAgreementSelectsSupportedIPSec(t *testing.T) {
 	}
 	if agreement.verifyValue != unsupported+", "+selected {
 		t.Fatalf("Security-Verify = %q", agreement.verifyValue)
+	}
+}
+
+func TestO2GermanySecurityProposalUsesIntegrityOnlyESP(t *testing.T) {
+	identity := vowifi.SIMIdentity{HomeMCC: "262", HomeMNC: "03"}
+	if got := securityEncryptionForIdentity(identity); got != "null" {
+		t.Fatalf("O2 security encryption = %q, want null", got)
+	}
+	proposal := securityProposal{
+		spiClient: 1001, spiServer: 1002,
+		portClient: 40666, portServer: 55610,
+		encryption: securityEncryptionForIdentity(identity),
+	}
+	if got, want := proposal.headerValue(), "ipsec-3gpp;q=1.000;alg=hmac-sha-1-96;prot=esp;mod=trans;ealg=null;spi-c=0000001001;spi-s=0000001002;port-c=40666;port-s=55610"; got != want {
+		t.Fatalf("O2 Security-Client = %q, want %q", got, want)
+	}
+	selected := "ipsec-3gpp;q=1.000;alg=hmac-sha-1-96;prot=esp;mod=trans;" +
+		"ealg=null;spi-c=2001;spi-s=2002;port-c=50601;port-s=50600"
+	if _, err := parseSecurityAgreement([]string{selected}, proposal); err != nil {
+		t.Fatalf("O2 null Security-Server rejected: %v", err)
+	}
+
+	identity.HomeMNC = "02"
+	if got := securityEncryptionForIdentity(identity); got != "aes-cbc" {
+		t.Fatalf("non-O2 security encryption = %q, want aes-cbc", got)
+	}
+}
+
+func TestSecurityAgreementAcceptsO2FallbackEncryption(t *testing.T) {
+	proposal := securityProposal{
+		spiClient:          1001,
+		spiServer:          1002,
+		portClient:         5062,
+		portServer:         5063,
+		encryption:         "null",
+		fallbackEncryption: "aes-cbc",
+	}
+	value := "ipsec-3gpp;q=0.5;alg=hmac-sha-1-96;prot=esp;mod=trans;" +
+		"ealg=aes-cbc;spi-c=2001;spi-s=2002;port-c=50601;port-s=50600"
+	agreement, err := parseSecurityAgreement([]string{value}, proposal)
+	if err != nil {
+		t.Fatalf("parseSecurityAgreement(aes-cbc fallback) error = %v", err)
+	}
+	if got := agreement.selected.encryption; got != "aes-cbc" {
+		t.Fatalf("selected encryption = %q, want aes-cbc", got)
 	}
 }
 
@@ -121,7 +168,7 @@ func TestParseSecurityAgreementFailsClosed(t *testing.T) {
 func TestExpandIPSecKeys(t *testing.T) {
 	ck := []byte{0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15}
 	ik := []byte{16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31}
-	encryption, integrity, err := expandIPSecKeys(ck, ik)
+	encryption, integrity, err := expandIPSecKeys(ck, ik, "aes-cbc", "hmac-sha-1-96")
 	if err != nil {
 		t.Fatalf("expandIPSecKeys() error = %v", err)
 	}
@@ -136,6 +183,71 @@ func TestExpandIPSecKeys(t *testing.T) {
 	integrity[0] ^= 0xff
 	if ck[0] != 0 || ik[0] != 16 {
 		t.Fatal("expanded keys alias AKA key material")
+	}
+}
+
+func TestExpandIPSecKeysForAndroidAlgorithmSet(t *testing.T) {
+	ck := []byte{0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18}
+	ik := []byte{0x21, 0x22, 0x23, 0x24, 0x25, 0x26, 0x27, 0x28, 0x31, 0x32, 0x33, 0x34, 0x35, 0x36, 0x37, 0x38}
+	tripleDES, md5Key, err := expandIPSecKeys(ck, ik, "des-ede3-cbc", "hmac-md5-96")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tripleDES) != 24 || len(md5Key) != 16 {
+		t.Fatalf("3DES/MD5 key lengths = %d/%d", len(tripleDES), len(md5Key))
+	}
+	for _, value := range tripleDES {
+		ones := 0
+		for bits := value; bits != 0; bits >>= 1 {
+			ones += int(bits & 1)
+		}
+		if ones%2 != 1 {
+			t.Fatalf("3DES byte %02x does not have odd parity", value)
+		}
+	}
+	nullKey, sha1Key, err := expandIPSecKeys(ck, ik, "null", "hmac-sha-1-96")
+	if err != nil || len(nullKey) != 0 || len(sha1Key) != 20 {
+		t.Fatalf("null/SHA1 keys = %d/%d, %v", len(nullKey), len(sha1Key), err)
+	}
+}
+
+func TestAndroidIMSProposalOffersAllDefaultAlgorithms(t *testing.T) {
+	proposal := securityProposal{
+		spiClient: 1001, spiServer: 1002, portClient: 5062, portServer: 5063,
+		integrityAlgorithms:      []string{"hmac-md5-96", "hmac-sha-1-96"},
+		encryptionAlgorithmsList: []string{"null", "des-ede3-cbc", "aes-cbc"},
+	}
+	header := proposal.headerValue()
+	for _, combination := range []string{
+		"alg=hmac-md5-96;prot=esp;mod=trans;ealg=null",
+		"alg=hmac-md5-96;prot=esp;mod=trans;ealg=des-ede3-cbc",
+		"alg=hmac-md5-96;prot=esp;mod=trans;ealg=aes-cbc",
+		"alg=hmac-sha-1-96;prot=esp;mod=trans;ealg=null",
+		"alg=hmac-sha-1-96;prot=esp;mod=trans;ealg=des-ede3-cbc",
+		"alg=hmac-sha-1-96;prot=esp;mod=trans;ealg=aes-cbc",
+	} {
+		if !strings.Contains(header, combination) {
+			t.Fatalf("Android IMS Security-Client omitted %q: %s", combination, header)
+		}
+	}
+	if got := len(splitHeaderValues([]string{header})); got != 6 {
+		t.Fatalf("Security-Client mechanism count = %d, want 6", got)
+	}
+}
+
+func TestNewSecurityProposalUsesAndroidDefaultsForEveryCarrier(t *testing.T) {
+	proposal, err := newSecurityProposal(net.ParseIP("127.0.0.1"), 45062, 45063)
+	if err != nil {
+		t.Fatalf("newSecurityProposal() error = %v", err)
+	}
+	if got, want := proposal.integrities(), []string{"hmac-md5-96", "hmac-sha-1-96"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("integrity algorithms = %v, want %v", got, want)
+	}
+	if got, want := proposal.encryptionAlgorithms(), []string{"null", "des-ede3-cbc", "aes-cbc"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("encryption algorithms = %v, want %v", got, want)
+	}
+	if got := len(splitHeaderValues([]string{proposal.headerValue()})); got != 6 {
+		t.Fatalf("Security-Client mechanism count = %d, want 6", got)
 	}
 }
 
@@ -205,6 +317,46 @@ func TestXFRMPlanContainsFourStatesAndProtocolSpecificPolicies(t *testing.T) {
 	for _, operation := range cleanup {
 		if strings.Contains(strings.Join(operation.arguments, " "), keyHex) {
 			t.Fatalf("cleanup operation retained encryption key: %v", operation.arguments)
+		}
+	}
+}
+
+func TestXFRMPlanSupportsIntegrityOnlyESP(t *testing.T) {
+	config := testIPSecSAConfig()
+	config.EncryptionAlgorithm = "null"
+	config.EncryptionKey = nil
+	install, err := buildXFRMInstallPlan(config)
+	if err != nil {
+		t.Fatalf("buildXFRMInstallPlan(null) error = %v", err)
+	}
+	for index, operation := range install[:4] {
+		joined := strings.Join(operation.arguments, " ")
+		if !strings.Contains(joined, "auth-trunc hmac(sha1)") {
+			t.Fatalf("null state %d omitted integrity: %v", index, operation.arguments)
+		}
+		if !containsArguments(operation.arguments, "enc", "cipher_null", "") {
+			t.Fatalf("null state %d omitted Linux NULL cipher: %v", index, operation.arguments)
+		}
+	}
+}
+
+func TestXFRMPlanSupportsAndroidMD5AndTripleDES(t *testing.T) {
+	config := testIPSecSAConfig()
+	config.IntegrityAlgorithm = "hmac-md5-96"
+	config.EncryptionAlgorithm = "des-ede3-cbc"
+	config.IntegrityKey = []byte(strings.Repeat("\x22", 16))
+	config.EncryptionKey = []byte(strings.Repeat("\x11", 24))
+
+	install, err := buildXFRMInstallPlan(config)
+	if err != nil {
+		t.Fatalf("buildXFRMInstallPlan() error = %v", err)
+	}
+	for index, operation := range install[:4] {
+		if !containsArguments(operation.arguments, "auth-trunc", "hmac(md5)", "0x"+strings.Repeat("22", 16), "96") {
+			t.Fatalf("state %d omitted HMAC-MD5-96 transform: %v", index, operation.arguments)
+		}
+		if !containsArguments(operation.arguments, "enc", "cbc(des3_ede)", "0x"+strings.Repeat("11", 24)) {
+			t.Fatalf("state %d omitted 3DES-CBC transform: %v", index, operation.arguments)
 		}
 	}
 }

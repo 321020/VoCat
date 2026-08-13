@@ -39,6 +39,12 @@ var (
 type IPSecSAConfig struct {
 	LocalIP  net.IP
 	RemoteIP net.IP
+	// IntegrityAlgorithm is the negotiated 3GPP Security-Server alg value.
+	// Supported values are hmac-md5-96 and hmac-sha-1-96.
+	IntegrityAlgorithm string
+	// EncryptionAlgorithm is the negotiated 3GPP Security-Server ealg value.
+	// Supported values are null, des-ede3-cbc, and aes-cbc.
+	EncryptionAlgorithm string
 
 	UEClientSPI    uint32
 	UEServerSPI    uint32
@@ -63,10 +69,14 @@ type IPSecSAInstaller interface {
 }
 
 type securityProposal struct {
-	spiClient  uint32
-	spiServer  uint32
-	portClient int
-	portServer int
+	spiClient                uint32
+	spiServer                uint32
+	portClient               int
+	portServer               int
+	encryption               string
+	fallbackEncryption       string
+	integrityAlgorithms      []string
+	encryptionAlgorithmsList []string
 }
 
 func newSecurityProposal(localIP net.IP, configuredClientPort int, configuredServerPort int) (securityProposal, error) {
@@ -96,21 +106,85 @@ func newSecurityProposal(localIP net.IP, configuredClientPort int, configuredSer
 		return securityProposal{}, errors.New("ims: protected UE ports must be distinct non-standard SIP ports")
 	}
 	return securityProposal{
-		spiClient:  spiClient,
-		spiServer:  spiServer,
-		portClient: portClient,
-		portServer: portServer,
+		spiClient:                spiClient,
+		spiServer:                spiServer,
+		portClient:               portClient,
+		portServer:               portServer,
+		integrityAlgorithms:      []string{"hmac-md5-96", "hmac-sha-1-96"},
+		encryptionAlgorithmsList: []string{"null", "des-ede3-cbc", "aes-cbc"},
 	}, nil
 }
 
 func (proposal securityProposal) headerValue() string {
-	return fmt.Sprintf(
-		"ipsec-3gpp;q=1.000;alg=hmac-sha-1-96;prot=esp;mod=trans;ealg=aes-cbc;spi-c=%010d;spi-s=%010d;port-c=%d;port-s=%d",
-		proposal.spiClient,
-		proposal.spiServer,
-		proposal.portClient,
-		proposal.portServer,
-	)
+	// TS 33.203 defines spi-c and spi-s as exactly 10 decimal digits. Keep the
+	// complete mechanism explicit even where ESP/null defaults would permit a
+	// shorter form; this is the interoperable handset/IMS profile.
+	values := make([]string, 0, len(proposal.integrities())*len(proposal.encryptionAlgorithms()))
+	index := 0
+	for _, integrity := range proposal.integrities() {
+		for _, encryption := range proposal.encryptionAlgorithms() {
+			preference := fmt.Sprintf("0.%03d", 999-index)
+			if index == 0 {
+				preference = "1.000"
+			}
+			values = append(values, fmt.Sprintf(
+				"ipsec-3gpp;q=%s;alg=%s;prot=esp;mod=trans;ealg=%s;spi-c=%010d;spi-s=%010d;port-c=%d;port-s=%d",
+				preference,
+				integrity,
+				encryption,
+				proposal.spiClient,
+				proposal.spiServer,
+				proposal.portClient,
+				proposal.portServer,
+			))
+			index++
+		}
+	}
+	return strings.Join(values, ", ")
+}
+
+func (proposal securityProposal) encryptionAlgorithm() string {
+	if strings.EqualFold(strings.TrimSpace(proposal.encryption), "null") {
+		return "null"
+	}
+	return "aes-cbc"
+}
+
+func (proposal securityProposal) encryptionAlgorithms() []string {
+	if len(proposal.encryptionAlgorithmsList) > 0 {
+		return append([]string(nil), proposal.encryptionAlgorithmsList...)
+	}
+	algorithms := []string{proposal.encryptionAlgorithm()}
+	fallback := strings.ToLower(strings.TrimSpace(proposal.fallbackEncryption))
+	if (fallback == "aes-cbc" || fallback == "null") && fallback != algorithms[0] {
+		algorithms = append(algorithms, fallback)
+	}
+	return algorithms
+}
+
+func (proposal securityProposal) integrities() []string {
+	if len(proposal.integrityAlgorithms) > 0 {
+		return append([]string(nil), proposal.integrityAlgorithms...)
+	}
+	return []string{"hmac-sha-1-96"}
+}
+
+func (proposal securityProposal) supportsIntegrity(integrity string) bool {
+	for _, offered := range proposal.integrities() {
+		if strings.EqualFold(integrity, offered) {
+			return true
+		}
+	}
+	return false
+}
+
+func (proposal securityProposal) supportsEncryption(encryption string) bool {
+	for _, offered := range proposal.encryptionAlgorithms() {
+		if strings.EqualFold(encryption, offered) {
+			return true
+		}
+	}
+	return false
 }
 
 func randomSPI(exclude uint32) (uint32, error) {
@@ -198,10 +272,10 @@ func parseSecurityAgreement(values []string, proposal securityProposal) (securit
 			continue
 		}
 		if !strings.EqualFold(mechanism.name, "ipsec-3gpp") ||
-			!strings.EqualFold(mechanism.algorithm, "hmac-sha-1-96") ||
+			!proposal.supportsIntegrity(mechanism.algorithm) ||
 			!strings.EqualFold(mechanism.protocol, "esp") ||
 			!strings.EqualFold(mechanism.mode, "trans") ||
-			!strings.EqualFold(mechanism.encryption, "aes-cbc") {
+			!proposal.supportsEncryption(mechanism.encryption) {
 			continue
 		}
 		if mechanism.spiClient == 0 || mechanism.spiServer == 0 ||
@@ -349,14 +423,46 @@ func preferenceValue(value string) (int, error) {
 	return numeric, nil
 }
 
-func expandIPSecKeys(ck []byte, ik []byte) (encryption []byte, integrity []byte, err error) {
+func expandIPSecKeys(ck []byte, ik []byte, encryptionAlgorithm, integrityAlgorithm string) (encryption []byte, integrity []byte, err error) {
 	if len(ck) != 16 || len(ik) != 16 {
 		return nil, nil, errors.New("ims: AKA did not return 16-byte CK and IK")
 	}
-	encryption = append([]byte(nil), ck...)
-	integrity = make([]byte, 20)
-	copy(integrity, ik)
+	switch strings.ToLower(strings.TrimSpace(encryptionAlgorithm)) {
+	case "null":
+		encryption = nil
+	case "aes-cbc", "":
+		encryption = append([]byte(nil), ck...)
+	case "des-ede3-cbc":
+		encryption = append(encryption, ck...)
+		encryption = append(encryption, ck[:8]...)
+		for index, value := range encryption {
+			encryption[index] = withOddDESParity(value)
+		}
+	default:
+		return nil, nil, errors.New("ims: unsupported ipsec-3gpp encryption algorithm")
+	}
+	switch strings.ToLower(strings.TrimSpace(integrityAlgorithm)) {
+	case "hmac-md5-96":
+		integrity = append([]byte(nil), ik...)
+	case "hmac-sha-1-96", "":
+		integrity = make([]byte, 20)
+		copy(integrity, ik)
+	default:
+		return nil, nil, errors.New("ims: unsupported ipsec-3gpp integrity algorithm")
+	}
 	return encryption, integrity, nil
+}
+
+func withOddDESParity(value byte) byte {
+	value &^= 1
+	ones := 0
+	for bits := value; bits != 0; bits >>= 1 {
+		ones += int(bits & 1)
+	}
+	if ones%2 == 0 {
+		value |= 1
+	}
+	return value
 }
 
 type xfrmOperation struct {
@@ -382,20 +488,31 @@ func buildXFRMInstallPlan(config IPSecSAConfig) ([]xfrmOperation, error) {
 		{"outbound UE-server to P-CSCF-client state", config.LocalIP, config.RemoteIP, config.PCSCFClientSPI, serverPairReqID(config)},
 	}
 	for _, state := range states {
+		arguments := []string{
+			"xfrm", "state", "add",
+			"src", state.source.String(),
+			"dst", state.destination.String(),
+			"proto", "esp",
+			"spi", fmt.Sprintf("0x%08x", state.spi),
+			"reqid", strconv.FormatUint(uint64(state.reqid), 10),
+			"mode", "transport",
+			"replay-window", "32",
+			"auth-trunc", xfrmIntegrityAlgorithm(config), "0x" + hex.EncodeToString(config.IntegrityKey), "96",
+		}
+		switch ipsecEncryptionAlgorithm(config) {
+		case "aes-cbc":
+			arguments = append(arguments, "enc", "cbc(aes)", "0x"+hex.EncodeToString(config.EncryptionKey))
+		case "des-ede3-cbc":
+			arguments = append(arguments, "enc", "cbc(des3_ede)", "0x"+hex.EncodeToString(config.EncryptionKey))
+		default:
+			// Linux requires an explicit encryption transform for ESP even when
+			// 3GPP negotiates ealg=null. iproute2 must receive a genuinely empty
+			// key argument; the textual value "0x" is rejected by XFRM as EINVAL.
+			arguments = append(arguments, "enc", "cipher_null", "")
+		}
 		operations = append(operations, xfrmOperation{
 			description: state.description,
-			arguments: []string{
-				"xfrm", "state", "add",
-				"src", state.source.String(),
-				"dst", state.destination.String(),
-				"proto", "esp",
-				"spi", fmt.Sprintf("0x%08x", state.spi),
-				"reqid", strconv.FormatUint(uint64(state.reqid), 10),
-				"mode", "transport",
-				"replay-window", "32",
-				"auth-trunc", "hmac(sha1)", "0x" + hex.EncodeToString(config.IntegrityKey), "96",
-				"enc", "cbc(aes)", "0x" + hex.EncodeToString(config.EncryptionKey),
-			},
+			arguments:   arguments,
 		})
 	}
 	for _, flow := range xfrmFlows(config) {
@@ -588,10 +705,41 @@ func validateIPSecSAConfig(config IPSecSAConfig) error {
 		config.PCSCFClientPort == config.PCSCFServerPort {
 		return errors.New("ims: client and server protected ports must differ")
 	}
-	if len(config.EncryptionKey) != 16 || len(config.IntegrityKey) != 20 {
+	if ipsecEncryptionAlgorithm(config) != "null" && ipsecEncryptionAlgorithm(config) != "aes-cbc" && ipsecEncryptionAlgorithm(config) != "des-ede3-cbc" {
+		return errors.New("ims: unsupported ipsec-3gpp encryption algorithm")
+	}
+	if ipsecIntegrityAlgorithm(config) != "hmac-md5-96" && ipsecIntegrityAlgorithm(config) != "hmac-sha-1-96" {
+		return errors.New("ims: unsupported ipsec-3gpp integrity algorithm")
+	}
+	wantEncryptionKey := map[string]int{"null": 0, "aes-cbc": 16, "des-ede3-cbc": 24}[ipsecEncryptionAlgorithm(config)]
+	wantIntegrityKey := map[string]int{"hmac-md5-96": 16, "hmac-sha-1-96": 20}[ipsecIntegrityAlgorithm(config)]
+	if len(config.EncryptionKey) != wantEncryptionKey || len(config.IntegrityKey) != wantIntegrityKey {
 		return errors.New("ims: ipsec-3gpp key length is invalid")
 	}
 	return nil
+}
+
+func ipsecIntegrityAlgorithm(config IPSecSAConfig) string {
+	algorithm := strings.ToLower(strings.TrimSpace(config.IntegrityAlgorithm))
+	if algorithm == "" {
+		return "hmac-sha-1-96"
+	}
+	return algorithm
+}
+
+func xfrmIntegrityAlgorithm(config IPSecSAConfig) string {
+	if ipsecIntegrityAlgorithm(config) == "hmac-md5-96" {
+		return "hmac(md5)"
+	}
+	return "hmac(sha1)"
+}
+
+func ipsecEncryptionAlgorithm(config IPSecSAConfig) string {
+	algorithm := strings.ToLower(strings.TrimSpace(config.EncryptionAlgorithm))
+	if algorithm == "" {
+		return "aes-cbc"
+	}
+	return algorithm
 }
 
 func cloneIPSecSAConfig(config IPSecSAConfig) IPSecSAConfig {
@@ -657,7 +805,7 @@ func (session *Session) activateIPSec(
 	if !session.securityOffered() {
 		return ErrIPSecAgreementRequired
 	}
-	encryptionKey, integrityKey, err := expandIPSecKeys(ck, ik)
+	encryptionKey, integrityKey, err := expandIPSecKeys(ck, ik, agreement.selected.encryption, agreement.selected.algorithm)
 	if err != nil {
 		return err
 	}
@@ -671,18 +819,20 @@ func (session *Session) activateIPSec(
 	}
 	selected := agreement.selected
 	config := IPSecSAConfig{
-		LocalIP:         localIP,
-		RemoteIP:        remoteIP,
-		UEClientSPI:     session.securityProposal.spiClient,
-		UEServerSPI:     session.securityProposal.spiServer,
-		PCSCFClientSPI:  selected.spiClient,
-		PCSCFServerSPI:  selected.spiServer,
-		UEClientPort:    session.securityProposal.portClient,
-		UEServerPort:    session.securityProposal.portServer,
-		PCSCFClientPort: selected.portClient,
-		PCSCFServerPort: selected.portServer,
-		EncryptionKey:   encryptionKey,
-		IntegrityKey:    integrityKey,
+		LocalIP:             localIP,
+		RemoteIP:            remoteIP,
+		IntegrityAlgorithm:  selected.algorithm,
+		EncryptionAlgorithm: selected.encryption,
+		UEClientSPI:         session.securityProposal.spiClient,
+		UEServerSPI:         session.securityProposal.spiServer,
+		PCSCFClientSPI:      selected.spiClient,
+		PCSCFServerSPI:      selected.spiServer,
+		UEClientPort:        session.securityProposal.portClient,
+		UEServerPort:        session.securityProposal.portServer,
+		PCSCFClientPort:     selected.portClient,
+		PCSCFServerPort:     selected.portServer,
+		EncryptionKey:       encryptionKey,
+		IntegrityKey:        integrityKey,
 	}
 	handle, err := session.provider.installer.Install(ctx, config)
 	if err != nil {

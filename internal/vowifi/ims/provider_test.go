@@ -379,6 +379,69 @@ func serveRegistration(listener *net.UDPConn, nonce string, confirmSMS bool) err
 	return nil
 }
 
+func TestO2GermanyInitialRegisterMatchesSupportedIMSProfile(t *testing.T) {
+	client, server := net.Pipe()
+	defer client.Close()
+	defer server.Close()
+
+	identity := vowifi.SIMIdentity{
+		IMSI:    "262030123456789",
+		HomeMCC: "262",
+		HomeMNC: "03",
+	}
+	identities, err := deriveIdentities(identity, Config{})
+	if err != nil {
+		t.Fatalf("deriveIdentities() error = %v", err)
+	}
+	session := &Session{
+		provider: &Provider{config: Config{
+			SecurityMode: SecurityRequired,
+			UserAgent:    "vocat-test",
+		}},
+		request:    vowifi.IMSRequest{Identity: identity},
+		identity:   identities,
+		endpoint:   pcscfEndpoint{host: "pcscf.example", port: 5060},
+		transport:  "tcp",
+		conn:       client,
+		callID:     "o2-test",
+		fromTag:    "tag",
+		instanceID: "urn:uuid:test",
+		securityProposal: securityProposal{
+			spiClient:  101,
+			spiServer:  102,
+			portClient: 5062,
+			portServer: 5063,
+			encryption: "null",
+		},
+	}
+
+	packet, err := session.buildRegister(1, 3600, "", "")
+	if err != nil {
+		t.Fatalf("buildRegister() error = %v", err)
+	}
+	_, headers, err := parseTestRequest(packet)
+	if err != nil {
+		t.Fatalf("parseTestRequest() error = %v", err)
+	}
+	if got, want := headers["security-client"], "ipsec-3gpp;q=1.000;alg=hmac-sha-1-96;prot=esp;mod=trans;ealg=null;spi-c=0000000101;spi-s=0000000102;port-c=5062;port-s=5063"; got != want {
+		t.Fatalf("Security-Client = %q, want %q", got, want)
+	}
+	if headers["proxy-require"] != "sec-agree" || !strings.Contains(headers["authorization"], "integrity-protected=no") {
+		t.Fatalf("initial O2 headers omitted standardized sec-agree/IMS-AKA fields: %#v", headers)
+	}
+	if got, want := headers["p-preferred-identity"], "<"+identities.public+">"; got != want {
+		t.Fatalf("P-Preferred-Identity = %q, want %q", got, want)
+	}
+	for name, token := range map[string]string{
+		"supported": "sec-agree",
+		"allow":     "MESSAGE",
+	} {
+		if !strings.Contains(headers[name], token) {
+			t.Fatalf("%s = %q, want token %q", name, headers[name], token)
+		}
+	}
+}
+
 func serveRefreshFailure(listener *net.UDPConn, nonce string) error {
 	var callID string
 	for step := 0; step < 3; step++ {

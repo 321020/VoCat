@@ -534,15 +534,26 @@ func newSession(
 			refreshCancel()
 			return nil, errors.New("ims: protected local IP address is unavailable")
 		}
+		protectedClientPort := provider.config.ProtectedClientPort
+		protectedServerPort := provider.config.ProtectedServerPort
+		if securityEncryptionForIdentity(request.Identity) == "null" {
+			if protectedClientPort == 0 {
+				protectedClientPort = 5062
+			}
+			if protectedServerPort == 0 {
+				protectedServerPort = 5063
+			}
+		}
 		proposal, err := newSecurityProposal(
 			localIP,
-			provider.config.ProtectedClientPort,
-			provider.config.ProtectedServerPort,
+			protectedClientPort,
+			protectedServerPort,
 		)
 		if err != nil {
 			refreshCancel()
 			return nil, err
 		}
+		proposal.encryption = securityEncryptionForIdentity(request.Identity)
 		session.securityProposal = proposal
 		protectedTCP, err := net.ListenTCP(
 			"tcp",
@@ -565,6 +576,21 @@ func newSession(
 		session.protectedUDP = protectedUDP
 	}
 	return session, nil
+}
+
+func securityEncryptionForIdentity(identity vowifi.SIMIdentity) string {
+	if usesO2GermanyIMSProfile(identity) {
+		// O2 Germany's P-CSCF advertises the 3GPP integrity-only ESP profile.
+		// Proposing aes-cbc is rejected before the AKA challenge is issued.
+		return "null"
+	}
+	return "aes-cbc"
+}
+
+func usesO2GermanyIMSProfile(identity vowifi.SIMIdentity) bool {
+	mcc := strings.TrimSpace(identity.HomeMCC)
+	mnc := strings.TrimLeft(strings.TrimSpace(identity.HomeMNC), "0")
+	return mcc+mnc == "2623"
 }
 
 func (session *Session) abort() {
@@ -633,6 +659,15 @@ func registrationRejectionError(response *sipResponse, phase string) error {
 			if value = safeSIPDiagnostic(value); value != "" {
 				message += fmt.Sprintf("; %s: %s", header, value)
 			}
+		}
+	}
+	// P-Debug-Info is carrier-generated but can contain subscriber identifiers.
+	// Surface only a fixed classification for the O2 security-agreement error;
+	// never copy the raw header into logs or API responses.
+	for _, value := range response.values("P-Debug-Info") {
+		if strings.Contains(strings.ToLower(value), "no matched security item") {
+			message += "; carrier detail: no matched IMS security item"
+			break
 		}
 	}
 	return fmt.Errorf("%w: %s", ErrRegistrationRejected, message)
@@ -775,6 +810,16 @@ func (session *Session) buildRegister(
 		session.instanceID,
 		"urn%3Aurn-7%3A3gpp-service.ims.icsi.mmtel",
 	)
+	o2Germany := usesO2GermanyIMSProfile(session.request.Identity)
+	supported := "path, gruu"
+	allow := "REGISTER, INVITE, ACK, CANCEL, BYE, OPTIONS"
+	if o2Germany {
+		// Match the complete IMS capability set used by the previously working
+		// VoHive client. O2 validates more of the initial UE security profile
+		// than the other tested carriers do.
+		supported = "path, gruu, outbound, sec-agree, 100rel, timer"
+		allow = "INVITE, ACK, CANCEL, BYE, PRACK, UPDATE, INFO, MESSAGE, OPTIONS"
+	}
 	lines := []string{
 		"REGISTER " + requestURI + " SIP/2.0",
 		fmt.Sprintf("Via: SIP/2.0/%s %s;branch=z9hG4bK%s;rport", transportUpper, local, branch),
@@ -786,13 +831,15 @@ func (session *Session) buildRegister(
 		fmt.Sprintf("CSeq: %d REGISTER", cseq),
 		"Contact: " + contact,
 		fmt.Sprintf("Expires: %d", expires),
-		"Supported: path, gruu",
-		"Allow: REGISTER, INVITE, ACK, CANCEL, BYE, OPTIONS",
+		"Supported: " + supported,
+		"Allow: " + allow,
 		"User-Agent: " + session.provider.config.UserAgent,
 	}
+	if o2Germany {
+		lines = append(lines, "P-Preferred-Identity: <"+session.identity.public+">")
+	}
 	if session.securityOffered() {
-		lines = append(
-			lines,
+		lines = append(lines,
 			"Security-Client: "+session.securityProposal.headerValue(),
 			"Require: sec-agree",
 			"Proxy-Require: sec-agree",
@@ -1194,7 +1241,14 @@ func (session *Session) Close(ctx context.Context) error {
 	session.closeInboundConnections()
 	session.receiveDone.Wait()
 	if session.ipsecHandle != nil {
-		if err := session.ipsecHandle.Close(ctx); err != nil {
+		// XFRM teardown is local and must still run when SIP deregistration has
+		// consumed the caller's deadline. Use a fresh bounded context so a
+		// service restart or Profile switch cannot strand the previous SIM's
+		// transport-mode policies in the kernel.
+		cleanupContext, cleanupCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		err := session.ipsecHandle.Close(cleanupContext)
+		cleanupCancel()
+		if err != nil {
 			cleanupErrors = append(cleanupErrors, err)
 		}
 	}

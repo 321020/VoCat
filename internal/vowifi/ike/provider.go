@@ -111,7 +111,7 @@ func (provider *Provider) Start(ctx context.Context, request vowifi.TunnelReques
 
 	group := uint16(dhMODP2048)
 	legacyFirst := legacyIKEProfile(request.Identity.HomeMCC, request.Identity.HomeMNC)
-	eapOnly := eapOnlyAuthentication(request.Identity.HomeMCC, request.Identity.HomeMNC)
+	advertiseEAPOnly := advertiseEAPOnlyAuthentication(request.Identity.HomeMCC, request.Identity.HomeMNC)
 	if legacyFirst {
 		group = dhMODP1024
 	}
@@ -246,6 +246,23 @@ func (provider *Provider) Start(ctx context.Context, request vowifi.TunnelReques
 			return nil, err
 		}
 	}
+	cleanupPendingIKE := true
+	cleanupMessageID := uint32(2)
+	defer func() {
+		if cleanupPendingIKE {
+			cleanupContext, cancel := context.WithTimeout(context.Background(), time.Second)
+			defer cancel()
+			_ = sendIKESADelete(
+				cleanupContext,
+				transport,
+				ikeSuite,
+				keys,
+				initiatorSPI,
+				responseHeader.ResponderSPI,
+				cleanupMessageID,
+			)
+		}
+	}()
 
 	var childInboundSPIBytes [4]byte
 	if err := fillNonzero(provider.config.Random, childInboundSPIBytes[:]); err != nil {
@@ -260,7 +277,7 @@ func (provider *Provider) Start(ctx context.Context, request vowifi.TunnelReques
 	requestedIDr := payload{Type: payloadIDr, Body: append([]byte{2, 0, 0, 0}, []byte(provider.config.APN)...)}
 	tsi := dualStackTrafficSelectors(payloadTSi)
 	tsr := dualStackTrafficSelectors(payloadTSr)
-	firstAuthPayloads := buildInitialEAPAuth(idi, requestedIDr, childOfferBody, tsi, tsr, eapOnly)
+	firstAuthPayloads := buildInitialEAPAuth(idi, requestedIDr, childOfferBody, tsi, tsr, advertiseEAPOnly)
 	authHeader := ikeHeader{
 		InitiatorSPI: initiatorSPI,
 		ResponderSPI: responseHeader.ResponderSPI,
@@ -293,12 +310,16 @@ func (provider *Provider) Start(ctx context.Context, request vowifi.TunnelReques
 		initiatorNonce,
 		ikeSuite,
 		keys.SKpr,
-		serverName,
+		"", // Android Iwlan enables IKE_OPTION_ACCEPT_ANY_REMOTE_ID.
 		serverName,
 		provider.config.RootCAs,
 		provider.config.ResponderPublicKey,
-		eapOnly, // RFC 5998 EAP-only authentication defers responder AUTH.
+		true, // Some ePDGs, including O2 Germany, implicitly defer AUTH without accepting the RFC 5998 notify.
 	)
+	if err != nil {
+		return nil, err
+	}
+	deviceIdentityPending, err := deviceIdentityRequested(authResponsePayloads)
 	if err != nil {
 		return nil, err
 	}
@@ -320,15 +341,28 @@ func (provider *Provider) Start(ctx context.Context, request vowifi.TunnelReques
 			return nil, errors.New("ike: EAP state machine produced no response")
 		}
 		messageID++
+		cleanupMessageID = messageID + 1
+		requestPayloads := []payload{{Type: payloadEAP, Body: action.Response}}
+		if deviceIdentityPending && responderAUTH == vowifi.ResponderAUTHVerified {
+			deviceIdentity, identityErr := deviceIdentityNotify(request.Identity.IMEI)
+			if identityErr == nil {
+				requestPayloads = append(requestPayloads, deviceIdentity)
+			}
+		}
 		eapRequest, err := encryptPayloads(ikeHeader{
 			InitiatorSPI: initiatorSPI,
 			ResponderSPI: responseHeader.ResponderSPI,
 			Exchange:     exchangeIKEAuth,
 			Flags:        flagInitiator,
 			MessageID:    messageID,
-		}, []payload{{Type: payloadEAP, Body: action.Response}}, ikeSuite, keys.SKei, keys.SKai, provider.config.Random)
+		}, requestPayloads, ikeSuite, keys.SKei, keys.SKai, provider.config.Random)
 		if err != nil {
 			return nil, err
+		}
+		if requested, notifyErr := deviceIdentityRequested(currentPayloads); notifyErr != nil {
+			return nil, notifyErr
+		} else if requested {
+			deviceIdentityPending = true
 		}
 		eapResponse, err := transport.RoundTrip(ctx, eapRequest)
 		if err != nil {
@@ -359,6 +393,7 @@ func (provider *Provider) Start(ctx context.Context, request vowifi.TunnelReques
 		return nil, err
 	}
 	messageID++
+	cleanupMessageID = messageID + 1
 	finalRequest, err := encryptPayloads(ikeHeader{
 		InitiatorSPI: initiatorSPI,
 		ResponderSPI: responseHeader.ResponderSPI,
@@ -394,7 +429,7 @@ func (provider *Provider) Start(ctx context.Context, request vowifi.TunnelReques
 		return nil, errors.New("ike: duplicate final responder IDr payload")
 	}
 	if len(finalIDs) == 1 {
-		if err := validateFQDNIDr(finalIDs[0], provider.config.APN, "final APN"); err != nil {
+		if err := validateFQDNIDr(finalIDs[0], "", "final responder"); err != nil {
 			return nil, fmt.Errorf("ike: final APN IDr: %w", err)
 		}
 	}
@@ -473,9 +508,11 @@ func (provider *Provider) Start(ctx context.Context, request vowifi.TunnelReques
 		keys,
 		initiatorSPI,
 		responseHeader.ResponderSPI,
+		messageID+1,
 		natDetected,
 		provider.config.KeepaliveInterval,
 	)
+	cleanupPendingIKE = false
 	installed, err := provider.config.Installer.Install(ctx, ChildSAConfig{
 		Name:               name,
 		OuterLocal:         append(net.IP(nil), transport.LocalAddr().IP...),
@@ -500,11 +537,11 @@ func (provider *Provider) Start(ctx context.Context, request vowifi.TunnelReques
 		Relay:              relay,
 	})
 	if err != nil {
-		_ = relay.Close()
+		_ = relay.CloseWithDelete(ctx)
 		return nil, fmt.Errorf("ike: install CHILD_SA: %w", err)
 	}
 	if installed == nil {
-		_ = relay.Close()
+		_ = relay.CloseWithDelete(ctx)
 		return nil, errors.New("ike: CHILD_SA installer returned a nil handle")
 	}
 	dataplaneMode := "unknown"
@@ -554,14 +591,19 @@ func legacyIKEProfile(mcc, mnc string) bool {
 	return plmn == "23415" || plmn == "2044"
 }
 
-func eapOnlyAuthentication(mcc, mnc string) bool {
+func advertiseEAPOnlyAuthentication(mcc, mnc string) bool {
 	// Android exposes the ePDG authentication method as carrier policy rather
 	// than unconditionally requesting RFC 5998 EAP-only authentication. O2
-	// Germany's 262-03 ePDG rejects an EAP-only initial IKE_AUTH before it sends
-	// an EAP-AKA identity or challenge. Use the certificate-authenticated EAP
-	// flow for that PLMN while preserving the established behavior elsewhere.
+	// Germany's 262-03 ePDG rejects an initial IKE_AUTH that explicitly carries
+	// EAP_ONLY_AUTHENTICATION, but then implicitly defers responder AUTH when the
+	// notify is omitted. Do not advertise RFC 5998 for that PLMN; the final
+	// responder AUTH derived from the EAP-AKA MSK remains mandatory.
+	return !o2GermanyIKECompatibility(mcc, mnc)
+}
+
+func o2GermanyIKECompatibility(mcc, mnc string) bool {
 	plmn := strings.TrimSpace(mcc) + strings.TrimLeft(strings.TrimSpace(mnc), "0")
-	return plmn != "2623"
+	return plmn == "2623"
 }
 
 func buildInitialEAPAuth(
@@ -572,10 +614,16 @@ func buildInitialEAPAuth(
 	tsr payload,
 	eapOnly bool,
 ) []payload {
+	// Match Android's IkeSessionStateMachine.buildIkeAuthReq ordering. Some
+	// carrier ePDGs inspect this first encrypted exchange before starting EAP.
 	payloads := []payload{idi, requestedIDr}
 	if eapOnly {
 		payloads = append(payloads, makeNotify(notifyEAPOnlyAuth, nil))
 	}
+	payloads = append(payloads,
+		makeNotify(notifyMOBIKESupported, nil),
+		makeNotify(notifyInitialContact, nil),
+	)
 	return append(payloads,
 		payload{Type: payloadSA, Body: append([]byte(nil), childOfferBody...)},
 		tsi,
@@ -900,7 +948,7 @@ func (session *Session) Close(ctx context.Context) error {
 		}
 	}
 	if relay != nil {
-		if err := relay.Close(); err != nil {
+		if err := relay.CloseWithDelete(ctx); err != nil {
 			errs = append(errs, fmt.Errorf("close session relay: %w", err))
 		}
 	}

@@ -23,8 +23,9 @@ type fakeIPSecInstaller struct {
 }
 
 type fakeIPSecHandle struct {
-	mu         sync.Mutex
-	closeCount int
+	mu              sync.Mutex
+	closeCount      int
+	closeContextErr error
 }
 
 func (installer *fakeIPSecInstaller) Install(
@@ -53,10 +54,11 @@ func (installer *fakeIPSecInstaller) installed() []IPSecSAConfig {
 	return result
 }
 
-func (handle *fakeIPSecHandle) Close(context.Context) error {
+func (handle *fakeIPSecHandle) Close(ctx context.Context) error {
 	handle.mu.Lock()
 	defer handle.mu.Unlock()
 	handle.closeCount++
+	handle.closeContextErr = ctx.Err()
 	return nil
 }
 
@@ -64,6 +66,38 @@ func (handle *fakeIPSecHandle) closes() int {
 	handle.mu.Lock()
 	defer handle.mu.Unlock()
 	return handle.closeCount
+}
+
+func (handle *fakeIPSecHandle) contextError() error {
+	handle.mu.Lock()
+	defer handle.mu.Unlock()
+	return handle.closeContextErr
+}
+
+func TestSessionCloseCleansIPSecAfterCallerDeadline(t *testing.T) {
+	client, server := net.Pipe()
+	defer server.Close()
+	refreshDone := make(chan struct{})
+	close(refreshDone)
+	handle := &fakeIPSecHandle{}
+	session := &Session{
+		conn:          client,
+		refreshCancel: func() {},
+		refreshDone:   refreshDone,
+		ipsecHandle:   handle,
+		calls:         make(map[string]*imsCall),
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := session.Close(ctx); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+	if handle.closes() != 1 {
+		t.Fatalf("IPsec close count = %d, want 1", handle.closes())
+	}
+	if err := handle.contextError(); err != nil {
+		t.Fatalf("IPsec cleanup inherited expired caller context: %v", err)
+	}
 }
 
 func TestProviderNegotiatesIPSecAndRegistersOverProtectedTCP(t *testing.T) {
@@ -386,7 +420,12 @@ func serveProtectedRegistrar(
 		return result, fmt.Errorf("initial sec-agree headers = %#v", headers)
 	}
 	result.securityClient = headers["security-client"]
-	proposal, err := parseSecurityMechanism(result.securityClient)
+	offers := splitHeaderValues([]string{result.securityClient})
+	if len(offers) != 6 {
+		_ = initialConnection.Close()
+		return result, fmt.Errorf("initial Security-Client offers = %d, want 6", len(offers))
+	}
+	proposal, err := parseSecurityMechanism(offers[0])
 	if err != nil {
 		_ = initialConnection.Close()
 		return result, fmt.Errorf("parse initial Security-Client: %w", err)
