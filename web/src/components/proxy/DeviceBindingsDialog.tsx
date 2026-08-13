@@ -21,6 +21,10 @@ function profileLabel(profile: { name?: string; serviceProviderName?: string; ic
   return String(profile.name || profile.serviceProviderName || profile.iccid).trim();
 }
 
+function currentDeviceICCID(device: DeviceListItem) {
+  return String(device.modem?.iccid || device.vowifiRuntime?.iccid || "").trim();
+}
+
 export function DeviceBindingsDialog(props: DeviceBindingsDialogProps) {
   const { t } = useI18n();
   const { open, proxy, proxies, devices, bindings, busy, onAdd, onDelete, onClose } = props;
@@ -30,7 +34,7 @@ export function DeviceBindingsDialog(props: DeviceBindingsDialogProps) {
   const [selected, setSelected] = useState<string[]>([]);
   const proxyName = proxy?.name || proxy?.id || "";
   const deviceKey = devices
-    .map((device) => `${device.id}:${String(device.modem?.iccid || "").trim()}`)
+    .map((device) => `${device.id}:${currentDeviceICCID(device)}`)
     .sort()
     .join("|");
   const current = useMemo(
@@ -53,7 +57,7 @@ export function DeviceBindingsDialog(props: DeviceBindingsDialogProps) {
     let active = true;
     setLoadingProfiles(true);
     Promise.allSettled(devices.map(async (device) => {
-      const currentICCID = String(device.modem?.iccid || "").trim();
+      const currentICCID = currentDeviceICCID(device);
       let installed: ProfileProxyCandidate[] = [];
       try {
         const data = await api<EsimOverview>(`/devices/${encodeURIComponent(device.id)}/esim`);

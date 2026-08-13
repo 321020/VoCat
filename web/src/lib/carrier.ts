@@ -47,13 +47,3 @@ export function carrierIso(imsi?: string): string {
   if (hit) return hit.iso;
   return data.i[imsiDigits(imsi).slice(0, 3)] ?? "";
 }
-
-// carrierBrandIso keeps the normal IMSI country flag for branded/MVNO SIMs.
-// Lebara UK's Vodafone-NL-hosted 204-04 eSIM is the one known exception: its
-// customer-facing country is GB even though AKA must continue using 204-04.
-export function carrierBrandIso(spn?: string, imsi?: string): string {
-  const brand = String(spn ?? "").trim().toLowerCase();
-  const digits = imsiDigits(imsi);
-  if (brand.includes("lebara") && digits.startsWith("20404")) return "gb";
-  return carrierIso(imsi);
-}

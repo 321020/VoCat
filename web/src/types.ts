@@ -64,6 +64,9 @@ export interface ModemSummary {
   cardMcc?: string;
   cardMnc?: string;
   cardCountry?: string;
+  homeCarrierName?: string;
+  homeCarrierPlmn?: string;
+  homeCarrierCountryCode?: string;
   serviceBlocked?: boolean;
   blockedReason?: string;
   networkMode: string;

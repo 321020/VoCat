@@ -64,6 +64,12 @@ func TestManagerRefreshBuildsEC20Snapshot(t *testing.T) {
 		{command: "AT+QCCID", response: okResponse("+QCCID: 8986001234567890123F")},
 		{command: "AT+CIMI", response: okResponse("460001234567890")},
 		{command: "AT+CRSM=176,28486,0,0,17", response: okResponse(`+CRSM: 144,0,"00434D4343FFFFFFFFFFFFFFFFFFFFFFFF"`)},
+		{command: "AT+CRSM=192,28589,0,0,0", response: okResponse(`+CRSM: 144,0,"620680020004FFFF"`)},
+		{command: "AT+CRSM=176,28589,0,0,4", response: okResponse(`+CRSM: 144,0,"00000002"`)},
+		{command: "AT+CRSM=192,28478,0,0,0", response: okResponse(`+CRSM: 144,0,"620680020002FFFF"`)},
+		{command: "AT+CRSM=176,28478,0,0,2", response: okResponse(`+CRSM: 144,0,"0102"`)},
+		{command: "AT+CRSM=192,28479,0,0,0", response: okResponse(`+CRSM: 144,0,"620680020001FFFF"`)},
+		{command: "AT+CRSM=176,28479,0,0,1", response: okResponse(`+CRSM: 144,0,"FF"`)},
 		{command: "AT+CSQ", response: okResponse("+CSQ: 20,99")},
 		{
 			command: `AT+QENG="servingcell"`,
@@ -112,7 +118,8 @@ func TestManagerRefreshBuildsEC20Snapshot(t *testing.T) {
 	}
 	if snapshot.IMEI != "867123456789012" ||
 		snapshot.ICCID != "8986001234567890123" ||
-		snapshot.IMSI != "460001234567890" || snapshot.SPN != "CMCC" {
+		snapshot.IMSI != "460001234567890" || snapshot.SPN != "CMCC" ||
+		snapshot.MNCLength != 2 || snapshot.GID1 != "0102" || snapshot.GID2 != "" {
 		t.Fatalf("subscriber identifiers = %#v", snapshot)
 	}
 	if !snapshot.ModeKnown || snapshot.OperatingMode != 1 ||
@@ -198,6 +205,12 @@ func TestManagerForcesRFOffBeforeInspectingChangedSIMNetwork(t *testing.T) {
 		{command: "AT+CFUN=4", response: okResponse()},
 		{command: "AT+CIMI", response: okResponse("234150000000002")},
 		{command: "AT+CRSM=176,28486,0,0,17", response: okResponse(`+CRSM: 144,0,"004C6562617261FFFFFFFFFFFFFFFFFFFF"`)},
+		{command: "AT+CRSM=192,28589,0,0,0", response: okResponse(`+CRSM: 144,0,"620680020004FFFF"`)},
+		{command: "AT+CRSM=176,28589,0,0,4", response: okResponse(`+CRSM: 144,0,"00000002"`)},
+		{command: "AT+CRSM=192,28478,0,0,0", response: okResponse(`+CRSM: 144,0,"620680020001FFFF"`)},
+		{command: "AT+CRSM=176,28478,0,0,1", response: okResponse(`+CRSM: 144,0,"FF"`)},
+		{command: "AT+CRSM=192,28479,0,0,0", response: okResponse(`+CRSM: 144,0,"620680020001FFFF"`)},
+		{command: "AT+CRSM=176,28479,0,0,1", response: okResponse(`+CRSM: 144,0,"FF"`)},
 		{command: "AT+CSQ", response: okResponse("+CSQ: 99,99")},
 		{command: `AT+QENG="servingcell"`, response: okResponse(`+QENG: "servingcell","SEARCH"`)},
 		{command: "AT+COPS?", response: okResponse("+COPS: 0")},

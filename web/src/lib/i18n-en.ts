@@ -352,8 +352,8 @@ export const EN_DICT: Record<string, string> = {
     "Opening to the public internet greatly expands the attack surface. Use a strong password and switch back to Internal Only as soon as possible.",
   额外放行网段: "Additional Allowed Ranges",
   添加网段: "Add Range",
-  "在内置内网网段之外始终放行的 CIDR 或单个 IP（例如 203.0.113.0/24）。":
-    "CIDRs or single IPs always allowed in addition to the built-in internal ranges (e.g. 203.0.113.0/24).",
+  "在内置内网网段之外始终放行的 CIDR 或单个 IP；也允许通知推送访问这些目标地址（例如 198.18.0.0/15）。":
+    "CIDRs or single IPs always allowed in addition to the built-in internal ranges; notification delivery may also access these destinations (e.g. 198.18.0.0/15).",
   暂无额外放行网段: "No additional allowed ranges",
   信任代理请求头: "Trust Proxy Headers",
   "仅在系统位于可信反向代理之后时开启，按 X-Forwarded-For 判定来源；否则客户端可伪造该头绕过内网限制。":
