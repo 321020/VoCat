@@ -93,6 +93,9 @@ jobs:
         with:
           name: web-dist
           path: web/dist
+      - name: Set up QEMU for ARM64 runtime smoke test
+        if: matrix.goarch == 'arm64'
+        uses: docker/setup-qemu-action@v3
       - name: Build ${{ matrix.target }}
         env:
           GOOS: linux
@@ -115,9 +118,9 @@ jobs:
             readelf -l "$OUTPUT" >&2
             exit 1
           fi
-          if [ "${{ matrix.goarch }}" = "amd64" ]; then
-            "$OUTPUT" version
-          fi
+          case "${{ matrix.goarch }}" in
+            amd64|arm64) "$OUTPUT" version ;;
+          esac
       - name: Upload ${{ matrix.target }}
         uses: actions/upload-artifact@v4
         with:

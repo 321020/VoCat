@@ -36,7 +36,7 @@ RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} go build \
 
 # ---- Stage 3: minimal runtime ----
 FROM alpine:3.20
-RUN apk add --no-cache ca-certificates tzdata && \
+RUN apk add --no-cache ca-certificates ccid pcsc-lite tzdata && \
     addgroup -S -g 1000 vocat && \
     adduser -S -D -H -u 1000 -G vocat vocat
 
@@ -44,14 +44,19 @@ RUN mkdir -p /opt/vocat/bin /opt/vocat/data && \
     chown -R vocat:vocat /opt/vocat
 
 COPY --from=go-builder /out/vocat /opt/vocat/bin/vocat
+COPY scripts/docker-entrypoint.sh /usr/local/bin/vocat-entrypoint
 
 # Symlink into /usr/local/bin so `docker exec <ctr> vocat ...` finds it via $PATH.
-RUN ln -s /opt/vocat/bin/vocat /usr/local/bin/vocat
+RUN ln -s /opt/vocat/bin/vocat /usr/local/bin/vocat && \
+    chmod 0755 /usr/local/bin/vocat-entrypoint
 
-USER vocat
+# Hardware access and the bundled pcscd daemon require root inside the
+# container. The container already needs host networking and privileged device
+# access for modem, QMI, IPsec, and hot-plug support.
+USER root
 VOLUME ["/opt/vocat/data"]
 EXPOSE 7575
 ENV VOCAT_ADDR=0.0.0.0:7575 \
     VOCAT_DATABASE_PATH=/opt/vocat/data/vocat.db
 
-ENTRYPOINT ["/opt/vocat/bin/vocat"]
+ENTRYPOINT ["/usr/local/bin/vocat-entrypoint"]

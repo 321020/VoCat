@@ -87,6 +87,22 @@ export const EN_DICT: Record<string, string> = {
   "设备绑定": "Device Bindings",
   "Profile 绑定": "Profile Bindings",
   "添加 Profile 绑定": "Add Profile Bindings",
+  "SIM / Profile 绑定": "SIM / Profile Bindings",
+  "添加 SIM / Profile 绑定": "Add SIM / Profile Bindings",
+  "VoWiFi 会按当前 ICCID 选择代理。实体 SIM 和 eSIM Profile 都可以绑定；同一 ICCID 只能绑定一个代理。":
+    "VoWiFi selects its proxy by the active ICCID. Both physical SIMs and eSIM profiles can be bound, and each ICCID can use only one proxy.",
+  "从当前 SIM 卡和已安装的 eSIM Profile 中选择": "Select from the current SIM and installed eSIM profiles",
+  "个 SIM / Profile": "SIMs / profiles",
+  "当前 SIM 卡": "Current SIM",
+  "当前使用中": "Currently active",
+  "SIM / Profile": "SIM / Profile",
+  "没有可显示的 SIM / Profile": "No SIMs or profiles to display",
+  "尚未绑定 SIM / Profile": "No SIMs or profiles bound",
+  "请确认设备在线并已读取到 SIM 卡 ICCID。": "Make sure the device is online and its SIM ICCID has been read.",
+  "点击添加，从 SIM / Profile 列表中选择。": "Click Add and select from the SIM / profile list.",
+  "管理 VoWiFi 上游代理以及实体 SIM / eSIM Profile 绑定": "Manage VoWiFi upstream proxies and physical SIM / eSIM profile bindings",
+  "点击“新增代理”创建 SOCKS5 上游代理，再按 ICCID 绑定实体 SIM 或 eSIM Profile；未绑定的卡默认直连。":
+    "Create a SOCKS5 upstream proxy, then bind a physical SIM or eSIM profile by ICCID. Unbound SIMs use a direct connection.",
   "VoWiFi 会按当前 ICCID 选择代理。同一 ICCID 只能绑定一个代理，一个代理可以绑定多台设备上的多个 Profile。":
     "VoWiFi selects its proxy by the active ICCID. An ICCID can use only one proxy, while one proxy can serve profiles across multiple devices.",
   "从设备已安装的 eSIM Profile 中选择": "Select from eSIM profiles installed on the devices",
