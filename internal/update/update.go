@@ -15,12 +15,14 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"vocat/internal/buildinfo"
@@ -149,7 +151,7 @@ func applyUpdate(ctx context.Context, logger *slog.Logger, opts Options, release
 	}()
 
 	logger.Info("downloading binary", "asset", asset.Name, "size", asset.Size, "url", asset.BrowserDownloadURL)
-	if err := downloadAsset(ctx, asset.BrowserDownloadURL, opts.Token, tmp); err != nil {
+	if err := downloadAssetWithProgress(ctx, logger, asset, opts.Token, tmp); err != nil {
 		cleanup()
 		return err
 	}
@@ -203,6 +205,68 @@ func applyUpdate(ctx context.Context, logger *slog.Logger, opts Options, release
 			fmt.Println("Restart the vocat service manually to apply the new build.")
 		}
 	}
+	return nil
+}
+
+type downloadProgressWriter struct {
+	destination io.Writer
+	downloaded  atomic.Int64
+}
+
+func (writer *downloadProgressWriter) Write(data []byte) (int, error) {
+	written, err := writer.destination.Write(data)
+	writer.downloaded.Add(int64(written))
+	return written, err
+}
+
+func downloadAssetWithProgress(
+	ctx context.Context,
+	logger *slog.Logger,
+	asset *Asset,
+	token string,
+	destination io.Writer,
+) error {
+	progress := &downloadProgressWriter{destination: destination}
+	done := make(chan struct{})
+	go func() {
+		ticker := time.NewTicker(5 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-done:
+				return
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				downloaded := progress.downloaded.Load()
+				percent := float64(0)
+				if asset.Size > 0 {
+					percent = float64(downloaded) * 100 / float64(asset.Size)
+				}
+				logger.Info(
+					"download progress",
+					"asset", asset.Name,
+					"downloaded", downloaded,
+					"total", asset.Size,
+					"percent", fmt.Sprintf("%.1f", percent),
+				)
+			}
+		}
+	}()
+	err := downloadAsset(ctx, asset.BrowserDownloadURL, token, progress)
+	close(done)
+	if err != nil {
+		return err
+	}
+	if asset.Size > 0 && progress.downloaded.Load() != asset.Size {
+		return fmt.Errorf(
+			"update: asset size mismatch for %s: downloaded %d bytes, expected %d",
+			asset.Name,
+			progress.downloaded.Load(),
+			asset.Size,
+		)
+	}
+	logger.Info("download completed", "asset", asset.Name, "bytes", progress.downloaded.Load())
 	return nil
 }
 
