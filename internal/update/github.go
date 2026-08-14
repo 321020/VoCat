@@ -2,11 +2,14 @@ package update
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"strings"
+	"time"
 )
 
 // Release mirrors the subset of the GitHub releases API response that the
@@ -40,6 +43,23 @@ const (
 	DefaultRepository = "MengMengCode/VoCat"
 )
 
+var githubHTTPClient = &http.Client{
+	Transport: &http.Transport{
+		Proxy: http.ProxyFromEnvironment,
+		DialContext: (&net.Dialer{
+			Timeout:   10 * time.Second,
+			KeepAlive: 30 * time.Second,
+		}).DialContext,
+		ForceAttemptHTTP2:     true,
+		TLSHandshakeTimeout:   15 * time.Second,
+		ResponseHeaderTimeout: 20 * time.Second,
+		ExpectContinueTimeout: time.Second,
+		TLSClientConfig: &tls.Config{
+			MinVersion: tls.VersionTLS12,
+		},
+	},
+}
+
 // LatestRelease fetches the newest published release for repo (form
 // "owner/name"). A non-empty token is sent as a Bearer header, which is
 // required for private repositories and lifts the unauthenticated rate limit.
@@ -61,7 +81,7 @@ func LatestRelease(ctx context.Context, repo, token string) (*Release, error) {
 		req.Header.Set("Authorization", "Bearer "+token)
 	}
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := githubHTTPClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("update: fetch latest release: %w", err)
 	}
@@ -120,7 +140,7 @@ func downloadAsset(ctx context.Context, url, token string, dst io.Writer) error 
 	if token != "" {
 		req.Header.Set("Authorization", "Bearer "+token)
 	}
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := githubHTTPClient.Do(req)
 	if err != nil {
 		return fmt.Errorf("update: download asset: %w", err)
 	}

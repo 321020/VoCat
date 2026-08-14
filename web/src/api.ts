@@ -83,7 +83,29 @@ export interface RequestOptions extends Omit<RequestInit, "body"> {
   raw?: boolean;
 }
 
-export async function api<T>(path: string, options: RequestOptions = {}): Promise<T> {
+async function refreshCSRFToken(): Promise<boolean> {
+  try {
+    const response = await fetch("/api/auth/session", {
+      method: "GET",
+      headers: { Accept: "application/json" },
+      credentials: "include",
+      cache: "no-store",
+    });
+    if (!response.ok) {
+      if (response.status === 401) notifyUnauthorized();
+      return false;
+    }
+    const payload = await response.json() as { data?: { csrf_token?: string } };
+    const token = payload?.data?.csrf_token;
+    if (!token) return false;
+    sessionStorage.setItem(CSRF_KEY, token);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function requestAPI<T>(path: string, options: RequestOptions, retryCSRF: boolean): Promise<T> {
   const method = (options.method || "GET").toUpperCase();
   const headers = new Headers(options.headers);
   const formBody = typeof FormData !== "undefined" && options.body instanceof FormData;
@@ -116,7 +138,6 @@ export async function api<T>(path: string, options: RequestOptions = {}): Promis
     : { message: await response.text() };
   const normalized = camelize<Record<string, unknown>>(payload);
   if (!response.ok) {
-    if (response.status === 401) notifyUnauthorized();
     const nested = normalized.error;
     const detail = nested && typeof nested === "object"
       ? {
@@ -124,9 +145,24 @@ export async function api<T>(path: string, options: RequestOptions = {}): Promis
           requestId: (normalized.requestId as string | undefined) || (nested as ApiErrorBody).requestId,
         }
       : normalized as ApiErrorBody;
+    if (
+      retryCSRF &&
+      isMutation(method) &&
+      response.status === 403 &&
+      detail.code === "invalid_csrf"
+    ) {
+      if (await refreshCSRFToken()) return requestAPI<T>(path, options, false);
+      notifyUnauthorized();
+    } else if (response.status === 401) {
+      notifyUnauthorized();
+    }
     throw new ApiError(response.status, detail);
   }
   return (Object.prototype.hasOwnProperty.call(normalized, "data") ? normalized.data : normalized) as T;
+}
+
+export async function api<T>(path: string, options: RequestOptions = {}): Promise<T> {
+  return requestAPI<T>(path, options, true);
 }
 
 export async function login(username: string, password: string) {

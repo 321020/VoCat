@@ -57,6 +57,17 @@ func TestTelegramAPIURLRejectsMalformedTemplates(t *testing.T) {
 	}
 }
 
+func TestTelegramPollingAcceptsFakeIPWithoutWebAccessAllowlist(t *testing.T) {
+	bot := &telegramBot{server: &Server{access: parsedAccessConfig{mode: "internal"}}}
+	ctx := bot.notificationDestinationContext(context.Background())
+	if _, err := validateTelegramAPIURL(ctx, "https://198.18.0.34", "123456:test-token", "getUpdates"); err != nil {
+		t.Fatalf("explicitly allowed Telegram Fake-IP was rejected: %v", err)
+	}
+	if _, err := validateTelegramAPIURL(ctx, "https://169.254.169.254", "123456:test-token", "getUpdates"); err == nil {
+		t.Fatal("metadata address became reachable through Telegram allowlist")
+	}
+}
+
 func TestParseTelegramCommand(t *testing.T) {
 	command, remainder := parseTelegramCommand("  /sms@vocat_bot EC20 +447700900123 hello world  ")
 	if command != "sms" || remainder != "EC20 +447700900123 hello world" {

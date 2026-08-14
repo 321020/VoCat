@@ -2328,6 +2328,11 @@ func (bot *telegramBot) loadConfig(ctx context.Context) (telegramRuntimeConfig, 
 }
 
 func (bot *telegramBot) call(ctx context.Context, config telegramRuntimeConfig, method string, payload any, result any) error {
+	// Telegram polling is a long-lived notification channel and must use the
+	// same administrator-configured destination exceptions as test messages,
+	// SMS pushes and automatic-task notifications. This keeps SSRF protection
+	// enabled while allowing explicit DNS Fake-IP ranges such as 198.18/15.
+	ctx = bot.notificationDestinationContext(ctx)
 	base, err := validateTelegramAPIURL(ctx, config.BaseURL, config.Token, method)
 	if err != nil {
 		return redactTelegramError(err, config.Token)
@@ -2368,6 +2373,13 @@ func (bot *telegramBot) call(ctx context.Context, config telegramRuntimeConfig, 
 		}
 	}
 	return nil
+}
+
+func (bot *telegramBot) notificationDestinationContext(ctx context.Context) context.Context {
+	if bot.server == nil {
+		return ctx
+	}
+	return bot.server.notificationDestinationContext(ctx)
 }
 
 func (bot *telegramBot) sendText(ctx context.Context, config telegramRuntimeConfig, chatID int64, text string, replyMarkup any) error {
