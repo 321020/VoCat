@@ -523,6 +523,7 @@ func menuUpdate(m *menu, logger *slog.Logger) error {
 	}
 	fmt.Println(m.updateChecking())
 	if err := update.Run(logger, []string{"--repo", repo}); err != nil {
+		logger.Error("menu update failed", "error", err)
 		return fmt.Errorf("%w: %v", errUpdateFailed, err)
 	}
 	return nil
@@ -686,10 +687,11 @@ func (m *menu) errorPrefix(err error) string {
 		}
 		return "重启失败。"
 	case errors.Is(err, errUpdateFailed):
+		detail := strings.TrimPrefix(err.Error(), errUpdateFailed.Error()+": ")
 		if m.lang == "en" {
-			return "Update failed."
+			return "Update failed: " + detail
 		}
-		return "更新失败。"
+		return "更新失败: " + detail
 	case errors.Is(err, errMenuConfig):
 		if m.lang == "en" {
 			return "Failed to load configuration."

@@ -3,7 +3,6 @@ package server
 import (
 	"context"
 	"errors"
-	"net/netip"
 	"strings"
 	"testing"
 	"time"
@@ -58,10 +57,8 @@ func TestTelegramAPIURLRejectsMalformedTemplates(t *testing.T) {
 	}
 }
 
-func TestTelegramPollingUsesExplicitFakeIPDestinationAllowlist(t *testing.T) {
-	bot := &telegramBot{server: &Server{access: parsedAccessConfig{
-		cidrs: []netip.Prefix{netip.MustParsePrefix("198.18.0.0/15")},
-	}}}
+func TestTelegramPollingAcceptsFakeIPWithoutWebAccessAllowlist(t *testing.T) {
+	bot := &telegramBot{server: &Server{access: parsedAccessConfig{mode: "internal"}}}
 	ctx := bot.notificationDestinationContext(context.Background())
 	if _, err := validateTelegramAPIURL(ctx, "https://198.18.0.34", "123456:test-token", "getUpdates"); err != nil {
 		t.Fatalf("explicitly allowed Telegram Fake-IP was rejected: %v", err)

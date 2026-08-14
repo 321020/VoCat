@@ -369,6 +369,10 @@ func TestNotificationTestsBlockSSRFAndUnsupportedChannels(t *testing.T) {
 	if recorder.Code != http.StatusBadRequest {
 		t.Fatalf("Telegram metadata status = %d, body = %s", recorder.Code, recorder.Body)
 	}
+	response = decodeSettingsResponse(t, recorder)
+	if response["error"].(map[string]any)["code"] != "unsafe_destination" {
+		t.Fatalf("Telegram metadata response = %#v", response)
+	}
 
 	recorder = test.request(
 		t,
@@ -762,26 +766,28 @@ func TestTrafficAnalysisIsUnavailableOutsideDeveloperMode(t *testing.T) {
 	}
 }
 
-func TestNotificationDestinationAddressPolicy(t *testing.T) {
+func TestNotificationDestinationAddressPolicyIsIndependentFromWebAccess(t *testing.T) {
 	blocked := []string{
 		"0.0.0.0", "10.0.0.1", "100.100.100.200", "127.0.0.1",
-		"169.254.169.254", "172.16.0.1", "192.168.1.1", "198.18.0.1",
-		"::1", "fc00::1", "fe80::1", "2001:db8::1",
+		"169.254.169.254", "172.16.0.1", "192.168.1.1", "224.0.0.1",
+		"255.255.255.255", "::", "::1", "fc00::1", "fe80::1", "ff02::1",
 	}
 	for _, text := range blocked {
 		address := netip.MustParseAddr(text)
-		if publicNotificationAddress(address) {
-			t.Errorf("%s was incorrectly accepted as public", text)
+		if notificationAddressAllowed(context.Background(), address) {
+			t.Errorf("%s was incorrectly accepted for notification transport", text)
 		}
 	}
-	for _, text := range []string{"1.1.1.1", "8.8.8.8", "2606:4700:4700::1111"} {
+	for _, text := range []string{
+		"1.1.1.1", "198.18.0.1", "2606:4700:4700::1111",
+	} {
 		address := netip.MustParseAddr(text)
-		if !publicNotificationAddress(address) {
-			t.Errorf("%s was incorrectly blocked", text)
+		if !notificationAddressAllowed(context.Background(), address) {
+			t.Errorf("%s was incorrectly blocked for notification transport", text)
 		}
 	}
 	if _, err := resolvePublicAddresses(context.Background(), "localhost"); err == nil {
-		t.Fatal("localhost was not blocked")
+		t.Fatal("local notification destination was not blocked")
 	}
 	if _, err := resolvePublicAddresses(
 		context.Background(),
@@ -789,26 +795,52 @@ func TestNotificationDestinationAddressPolicy(t *testing.T) {
 	); err == nil {
 		t.Fatal("metadata IP was not blocked")
 	}
-	allowedContext := context.WithValue(
-		context.Background(),
-		notificationAllowedNetworksKey{},
-		[]netip.Prefix{netip.MustParsePrefix("198.18.0.0/15")},
-	)
-	if addresses, err := resolvePublicAddresses(allowedContext, "198.18.0.1"); err != nil || len(addresses) != 1 {
-		t.Fatalf("explicit Fake-IP notification allowlist = %v, %v", addresses, err)
+	server := &Server{access: parsedAccessConfig{mode: "internal"}}
+	notificationContext := server.notificationDestinationContext(context.Background())
+	if addresses, err := resolvePublicAddresses(notificationContext, "198.18.0.1"); err != nil || len(addresses) != 1 {
+		t.Fatalf("Fake-IP notification destination = %v, %v", addresses, err)
 	}
-	if _, err := resolvePublicAddresses(allowedContext, "169.254.169.254"); err == nil {
-		t.Fatal("unlisted metadata IP was allowed")
-	}
-	wideAllowedContext := context.WithValue(
-		context.Background(),
-		notificationAllowedNetworksKey{},
-		[]netip.Prefix{netip.MustParsePrefix("0.0.0.0/0")},
-	)
-	for _, address := range []string{"127.0.0.1", "169.254.169.254", "100.100.100.200"} {
-		if _, err := resolvePublicAddresses(wideAllowedContext, address); err == nil {
-			t.Fatalf("non-overridable destination %s was allowed", address)
+}
+
+func TestNotificationProxyAcceptsLocalAddressWithoutWebAccessAllowlist(t *testing.T) {
+	server := &Server{access: parsedAccessConfig{mode: "internal"}}
+	ctx := server.notificationDestinationContext(context.Background())
+	for _, host := range []string{"127.0.0.1", "10.0.0.1", "192.168.1.1", "198.18.0.1", "::1"} {
+		if addresses, err := resolveNotificationProxyAddresses(ctx, host); err != nil || len(addresses) != 1 {
+			t.Errorf("local notification proxy %s = %v, %v", host, addresses, err)
 		}
+	}
+	if _, err := resolveNotificationProxyAddresses(ctx, "169.254.169.254"); err == nil {
+		t.Fatal("cloud metadata address was accepted as a notification proxy")
+	}
+}
+
+func TestRestrictedNotificationClientConnectsThroughLocalProxy(t *testing.T) {
+	var hits atomic.Int32
+	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		hits.Add(1)
+		if request.URL.Host != "1.1.1.1" {
+			t.Errorf("proxy request host = %q", request.URL.Host)
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer proxy.Close()
+
+	client, err := restrictedHTTPClient(context.Background(), 2*time.Second, proxy.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request, err := http.NewRequest(http.MethodGet, "http://1.1.1.1/test", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response, err := client.Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = response.Body.Close()
+	if response.StatusCode != http.StatusNoContent || hits.Load() != 1 {
+		t.Fatalf("local proxy status = %d, hits = %d", response.StatusCode, hits.Load())
 	}
 }
 
