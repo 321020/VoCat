@@ -136,11 +136,17 @@ export default function DevicesPage() {
 
   const loadDiscovered = useCallback(async () => {
     setDiscovering(true);
+    // Never leave a previous physical scan visible while a new scan is in
+    // progress or after it fails.
+    setDiscovered([]);
+    setAddSelected(null);
+    setAddConfig(EMPTY_ADD);
     try {
       const res = await api<{ devices?: DiscoveredDevice[] }>("/devices/discovered?with_imei=1");
-      setDiscovered(Array.isArray(res?.devices) ? res!.devices! : []);
+      const devices = Array.isArray(res?.devices) ? res!.devices! : [];
+      setDiscovered(devices);
     } catch {
-      /* ignore */
+      setDiscovered([]);
     } finally {
       setDiscovering(false);
     }
@@ -296,13 +302,13 @@ export default function DevicesPage() {
     try {
       await api("/devices/actions/rescan", { method: "POST" });
       message.success(t("设备重新扫描完成"));
-      await loadDevices(true);
+      await Promise.all([loadDevices(true), loadDiscovered()]);
     } catch (e) {
       message.error(apiMessage(e) || t("重新扫描失败"));
     } finally {
       setRescanning(false);
     }
-  }, [loadDevices]);
+  }, [loadDevices, loadDiscovered]);
 
   const handleOpenSms = useCallback(() => {
     const id = selectedIdRef.current;
@@ -736,6 +742,7 @@ export default function DevicesPage() {
         addConfig={addConfig}
         addSaving={addSaving}
         onClose={() => setAddOpen(false)}
+        onRefresh={() => void loadDiscovered()}
         onSelectDevice={selectDiscovered}
         onConfigChange={setAddConfig}
         onSave={saveAdd}

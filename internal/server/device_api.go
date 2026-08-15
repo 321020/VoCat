@@ -344,7 +344,14 @@ func (s *Server) handleDiscoveredDevices(w http.ResponseWriter, r *http.Request)
 		writeJSON(w, http.StatusOK, map[string]any{"data": map[string]any{"devices": []any{}}})
 		return true
 	}
-	devices := s.devices.List()
+	// This endpoint backs the add-device dialog. Always perform a new physical
+	// scan instead of serving Manager.List(), which intentionally retains
+	// unplugged configured devices so the main device list can show them offline.
+	devices, err := s.devices.Discover(r.Context())
+	if err != nil {
+		s.writeDeviceError(w, err)
+		return true
+	}
 	configured, err := s.store.ListDevices(r.Context())
 	if err != nil {
 		s.writeStoreError(w, err)
@@ -352,6 +359,9 @@ func (s *Server) handleDiscoveredDevices(w http.ResponseWriter, r *http.Request)
 	}
 	result := make([]map[string]any, 0, len(devices))
 	for _, entry := range devices {
+		if !entry.Discovered {
+			continue
+		}
 		candidate := entry.Candidate
 		atPorts := make([]string, 0, len(candidate.Ports))
 		for _, port := range candidate.Ports {

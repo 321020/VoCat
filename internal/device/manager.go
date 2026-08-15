@@ -232,7 +232,20 @@ func (manager *Manager) Discover(ctx context.Context) ([]Device, error) {
 		state.opMu.Unlock()
 	}
 	manager.resetChangedClients()
-	return manager.List(), nil
+
+	// List retains previously discovered devices so configured hardware can be
+	// rendered as offline after it is unplugged. Discover, however, is a fresh
+	// physical scan and must only return devices that are present now. Returning
+	// the retained entries here allowed an unplugged modem to be selected and
+	// added again from the device discovery screen.
+	devices := manager.List()
+	present := devices[:0]
+	for _, entry := range devices {
+		if entry.Discovered {
+			present = append(present, entry)
+		}
+	}
+	return present, nil
 }
 
 func (manager *Manager) resetChangedClients() {

@@ -993,6 +993,7 @@ export const EN_DICT: Record<string, string> = {
   最新: "Latest",
   加载更多: "Load More",
   刷新: "Refresh",
+  "刷新设备": "Refresh Devices",
 
   // ---- 代理 / 国家规则（i18n 补充） ----
   "绑定:": "Bound:",

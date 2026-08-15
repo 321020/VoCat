@@ -45,6 +45,29 @@ func TestManagerDiscoversWiFiCallingOnlyReaderWithoutATPort(t *testing.T) {
 	}
 }
 
+func TestManagerDiscoverReturnsOnlyCurrentlyPresentDevices(t *testing.T) {
+	manager, id := newStartedTestManager(t, nil)
+	if devices := manager.List(); len(devices) != 1 || devices[0].ID != id || !devices[0].Discovered {
+		t.Fatalf("initial devices = %#v", devices)
+	}
+
+	manager.discoverer = staticDiscoverer{}
+	present, err := manager.Discover(context.Background())
+	if err != nil {
+		t.Fatalf("Discover after unplug: %v", err)
+	}
+	if len(present) != 0 {
+		t.Fatalf("present devices after unplug = %#v, want none", present)
+	}
+
+	// The retained entry is still available to the configured-device dashboard,
+	// but is explicitly offline and cannot be offered by fresh discovery.
+	retained := manager.List()
+	if len(retained) != 1 || retained[0].ID != id || retained[0].Discovered {
+		t.Fatalf("retained devices after unplug = %#v", retained)
+	}
+}
+
 func TestManagerRefreshBuildsEC20Snapshot(t *testing.T) {
 	client := &transcriptClient{steps: []clientStep{
 		{
