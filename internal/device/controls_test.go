@@ -11,14 +11,23 @@ import (
 )
 
 type fakeQMIRadioSession struct {
-	mode       qmi.OperatingMode
-	getModes   []qmi.OperatingMode
-	setModes   []qmi.OperatingMode
-	getErr     error
-	setErr     error
-	closeCount int
-	iccid      string
-	iccidErr   error
+	mode           qmi.OperatingMode
+	getModes       []qmi.OperatingMode
+	setModes       []qmi.OperatingMode
+	getErr         error
+	setErr         error
+	closeCount     int
+	iccid          string
+	iccidErr       error
+	imei           string
+	imeiErr        error
+	openedAIDs     [][]byte
+	openChannel    byte
+	openErr        error
+	closedChannels []byte
+	apdus          [][]byte
+	apduResponse   []byte
+	apduErr        error
 }
 
 func (session *fakeQMIRadioSession) GetOperatingMode(context.Context) (qmi.OperatingMode, error) {
@@ -46,6 +55,31 @@ func (session *fakeQMIRadioSession) Close() error {
 
 func (session *fakeQMIRadioSession) GetICCID(context.Context) (string, error) {
 	return session.iccid, session.iccidErr
+}
+
+func (session *fakeQMIRadioSession) GetIMEI(context.Context) (string, error) {
+	return session.imei, session.imeiErr
+}
+
+func (session *fakeQMIRadioSession) OpenLogicalChannel(_ context.Context, _ uint8, aid []byte) (byte, error) {
+	session.openedAIDs = append(session.openedAIDs, append([]byte(nil), aid...))
+	if session.openErr != nil {
+		return 0, session.openErr
+	}
+	if session.openChannel == 0 {
+		return 1, nil
+	}
+	return session.openChannel, nil
+}
+
+func (session *fakeQMIRadioSession) CloseLogicalChannel(_ context.Context, _ uint8, channel uint8) error {
+	session.closedChannels = append(session.closedChannels, channel)
+	return nil
+}
+
+func (session *fakeQMIRadioSession) SendAPDU(_ context.Context, _ uint8, _ uint8, command []byte) ([]byte, error) {
+	session.apdus = append(session.apdus, append([]byte(nil), command...))
+	return append([]byte(nil), session.apduResponse...), session.apduErr
 }
 
 func newStartedNativeQMITestManager(t *testing.T) (*Manager, *staticOpener, string) {

@@ -104,7 +104,7 @@ func CarrierForIMSI(imsi string) (plmn, name, countryCode string, ok bool) {
 // several customer-facing carriers authenticate through the same home PLMN.
 func CarrierForSIM(identity CarrierIdentity) (plmn, name, countryCode string, ok bool) {
 	imsi := strings.TrimSpace(identity.IMSI)
-	if !decimalDigits(imsi, 5, 20) {
+	if !decimalDigits(imsi, 5, 20) || IsPlaceholderIMSI(imsi) {
 		return "", "", "", false
 	}
 	plmns := carrierPLMNCandidates(imsi, identity.MNCLength)

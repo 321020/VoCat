@@ -167,6 +167,11 @@ type VoWiFiController interface {
 	RequestReconnect(string) (vowifi.State, error)
 }
 
+type VoWiFiMaintenanceController interface {
+	BeginMaintenance(string) error
+	EndMaintenance(string)
+}
+
 type VoWiFiCallController interface {
 	Calls(string) ([]vowifi.Call, error)
 	DialCall(context.Context, string, string) (vowifi.Call, error)

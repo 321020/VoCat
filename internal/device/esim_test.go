@@ -1,6 +1,7 @@
 package device
 
 import (
+	"bytes"
 	"context"
 	"encoding/hex"
 	"errors"
@@ -281,6 +282,41 @@ func TestDiscoverEuiccAIDsFindsXeSIMAlternateISDR(t *testing.T) {
 		t.Fatalf("discovered AIDs = %#v, want XeSIM %s", aids, xesimISDRAID)
 	}
 	client.assertDone(t)
+}
+
+func TestNativeQMIUsesUIMLogicalChannelForEUICC(t *testing.T) {
+	manager, _, id := newStartedNativeQMITestManager(t)
+	if err := manager.SetBackend(id, "qmi"); err != nil {
+		t.Fatal(err)
+	}
+	session := &fakeQMIRadioSession{
+		openChannel:  3,
+		apduResponse: []byte{0xDE, 0xAD, 0x90, 0x00},
+	}
+	manager.qmiRadioOpener = func(context.Context, string) (qmiRadioSession, error) {
+		return session, nil
+	}
+	channel, err := manager.openEuiccAID(context.Background(), id, isdRAID)
+	if err != nil {
+		t.Fatalf("open QMI eUICC: %v", err)
+	}
+	payload, sw, err := channel.transmit(context.Background(), []byte{0x80, 0xCA, 0x00, 0x00, 0x00}, 0x80)
+	if err != nil {
+		t.Fatalf("transmit QMI APDU: %v", err)
+	}
+	if !bytes.Equal(payload, []byte{0xDE, 0xAD}) || sw != 0x9000 {
+		t.Fatalf("QMI APDU response = %X/%04X", payload, sw)
+	}
+	channel.close(context.Background())
+	if len(session.openedAIDs) != 1 || strings.ToUpper(hex.EncodeToString(session.openedAIDs[0])) != isdRAID {
+		t.Fatalf("opened AIDs = %X", session.openedAIDs)
+	}
+	if len(session.apdus) != 1 || session.apdus[0][0] != 0x83 {
+		t.Fatalf("QMI APDUs = %X", session.apdus)
+	}
+	if len(session.closedChannels) != 1 || session.closedChannels[0] != 3 || session.closeCount != 1 {
+		t.Fatalf("closed channels/session = %v/%d", session.closedChannels, session.closeCount)
+	}
 }
 
 func TestEUICCChannelStuckWrapsTransientCME(t *testing.T) {

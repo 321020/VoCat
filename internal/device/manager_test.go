@@ -179,7 +179,6 @@ func TestManagerRefreshReadsNativeWWANICCIDThroughQMIUIM(t *testing.T) {
 		{command: `AT+QENG="servingcell"`, response: okResponse(`+QENG: "servingcell","SEARCH"`)},
 		{command: "AT+COPS?", response: okResponse("+COPS: 0")},
 		{command: "AT+CEREG?", response: okResponse("+CEREG: 0,2")},
-		{command: "AT+CGSN", response: okResponse("867123456789012")},
 		{command: "AT+CFUN?", response: okResponse("+CFUN: 1")},
 		{command: "AT+CNUM", response: okResponse(`+CNUM: "","+8613800138000",145`)},
 	}}
@@ -201,7 +200,7 @@ func TestManagerRefreshReadsNativeWWANICCIDThroughQMIUIM(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = manager.Stop(context.Background()) })
 	manager.qmiRadioOpener = func(context.Context, string) (qmiRadioSession, error) {
-		return &fakeQMIRadioSession{iccid: "89441000400316034372"}, nil
+		return &fakeQMIRadioSession{iccid: "89441000400316034372", imei: "861716070416510"}, nil
 	}
 	if err := manager.SetBackend("mhi-wwan0", "qmi"); err != nil {
 		t.Fatal(err)
@@ -211,7 +210,7 @@ func TestManagerRefreshReadsNativeWWANICCIDThroughQMIUIM(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Refresh: %v", err)
 	}
-	if snapshot.ICCID != "89441000400316034372" || !snapshot.SIMReady {
+	if snapshot.ICCID != "89441000400316034372" || snapshot.IMEI != "861716070416510" || !snapshot.SIMReady {
 		t.Fatalf("native QMI identity = %#v", snapshot)
 	}
 	client.assertDone(t)

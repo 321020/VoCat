@@ -593,6 +593,7 @@ export default function DevicesPage() {
 
   const detailOnline = isDeviceOnline(detail);
 	const isReader = detail?.deviceType === "usb_sim_reader";
+	const isNative410 = detail?.deviceType === "wifi_410";
 	useEffect(() => {
 		if (isReader && ["at", "ussd"].includes(activeTab)) setActiveTab("overview");
 	}, [isReader, activeTab]);
@@ -696,6 +697,7 @@ export default function DevicesPage() {
                 onRebootModem={handleRebootModem}
                 onOpenSms={handleOpenSms}
 				wifiCallingOnly={isReader}
+				modemControlOnly={isNative410}
               />
               <div className="device-detail-tabs ui-card p-6">
                 <Tabs tabs={tabItems} value={activeTab} onChange={handleTabChange} />

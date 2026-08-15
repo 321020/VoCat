@@ -31,6 +31,29 @@ func decodeData(t *testing.T, recorder *httptest.ResponseRecorder) map[string]an
 	return envelope.Data
 }
 
+func TestNative410UnsupportedOperations(t *testing.T) {
+	tests := []struct {
+		path        []string
+		unsupported bool
+	}{
+		{path: []string{"esim"}},
+		{path: []string{"esim", "profiles"}},
+		{path: []string{"vowifi"}},
+		{path: []string{"vowifi", "actions", "reconnect"}},
+		{path: []string{"calls"}, unsupported: true},
+		{path: []string{"actions", "reboot"}, unsupported: true},
+		{path: []string{"actions", "refresh"}},
+		{path: []string{"actions", "at"}},
+		{path: []string{"flight-mode"}},
+		{path: []string{"operator_selection"}},
+	}
+	for _, test := range tests {
+		if got := native410UnsupportedOperation(test.path); got != test.unsupported {
+			t.Errorf("native410UnsupportedOperation(%v) = %v, want %v", test.path, got, test.unsupported)
+		}
+	}
+}
+
 func TestParseModemAPNProfiles(t *testing.T) {
 	profiles := parseModemAPNProfiles([]string{
 		`+CGDCONT: 1,"IPV4V6","internet","0.0.0.0",0,0`,

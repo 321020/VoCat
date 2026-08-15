@@ -2,8 +2,10 @@ package device
 
 import (
 	"context"
+	"encoding/binary"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"sync"
 	"time"
@@ -23,6 +25,48 @@ type qmiRadioSessionOpener func(context.Context, string) (qmiRadioSession, error
 
 type nativeQMIICCIDSession interface {
 	GetICCID(context.Context) (string, error)
+}
+
+type nativeQMIIMEISession interface {
+	GetIMEI(context.Context) (string, error)
+}
+
+type nativeQMIEuiccSession interface {
+	qmiRadioSession
+	OpenLogicalChannel(context.Context, uint8, []byte) (byte, error)
+	CloseLogicalChannel(context.Context, uint8, uint8) error
+	SendAPDU(context.Context, uint8, uint8, []byte) ([]byte, error)
+}
+
+// nativeQMIRefreshSession is implemented by production QMI sessions that can
+// participate in the modem's UIM REFRESH state machine.  Keep it separate from
+// nativeQMIEuiccSession so transcript fakes and older QMI implementations can
+// continue to use the APDU transport without pretending to handle indications.
+type nativeQMIRefreshSession interface {
+	RegisterUIMRefresh(context.Context) error
+	CompleteUIMRefresh(context.Context) error
+	AcknowledgeUIMRefresh(context.Context) error
+}
+
+type nativeQMIUIMResetSession interface {
+	ResetUIM(context.Context) error
+}
+
+type nativeQMIVoWiFiSession interface {
+	qmiRadioSession
+	GetICCID(context.Context) (string, error)
+	GetIMEI(context.Context) (string, error)
+	GetIMSI(context.Context) (string, error)
+	GetNativeMCCMNC(context.Context) (string, string, error)
+	GetUSIMAID(context.Context) ([]byte, error)
+	GetISIMAID(context.Context) ([]byte, error)
+	GetServingSystem(context.Context) (*qmi.ServingSystem, error)
+	AttachDetach(context.Context, bool) error
+	OpenLogicalChannel(context.Context, uint8, []byte) (byte, error)
+	CloseLogicalChannel(context.Context, uint8, uint8) error
+	SendAPDU(context.Context, uint8, uint8, []byte) ([]byte, error)
+	PowerOffSIM(context.Context, uint8) error
+	PowerOnSIM(context.Context, uint8) error
 }
 
 // nativeQMIControl identifies the QMI control node exposed by native WWAN
@@ -47,6 +91,7 @@ type productionQMIRadioSession struct {
 	dms    *qmi.DMSService
 	nas    *qmi.NASService
 	nasErr error
+	catID  uint8
 	uimMu  sync.Mutex
 	uim    *qmi.UIMService
 	lease  *qmiport.Lease
@@ -158,19 +203,408 @@ func openQMIRadioSession(ctx context.Context, controlDevice string) (qmiRadioSes
 }
 
 func (session *productionQMIRadioSession) GetICCID(ctx context.Context) (string, error) {
+	uim, err := session.uimService(ctx)
+	if err != nil {
+		return "", err
+	}
+	return uim.GetICCID(ctx)
+}
+
+func (session *productionQMIRadioSession) GetIMSI(ctx context.Context) (string, error) {
+	uim, err := session.uimService(ctx)
+	if err != nil {
+		return "", err
+	}
+	return uim.GetIMSI(ctx)
+}
+
+func (session *productionQMIRadioSession) GetNativeMCCMNC(ctx context.Context) (string, string, error) {
+	uim, err := session.uimService(ctx)
+	if err != nil {
+		return "", "", err
+	}
+	return uim.GetNativeMCCMNC(ctx)
+}
+
+func (session *productionQMIRadioSession) GetUSIMAID(ctx context.Context) ([]byte, error) {
+	uim, err := session.uimService(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return uim.GetUSIMAID(ctx)
+}
+
+func (session *productionQMIRadioSession) GetISIMAID(ctx context.Context) ([]byte, error) {
+	uim, err := session.uimService(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return uim.GetISIMAID(ctx)
+}
+
+func (session *productionQMIRadioSession) PowerOffSIM(ctx context.Context, slot uint8) error {
+	uim, err := session.uimService(ctx)
+	if err != nil {
+		return err
+	}
+	return uim.PowerOffSIM(ctx, slot)
+}
+
+func (session *productionQMIRadioSession) PowerOnSIM(ctx context.Context, slot uint8) error {
+	uim, err := session.uimService(ctx)
+	if err != nil {
+		return err
+	}
+	return uim.PowerOnSIM(ctx, slot)
+}
+
+func (session *productionQMIRadioSession) ResetUIM(ctx context.Context) error {
+	uim, err := session.uimService(ctx)
+	if err != nil {
+		return err
+	}
+	return uim.Reset(ctx)
+}
+
+func (session *productionQMIRadioSession) uimService(ctx context.Context) (*qmi.UIMService, error) {
 	if session == nil || session.client == nil {
-		return "", errors.New("QMI UIM session is unavailable")
+		return nil, errors.New("QMI UIM session is unavailable")
 	}
 	session.uimMu.Lock()
 	defer session.uimMu.Unlock()
 	if session.uim == nil {
 		uim, err := qmi.NewUIMServiceWithContext(ctx, session.client)
 		if err != nil {
-			return "", err
+			return nil, err
 		}
 		session.uim = uim
 	}
-	return session.uim.GetICCID(ctx)
+	return session.uim, nil
+}
+
+func (session *productionQMIRadioSession) OpenLogicalChannel(ctx context.Context, slot uint8, aid []byte) (byte, error) {
+	uim, err := session.uimService(ctx)
+	if err != nil {
+		return 0, err
+	}
+	return uim.OpenLogicalChannel(ctx, slot, aid)
+}
+
+func (session *productionQMIRadioSession) CloseLogicalChannel(ctx context.Context, slot, channel uint8) error {
+	uim, err := session.uimService(ctx)
+	if err != nil {
+		return err
+	}
+	return uim.CloseLogicalChannel(ctx, slot, channel)
+}
+
+func (session *productionQMIRadioSession) SendAPDU(ctx context.Context, slot, channel uint8, command []byte) ([]byte, error) {
+	uim, err := session.uimService(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return uim.SendAPDU(ctx, slot, channel, command)
+}
+
+// RegisterUIMRefresh mirrors the terminal registration used by libqmi for a
+// physical card slot.  EnableProfile(refresh=true) may cause the eUICC to issue
+// a proactive REFRESH; without a registered terminal the card remains CAT busy
+// after the profile has changed and rejects the next profile operation.
+func (session *productionQMIRadioSession) RegisterUIMRefresh(ctx context.Context) error {
+	uim, err := session.uimService(ctx)
+	if err != nil {
+		return err
+	}
+	if err := uim.RefreshRegisterAll(ctx, qmi.UIMRefreshRegisterAllRequest{
+		SessionType:  qmi.UIMSessionTypeCardSlot1,
+		RegisterFlag: true,
+	}); err != nil {
+		return err
+	}
+	if session.catID == 0 {
+		clientID, err := session.client.AllocateClientIDWithContext(ctx, qmi.ServiceCAT2)
+		if err != nil {
+			return fmt.Errorf("allocate QMI CAT2 client: %w", err)
+		}
+		session.catID = clientID
+	}
+	configuration, configErr := session.client.SendRequest(ctx, qmi.ServiceCAT2, session.catID, 0x002E, nil)
+	if configErr == nil && configuration.CheckResult() == nil {
+		if modeTLV := qmi.FindTLV(configuration.TLVs, 0x10); modeTLV != nil && len(modeTLV.Value) > 0 {
+			slog.Info("QMI CAT2 configuration", "mode", modeTLV.Value[0])
+		}
+	}
+	response, err := session.client.SendRequest(ctx, qmi.ServiceCAT2, session.catID, 0x0001, []qmi.TLV{
+		// Claim the raw proactive-command events implemented by this CAT2
+		// generation (bits 0..22 and 24..25). A profile can leave any STK
+		// command pending, not only REFRESH, and SGP.22 forbids profile changes
+		// while that proactive session is unanswered.
+		{Type: 0x10, Value: []byte{0xFF, 0xFF, 0x7F, 0x03}},
+		// Slot mask bit 0 selects slot 1.
+		{Type: 0x12, Value: []byte{0x01}},
+	})
+	if err != nil {
+		return fmt.Errorf("register QMI CAT2 refresh: %w", err)
+	}
+	if err := response.CheckResult(); err != nil {
+		return fmt.Errorf("register QMI CAT2 refresh: %w", err)
+	}
+	for _, tlv := range response.TLVs {
+		if tlv.Type >= 0x10 && tlv.Type <= 0x12 {
+			slog.Info("QMI CAT2 registration response", "tlv", fmt.Sprintf("0x%02X", tlv.Type), "value", fmt.Sprintf("%X", tlv.Value))
+		}
+	}
+	return nil
+}
+
+// CompleteUIMRefresh consumes refresh indications on the same QMI client that
+// registered for them.  Qualcomm requires RefreshComplete only for START
+// indications whose mode is not RESET; RESET is completed by the modem itself.
+func (session *productionQMIRadioSession) CompleteUIMRefresh(ctx context.Context) error {
+	if session == nil || session.client == nil {
+		return errors.New("QMI UIM refresh session is unavailable")
+	}
+	uim, err := session.uimService(ctx)
+	if err != nil {
+		return err
+	}
+	refreshCompleted := false
+	uimEnded := false
+	catEnded := false
+	for {
+		select {
+		case <-ctx.Done():
+			// Some firmware handles a RESET internally and never forwards an
+			// indication to this client.  A missing indication is therefore not
+			// a failed profile commit.
+			return nil
+		case event, ok := <-session.client.Events():
+			if !ok {
+				return nil
+			}
+			if event.ServiceID == qmi.ServiceCAT2 && event.MessageID == 0x0001 {
+				for _, eventTLV := range event.Packet.TLVs {
+					slog.Info("QMI CAT2 event", "tlv", fmt.Sprintf("0x%02X", eventTLV.Type), "length", len(eventTLV.Value))
+				}
+				if tlv := qmi.FindTLV(event.Packet.TLVs, 0x19); tlv != nil && len(tlv.Value) >= 4 {
+					mode := uint16(tlv.Value[0]) | uint16(tlv.Value[1])<<8
+					stage := uint16(tlv.Value[2]) | uint16(tlv.Value[3])<<8
+					slog.Info("QMI CAT2 profile refresh", "stage", stage, "mode", mode)
+					if stage == 3 {
+						return errors.New("QMI CAT2 refresh ended with failure")
+					}
+				}
+				// UIM refresh completion is not a CAT terminal response. Qualcomm
+				// delivers the raw proactive command in a command-specific TLV; send
+				// a response carrying that command's reference ID. Unsupported UI STK
+				// commands receive the standards-defined "beyond terminal
+				// capabilities" result, which still closes the proactive session.
+				for _, commandTLV := range event.Packet.TLVs {
+					if !isRawCATCommandTLV(commandTLV.Type) {
+						continue
+					}
+					ref, terminalResponse, commandType, responseOK := catProactiveTerminalResponse(commandTLV.Value)
+					if !responseOK {
+						continue
+					}
+					if err := session.sendCATTerminalResponse(ctx, ref, terminalResponse); err != nil {
+						return err
+					}
+					slog.Info("QMI CAT2 terminal response sent", "reference", ref, "command", fmt.Sprintf("0x%02X", commandType))
+					break
+				}
+				if tlv := qmi.FindTLV(event.Packet.TLVs, 0x1A); tlv != nil && len(tlv.Value) > 0 {
+					// Older MDM8916 CAT2 firmware encodes this enum in one byte;
+					// newer interface descriptions model it as a 32-bit value.
+					reason := uint32(tlv.Value[0])
+					if len(tlv.Value) >= 4 {
+						reason |= uint32(tlv.Value[1])<<8 | uint32(tlv.Value[2])<<16 | uint32(tlv.Value[3])<<24
+					}
+					slog.Info("QMI CAT2 proactive session ended", "reason", reason)
+					catEnded = true
+					if uimEnded {
+						return nil
+					}
+				}
+				continue
+			}
+			if event.Type != qmi.EventUIMRefresh {
+				continue
+			}
+			info, parseErr := qmi.ParseUIMRefreshIndication(event.Packet)
+			if parseErr != nil {
+				return parseErr
+			}
+			const (
+				refreshStageWaitForOK = uint8(0)
+				refreshStageStart     = uint8(1)
+				refreshStageSuccess   = uint8(2)
+				refreshStageFailure   = uint8(3)
+				refreshModeReset      = uint8(0)
+			)
+			slog.Info("QMI UIM profile refresh", "stage", info.Stage, "mode", info.Mode)
+			switch info.Stage {
+			case refreshStageWaitForOK:
+				// Registration without a vote advances on its own. Keep the UIM
+				// client alive for the subsequent START and END indications.
+				continue
+			case refreshStageStart:
+				if info.Mode == refreshModeReset || refreshCompleted {
+					continue
+				}
+				// libqmi intentionally uses CARD_SLOT_1 here rather than echoing
+				// the provisioning session from the indication.
+				_ = uim.RefreshComplete(ctx, qmi.UIMRefreshCompleteRequest{
+					SessionType:    qmi.UIMSessionTypeCardSlot1,
+					RefreshSuccess: true,
+				})
+				refreshCompleted = true
+				continue
+			case refreshStageSuccess:
+				uimEnded = true
+				if catEnded {
+					return nil
+				}
+				continue
+			case refreshStageFailure:
+				return errors.New("QMI UIM refresh ended with failure")
+			default:
+				continue
+			}
+		}
+	}
+}
+
+func (session *productionQMIRadioSession) sendCATTerminalResponse(ctx context.Context, reference uint32, terminalResponse []byte) error {
+	value := make([]byte, 0, 6+len(terminalResponse))
+	value = binary.LittleEndian.AppendUint32(value, reference)
+	value = binary.LittleEndian.AppendUint16(value, uint16(len(terminalResponse)))
+	value = append(value, terminalResponse...)
+	response, err := session.client.SendRequest(ctx, qmi.ServiceCAT2, session.catID, 0x0021, []qmi.TLV{
+		{Type: 0x01, Value: value},
+		{Type: 0x10, Value: []byte{0x01}}, // CAT slot 1 (not a slot mask)
+	})
+	if err != nil {
+		return fmt.Errorf("send QMI CAT2 refresh terminal response: %w", err)
+	}
+	if err := response.CheckResult(); err != nil {
+		return fmt.Errorf("send QMI CAT2 refresh terminal response: %w", err)
+	}
+	return nil
+}
+
+// catProactiveTerminalResponse extracts a raw CAT command carried as
+// {reference:uint32LE, length:uint16LE, BER-TLV command} and creates the
+// standards-shaped terminal response. VoCat has no interactive STK UI, so
+// commands other than REFRESH/MORE TIME are explicitly reported unsupported.
+func catProactiveTerminalResponse(raw []byte) (uint32, []byte, byte, bool) {
+	if len(raw) < 8 {
+		return 0, nil, 0, false
+	}
+	reference := binary.LittleEndian.Uint32(raw[:4])
+	commandLength := int(binary.LittleEndian.Uint16(raw[4:6]))
+	if commandLength <= 0 || commandLength > len(raw)-6 {
+		return 0, nil, 0, false
+	}
+	command := raw[6 : 6+commandLength]
+	if len(command) < 2 || command[0] != 0xD0 {
+		return 0, nil, 0, false
+	}
+	bodyLength, lengthBytes, ok := catBERLength(command[1:])
+	if !ok || 1+lengthBytes+bodyLength > len(command) {
+		return 0, nil, 0, false
+	}
+	body := command[1+lengthBytes : 1+lengthBytes+bodyLength]
+	for offset := 0; offset < len(body); {
+		tag := body[offset]
+		offset++
+		length, consumed, ok := catBERLength(body[offset:])
+		if !ok || offset+consumed+length > len(body) {
+			return 0, nil, 0, false
+		}
+		offset += consumed
+		value := body[offset : offset+length]
+		offset += length
+		if tag&0x7F != 0x01 || len(value) < 3 {
+			continue
+		}
+		result := byte(0x30)                      // command beyond terminal capabilities
+		if value[1] == 0x01 || value[1] == 0x02 { // REFRESH or MORE TIME
+			result = 0x00 // command performed successfully
+		}
+		terminalResponse := []byte{
+			0x81, 0x03, value[0], value[1], value[2], // command details
+			0x82, 0x02, 0x82, 0x81, // terminal -> UICC
+			0x83, 0x01, result,
+		}
+		return reference, terminalResponse, value[1], true
+	}
+	return 0, nil, 0, false
+}
+
+func catRefreshTerminalResponse(raw []byte) (uint32, []byte, bool) {
+	reference, response, commandType, ok := catProactiveTerminalResponse(raw)
+	return reference, response, ok && commandType == 0x01
+}
+
+func isRawCATCommandTLV(tag byte) bool {
+	switch tag {
+	case 0x10, 0x11, 0x12, 0x13, 0x14, 0x17, 0x18,
+		0x47, 0x48, 0x49, 0x4A, 0x4B, 0x4C, 0x4D, 0x4E, 0x4F,
+		0x51, 0x52, 0x53, 0x54, 0x66, 0x6A:
+		return true
+	default:
+		return false
+	}
+}
+
+func catBERLength(raw []byte) (length int, consumed int, ok bool) {
+	if len(raw) == 0 {
+		return 0, 0, false
+	}
+	switch raw[0] {
+	case 0x81:
+		if len(raw) < 2 {
+			return 0, 0, false
+		}
+		return int(raw[1]), 2, true
+	case 0x82:
+		if len(raw) < 3 {
+			return 0, 0, false
+		}
+		return int(raw[1])<<8 | int(raw[2]), 3, true
+	default:
+		if raw[0]&0x80 != 0 {
+			return 0, 0, false
+		}
+		return int(raw[0]), 1, true
+	}
+}
+
+// AcknowledgeUIMRefresh is a recovery vote for a refresh that predates this
+// QMI client. Qualcomm documents RefreshComplete as harmless when no vote is
+// pending; it lets a newly started service release a stale CAT-busy condition
+// left by an interrupted LPA/terminal transaction.
+func (session *productionQMIRadioSession) AcknowledgeUIMRefresh(ctx context.Context) error {
+	uim, err := session.uimService(ctx)
+	if err != nil {
+		return err
+	}
+	return uim.RefreshComplete(ctx, qmi.UIMRefreshCompleteRequest{
+		SessionType:    qmi.UIMSessionTypeCardSlot1,
+		RefreshSuccess: true,
+	})
+}
+
+func (session *productionQMIRadioSession) GetIMEI(ctx context.Context) (string, error) {
+	if session == nil || session.dms == nil {
+		return "", errors.New("QMI DMS identity session is unavailable")
+	}
+	info, err := session.dms.GetDeviceSerialNumbers(ctx)
+	if err != nil {
+		return "", err
+	}
+	return info.IMEI, nil
 }
 
 func (session *productionQMIRadioSession) GetOperatingMode(ctx context.Context) (qmi.OperatingMode, error) {
@@ -199,6 +633,10 @@ func (session *productionQMIRadioSession) Close() error {
 	if session.nas != nil {
 		closeErrors = append(closeErrors, session.nas.Close())
 		session.nas = nil
+	}
+	if session.client != nil && session.catID != 0 {
+		closeErrors = append(closeErrors, session.client.ReleaseClientID(qmi.ServiceCAT2, session.catID))
+		session.catID = 0
 	}
 	if session.client != nil {
 		closeErrors = append(closeErrors, session.client.Close())

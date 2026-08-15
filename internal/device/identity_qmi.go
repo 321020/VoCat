@@ -37,3 +37,27 @@ func (manager *Manager) readNativeQMIICCID(ctx context.Context, candidate modem.
 	}
 	return iccid, nil
 }
+
+func (manager *Manager) readNativeQMIIMEI(ctx context.Context, candidate modem.Candidate) (string, error) {
+	if manager.qmiRadioOpener == nil {
+		return "", errors.New("QMI DMS IMEI reader is unavailable")
+	}
+	session, err := manager.qmiRadioOpener(ctx, candidate.QMIControl)
+	if err != nil {
+		return "", err
+	}
+	defer session.Close()
+	reader, ok := session.(nativeQMIIMEISession)
+	if !ok {
+		return "", errors.New("QMI session does not expose DMS IMEI reading")
+	}
+	value, err := reader.GetIMEI(ctx)
+	if err != nil {
+		return "", fmt.Errorf("read device serial numbers: %w", err)
+	}
+	imei := parseIdentifier(modem.Response{Lines: []string{value}}, nil, 14, 17)
+	if imei == "" {
+		return "", errors.New("QMI DMS returned an invalid IMEI")
+	}
+	return imei, nil
+}

@@ -16,6 +16,7 @@ export interface DeviceDetailHeaderProps {
   onRebootModem: () => void;
   onOpenSms: () => void;
 	wifiCallingOnly?: boolean;
+	modemControlOnly?: boolean;
 }
 
 export function DeviceDetailHeader(props: DeviceDetailHeaderProps) {
@@ -59,12 +60,12 @@ export function DeviceDetailHeader(props: DeviceDetailHeaderProps) {
 			  />
 			</div>
 		  ) : null}
-		  {!props.wifiCallingOnly ? <Button loading={props.rebooting} onClick={props.onRebootModem} className="ui-glass-border !border-0 hover:!text-red-600" icon={<PowerRegular />}>
+		  {!props.wifiCallingOnly && !props.modemControlOnly ? <Button loading={props.rebooting} onClick={props.onRebootModem} className="ui-glass-border !border-0 hover:!text-red-600" icon={<PowerRegular />}>
             {t("重启模组")}
 		  </Button> : null}
-          <Button onClick={props.onOpenSms} className="ui-glass-border !border-0" icon={<ChatRegular />}>
+          {!props.modemControlOnly ? <Button onClick={props.onOpenSms} className="ui-glass-border !border-0" icon={<ChatRegular />}>
             {t("短信")}
-          </Button>
+          </Button> : null}
         </div>
       </div>
     </div>

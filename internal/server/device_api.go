@@ -239,10 +239,14 @@ func (s *Server) handleDevices(w http.ResponseWriter, r *http.Request) bool {
 			return true
 		}
 		config := payload.toStoreDevice()
+		isNative410 := config.DeviceType == store.DeviceTypeWiFi410
 		// Newly added hardware starts fail-closed: RF is disabled immediately and
-		// VoWiFi becomes the desired service. Cellular registration is only
-		// restored by the user's later airplane-mode-off action.
+		// VoWiFi becomes the desired service on supported devices. Native 410
+		// uses its QMI UIM/DMS/NAS adapter; only cellular SMS remains unavailable.
 		config.VoWiFiEnabled = true
+		if isNative410 {
+			config.SMSEnabled = false
+		}
 		config.NetworkEnabled = false
 		if !s.developerActive(r.Context()) {
 			config.NetworkEnabled = false
@@ -284,7 +288,7 @@ func (s *Server) handleDevices(w http.ResponseWriter, r *http.Request) bool {
 				}
 			}
 		}
-		if s.vowifi != nil {
+		if s.vowifi != nil && config.VoWiFiEnabled {
 			if _, err := s.vowifi.RequestEnabled(config.ID, true); err != nil {
 				s.logger.Warn("new device saved in safe airplane mode but VoWiFi start was not queued", "device_id", config.ID, "error", err)
 			}
@@ -512,6 +516,10 @@ func (s *Server) handleDevicePath(
 	}
 
 	entry, physicalID, physicalPresent := s.physicalForConfig(config)
+	if config.DeviceType == store.DeviceTypeWiFi410 && native410UnsupportedOperation(tail) {
+		writeError(w, http.StatusNotImplemented, "device_feature_unsupported", "this feature is not supported by the native OpenStick 410 backend")
+		return true
+	}
 	if config.DeviceType == store.DeviceTypeUSBSIMReader && len(tail) > 0 {
 		operation := strings.Join(tail, "/")
 		unsupported := tail[0] == "network" || tail[0] == "operator_selection" ||
@@ -661,6 +669,14 @@ func (s *Server) handleDevicePath(
 		return false
 	}
 	return true
+}
+
+func native410UnsupportedOperation(tail []string) bool {
+	if len(tail) == 0 {
+		return false
+	}
+	operation := strings.Join(tail, "/")
+	return tail[0] == "calls" || operation == "actions/reboot"
 }
 
 func (s *Server) handleUSBNetMode(w http.ResponseWriter, r *http.Request, physicalID string) bool {

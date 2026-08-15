@@ -581,6 +581,13 @@ func configureVoWiFiRuntime(
 	if err != nil {
 		return nil, err
 	}
+	nativeQMIAdapter, err := vowifi.NewNativeQMIAdapter(nativeQMIControllerMapper{Mapper: mapper, Devices: deviceManager}, func(deviceID string) bool {
+		deviceConfig, configErr := database.Device(context.Background(), deviceID)
+		return configErr == nil && deviceConfig.VoWiFiEnabled
+	})
+	if err != nil {
+		return nil, err
+	}
 	pcscAdapter, err := vowifi.NewPCSCAdapter(cardReaders, func(ctx context.Context, deviceID string) (pcsc.Selector, string, error) {
 		config, resolveErr := database.Device(ctx, strings.TrimSpace(deviceID))
 		if resolveErr != nil {
@@ -606,6 +613,8 @@ func configureVoWiFiRuntime(
 			adapter := vowifiDeviceAdapter(ec20Adapter)
 			if deviceConfig.DeviceType == store.DeviceTypeUSBSIMReader {
 				adapter = pcscAdapter
+			} else if deviceConfig.DeviceType == store.DeviceTypeWiFi410 {
+				adapter = nativeQMIAdapter
 			}
 			return newVoWiFiOrchestrator(deviceConfig, database, adapter)
 		},
@@ -856,6 +865,7 @@ func provisionDiscoveredDevices(
 		if name == "" || strings.EqualFold(name, "Android") {
 			name = "Quectel EC20 / EC25"
 		}
+		supportsSMS := deviceType != store.DeviceTypeWiFi410
 		if err := database.UpsertDevice(ctx, store.Device{
 			ID:             discovered.ID,
 			Name:           name,
@@ -872,7 +882,7 @@ func provisionDiscoveredDevices(
 			DeviceBackend:  backend,
 			ESIMTransport:  esimTransport,
 			NetworkEnabled: false,
-			SMSEnabled:     true,
+			SMSEnabled:     supportsSMS,
 			VoWiFiEnabled:  true,
 		}); err != nil {
 			return err

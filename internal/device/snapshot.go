@@ -39,6 +39,19 @@ func (manager *Manager) readSnapshot(
 	if snapshot.Model == "" && !strings.EqualFold(candidate.Product, "Android") {
 		snapshot.Model = candidate.Product
 	}
+	// Native MHI/QMI devices expose their immutable modem identity through DMS.
+	// Read it before any SIM-dependent AT probes: a missing/bad card can make
+	// those commands slow or fail, but must never prevent IMEI from appearing.
+	if strings.EqualFold(strings.TrimSpace(backend), "qmi") && isNativeQMICandidate(candidate) {
+		qmiContext, cancelQMI := manager.withTimeout(ctx, manager.commandTimeout*5)
+		qmiIMEI, qmiErr := manager.readNativeQMIIMEI(qmiContext, candidate)
+		cancelQMI()
+		if qmiErr == nil {
+			snapshot.IMEI = qmiIMEI
+		} else {
+			snapshot.Warnings = append(snapshot.Warnings, "read IMEI via QMI DMS: "+qmiErr.Error())
+		}
+	}
 
 	optional := func(command string) (modem.Response, bool) {
 		response, commandErr := manager.command(ctx, client, command)
@@ -172,13 +185,31 @@ func (manager *Manager) readSnapshot(
 		snapshot.RegistrationStatus = 1
 		snapshot.RegistrationSource = "COPS"
 	}
-	if response, ok := optional("AT+CGSN"); ok {
-		snapshot.IMEI = parseIdentifier(
-			response,
-			[]string{"+CGSN:", "+GSN:"},
-			14,
-			17,
-		)
+	if snapshot.IMEI == "" {
+		response, ok := optional("AT+CGSN")
+		if ok {
+			snapshot.IMEI = parseIdentifier(
+				response,
+				[]string{"+CGSN:", "+GSN:"},
+				14,
+				17,
+			)
+		}
+	}
+	if snapshot.IMEI == "" && strings.EqualFold(strings.TrimSpace(backend), "qmi") && isNativeQMICandidate(candidate) {
+		qmiContext, cancelQMI := manager.withTimeout(ctx, manager.commandTimeout*5)
+		qmiIMEI, qmiErr := manager.readNativeQMIIMEI(qmiContext, candidate)
+		cancelQMI()
+		if qmiErr == nil {
+			snapshot.IMEI = qmiIMEI
+		} else {
+			snapshot.Warnings = append(snapshot.Warnings, "read IMEI via QMI DMS: "+qmiErr.Error())
+		}
+	}
+	if snapshot.IMEI == "" && previousSnapshot != nil {
+		// IMEI is hardware identity and does not change with the inserted card.
+		// Preserve a prior successful read across a transient QMI/AT failure.
+		snapshot.IMEI = previousSnapshot.IMEI
 	}
 
 	if response, ok := optional("AT+CFUN?"); ok {
