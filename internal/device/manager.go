@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"sort"
 	"strings"
 	"sync"
@@ -21,6 +22,7 @@ type Options struct {
 	SMSTimeout     time.Duration
 	ScanTimeout    time.Duration
 	CardReaders    *pcsc.Service
+	Logger         *slog.Logger
 }
 
 type Manager struct {
@@ -38,6 +40,7 @@ type Manager struct {
 	smsTimeout     time.Duration
 	scanTimeout    time.Duration
 	cardReaders    *pcsc.Service
+	logger         *slog.Logger
 
 	qmiRadioOpener                qmiRadioSessionOpener
 	nativeQMIRegistrationMu       sync.Mutex
@@ -120,6 +123,7 @@ func NewManager(options Options) (*Manager, error) {
 		smsTimeout:     options.SMSTimeout,
 		scanTimeout:    options.ScanTimeout,
 		cardReaders:    options.CardReaders,
+		logger:         options.Logger,
 
 		qmiRadioOpener:                openQMIRadioSession,
 		nativeQMIRegistrationInFlight: make(map[string]struct{}),
@@ -373,10 +377,11 @@ func (manager *Manager) setResult(
 	err error,
 ) {
 	manager.mu.Lock()
-	defer manager.mu.Unlock()
 	if manager.devices[id] != state {
+		manager.mu.Unlock()
 		return
 	}
+	previousError := state.lastError
 	if snapshot != nil {
 		value := *snapshot
 		value.Warnings = append([]string(nil), snapshot.Warnings...)
@@ -387,6 +392,19 @@ func (manager *Manager) setResult(
 		state.lastError = err.Error()
 	} else {
 		state.lastError = ""
+	}
+	shouldLog := err != nil && manager.logger != nil && previousError != err.Error()
+	backend := state.backend
+	hardwareKind := state.candidate.HardwareKind
+	manager.mu.Unlock()
+	if shouldLog {
+		manager.logger.Warn(
+			"hardware operation failed",
+			"device_id", id,
+			"backend", backend,
+			"hardware_kind", hardwareKind,
+			"error", HardwareErrorDetail(err),
+		)
 	}
 }
 

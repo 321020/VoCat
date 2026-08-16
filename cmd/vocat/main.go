@@ -192,7 +192,7 @@ func run(logger *slog.Logger, logs *loghub.Hub) error {
 	}
 
 	cardReaders := pcsc.New()
-	deviceManager, err := device.NewManager(device.Options{CardReaders: cardReaders})
+	deviceManager, err := device.NewManager(device.Options{CardReaders: cardReaders, Logger: logger})
 	if err != nil {
 		return fmt.Errorf("create device manager: %w", err)
 	}

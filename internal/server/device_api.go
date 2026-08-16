@@ -1421,9 +1421,9 @@ func (s *Server) writeDeviceError(w http.ResponseWriter, err error) {
 	case errors.Is(err, context.Canceled):
 		writeError(w, http.StatusRequestTimeout, "request_canceled", "the modem request was canceled")
 	default:
-		// Device errors may echo an AT command. Authentication commands can
-		// contain APN credentials, so keep raw errors out of logs and responses.
-		s.logger.Warn("device operation failed")
+		// Preserve the hardware failure reason in the operator-visible log while
+		// keeping AT payloads and long APDU material out of it.
+		s.logger.Warn("device operation failed", "error", device.HardwareErrorDetail(err))
 		writeError(w, http.StatusBadGateway, "modem_error", "the device operation failed")
 	}
 }
