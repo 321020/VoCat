@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net"
 	"strconv"
 	"strings"
@@ -58,6 +59,9 @@ type Config struct {
 	// OnSMSStatus is invoked for an SMS-STATUS-REPORT received after a
 	// submission that requested a delivery report.
 	OnSMSStatus func(context.Context, ReceivedSMSStatus) error
+	// Logger receives structured IMS runtime diagnostics. Inbound SMS logs do
+	// not include message text or raw protocol payloads.
+	Logger *slog.Logger
 }
 
 // Provider implements vowifi.IMSProvider using a small RFC 3261 REGISTER
@@ -85,6 +89,9 @@ func NewProvider(aka vowifi.AKAProvider, config Config) (*Provider, error) {
 }
 
 func normalizeConfig(config Config) (Config, error) {
+	if config.Logger == nil {
+		config.Logger = slog.Default()
+	}
 	if config.Port == 0 {
 		config.Port = defaultSIPPort
 	}

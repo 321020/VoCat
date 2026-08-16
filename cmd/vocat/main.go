@@ -616,7 +616,7 @@ func configureVoWiFiRuntime(
 			} else if deviceConfig.DeviceType == store.DeviceTypeWiFi410 {
 				adapter = nativeQMIAdapter
 			}
-			return newVoWiFiOrchestrator(deviceConfig, database, adapter)
+			return newVoWiFiOrchestrator(deviceConfig, database, adapter, logger)
 		},
 	})
 
@@ -715,6 +715,7 @@ func newVoWiFiOrchestrator(
 	deviceConfig store.Device,
 	database *store.Store,
 	adapter vowifiDeviceAdapter,
+	logger *slog.Logger,
 ) (*vowifi.Orchestrator, error) {
 	apn := deviceConfig.APN
 	if apn == "" {
@@ -725,6 +726,7 @@ func newVoWiFiOrchestrator(
 		return nil, fmt.Errorf("device %q IKE provider: %w", deviceConfig.ID, err)
 	}
 	imsProvider, err := ims.NewProvider(adapter, ims.Config{
+		Logger: logger,
 		// The userspace SWu data plane carries protected P-CSCF signalling over
 		// TCP by default. UK PLMN 234-10 exposes its P-CSCF over UDP/5060 on SWu.
 		Transport: "tcp",
