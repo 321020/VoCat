@@ -298,6 +298,18 @@ detect_arch() {
 
 # --- Download + verify -------------------------------------------------------
 VOCAT_TMP=""
+
+# curl transfer options for the binary download. -f makes curl fail on HTTP
+# errors and -L follows the release-asset redirect. On an interactive terminal
+# we show a single-line progress bar so a multi-megabyte download gives visible
+# feedback; otherwise (piped, cron, systemd) we stay quiet but still surface
+# errors via -S.
+if [ -t 2 ]; then
+    CURL_DL_OPTS=(-fSL --progress-bar)
+else
+    CURL_DL_OPTS=(-fsSL)
+fi
+
 download_and_verify() {
     VOCAT_TMP=$(mktemp -d)
     trap 'rm -rf "$VOCAT_TMP"' EXIT
@@ -307,7 +319,7 @@ download_and_verify() {
         asset="vocat-linux-${ARCH_FALLBACK}"
     fi
     msg "下载 $asset ..." "Downloading $asset ..."
-    curl -fsSL -o "${VOCAT_TMP}/vocat" "${base}/${asset}" || die "下载二进制失败。" "Failed to download the binary."
+    curl "${CURL_DL_OPTS[@]}" -o "${VOCAT_TMP}/vocat" "${base}/${asset}" || die "下载二进制失败。" "Failed to download the binary."
     curl -fsSL -o "${VOCAT_TMP}/SHA256SUMS" "${base}/SHA256SUMS" || die "下载 SHA256SUMS 失败。" "Failed to download SHA256SUMS."
 
     local expected actual
