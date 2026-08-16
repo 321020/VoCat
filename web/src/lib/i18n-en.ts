@@ -780,6 +780,8 @@ export const EN_DICT: Record<string, string> = {
   "改动将在此卡激活后生效": "Changes take effect once this card is activated",
   "数据未开启": "Data is off",
   "数据平面": "Data Plane",
+  "运营商配置": "Carrier Profile",
+  "匹配依据": "Profile Match",
   "方向": "Direction",
   "无法读取 IMEI（控制口可能挂死），暂不可添加。": "Cannot read the IMEI (the control port may be stuck); cannot add for now.",
   "未找到可用的 AT 端口（串口可能仍在枚举），系统会自动重试；也可点击重新扫描。":

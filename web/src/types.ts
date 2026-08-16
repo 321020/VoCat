@@ -33,6 +33,8 @@ export interface VoWiFiRuntime {
   phase: string;
   enabled?: boolean;
   active?: boolean;
+  carrierProfile?: string;
+  carrierProfileFrom?: string;
   dataplaneMode: string;
   iccid: string;
   imsi: string;

@@ -721,27 +721,19 @@ func newVoWiFiOrchestrator(
 	if apn == "" {
 		apn = "ims"
 	}
-	tunnelProvider, err := ike.NewProvider(ike.Config{APN: apn})
+	tunnelProvider, err := ike.NewProvider(ike.Config{
+		APN: apn, Logger: logger, AutoProposalFallback: true,
+	})
 	if err != nil {
 		return nil, fmt.Errorf("device %q IKE provider: %w", deviceConfig.ID, err)
 	}
 	imsProvider, err := ims.NewProvider(adapter, ims.Config{
 		Logger: logger,
-		// The userspace SWu data plane carries protected P-CSCF signalling over
-		// TCP by default. UK PLMN 234-10 exposes its P-CSCF over UDP/5060 on SWu.
-		Transport: "tcp",
-		TransportByPLMN: map[string]string{
-			"23410":  "udp",
-			"234010": "udp",
-		},
-		// Some UK SIM profiles leave EF_SMSP/AT+CSCA empty. Keep fallbacks scoped
-		// to their HPLMN so an O2/giffgaff SIM can never inherit Vodafone's SMSC.
-		SMSCenterByPLMN: map[string]string{
-			"23410":  "+447802000332",
-			"234010": "+447802000332",
-			"23415":  "+447785016005",
-			"234015": "+447785016005",
-		},
+		// Carrier-specific transport and SMSC defaults live in the shared data
+		// profile. Prefer network-provided P-CSCF hints, then safely try the
+		// alternate transport only if no SIP response was observed.
+		Transport:             "tcp",
+		AutoTransportFallback: true,
 		OnSMS: func(ctx context.Context, message ims.ReceivedSMS) error {
 			extra, _ := json.Marshal(map[string]any{
 				"transport":                "ims",

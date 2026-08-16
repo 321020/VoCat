@@ -180,6 +180,22 @@ func TestSMSCenterForIdentityUsesExactPLMN(t *testing.T) {
 	}
 }
 
+func TestSMSCenterForIdentityFallsBackToCarrierProfile(t *testing.T) {
+	for _, test := range []struct {
+		mnc  string
+		want string
+	}{
+		{mnc: "10", want: "+447802000332"},
+		{mnc: "15", want: "+447785016005"},
+		{mnc: "30", want: ""},
+	} {
+		identity := vowifi.SIMIdentity{HomeMCC: "234", HomeMNC: test.mnc}
+		if got := smsCenterForIdentity(Config{}, identity); got != test.want {
+			t.Errorf("profile SMSC for 234/%s = %q, want %q", test.mnc, got, test.want)
+		}
+	}
+}
+
 func multipartSMSRequest(t *testing.T, payload []byte) *sipRequest {
 	t.Helper()
 	var body bytes.Buffer

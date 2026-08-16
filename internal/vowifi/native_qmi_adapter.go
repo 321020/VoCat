@@ -56,6 +56,14 @@ func (adapter *NativeQMIAdapter) ReadIdentity(ctx context.Context, deviceID stri
 		return SIMIdentity{}, err
 	}
 	identity := applyAssignedCarrierRoute(SIMIdentity{ICCID: strings.TrimSpace(iccid), IMSI: strings.TrimSpace(imsi), IMEI: strings.TrimSpace(imei), HomeMCC: strings.TrimSpace(mcc), HomeMNC: strings.TrimSpace(mnc)})
+	if reader, ok := adapter.controller.(SIMMetadataReader); ok {
+		if metadata, metadataErr := reader.ReadSIMMetadata(ctx, deviceID); metadataErr == nil {
+			identity.SPN = strings.TrimSpace(metadata.SPN)
+			identity.GID1 = strings.TrimSpace(metadata.GID1)
+			identity.GID2 = strings.TrimSpace(metadata.GID2)
+			identity = applyAssignedCarrierRoute(identity)
+		}
+	}
 	if err := identity.validate(); err != nil {
 		return SIMIdentity{}, err
 	}

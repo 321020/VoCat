@@ -5,6 +5,8 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"io"
+	"log/slog"
 	"net"
 	"strconv"
 	"strings"
@@ -17,6 +19,40 @@ import (
 type evidenceTunnel struct {
 	evidence vowifi.TunnelEvidence
 }
+
+type immediateTimeoutError struct{}
+
+func (immediateTimeoutError) Error() string   { return "test timeout" }
+func (immediateTimeoutError) Timeout() bool   { return true }
+func (immediateTimeoutError) Temporary() bool { return true }
+
+type registerRetransmitConn struct {
+	writes   int
+	response []byte
+}
+
+func (connection *registerRetransmitConn) Read(destination []byte) (int, error) {
+	if connection.writes < 2 {
+		return 0, immediateTimeoutError{}
+	}
+	return copy(destination, connection.response), nil
+}
+
+func (connection *registerRetransmitConn) Write(source []byte) (int, error) {
+	connection.writes++
+	return len(source), nil
+}
+
+func (*registerRetransmitConn) Close() error { return nil }
+func (*registerRetransmitConn) LocalAddr() net.Addr {
+	return &net.UDPAddr{IP: net.IPv4(192, 0, 2, 10), Port: 5060}
+}
+func (*registerRetransmitConn) RemoteAddr() net.Addr {
+	return &net.UDPAddr{IP: net.IPv4(192, 0, 2, 20), Port: 5060}
+}
+func (*registerRetransmitConn) SetDeadline(time.Time) error      { return nil }
+func (*registerRetransmitConn) SetReadDeadline(time.Time) error  { return nil }
+func (*registerRetransmitConn) SetWriteDeadline(time.Time) error { return nil }
 
 func (tunnel evidenceTunnel) Evidence() vowifi.TunnelEvidence {
 	return tunnel.evidence
@@ -70,6 +106,62 @@ func TestTransportForIdentityPreservesLeadingZeroMNCs(t *testing.T) {
 		if got := transportForIdentity(config, vowifi.SIMIdentity{HomeMCC: "310", HomeMNC: test.mnc}); got != test.want {
 			t.Errorf("PLMN 310-%s transport = %q, want %q", test.mnc, got, test.want)
 		}
+	}
+}
+
+func TestCarrierProfileSuppliesTransportWithoutCodeMap(t *testing.T) {
+	t.Parallel()
+	identity := vowifi.SIMIdentity{HomeMCC: "234", HomeMNC: "10"}
+	if got := transportForIdentity(Config{Transport: "tcp"}, identity); got != "udp" {
+		t.Fatalf("O2 UK profile transport = %q, want udp", got)
+	}
+	if got := transportForIdentity(Config{
+		Transport: "udp", TransportByPLMN: map[string]string{"23410": "tcp"},
+	}, identity); got != "tcp" {
+		t.Fatalf("explicit configuration did not override profile: %q", got)
+	}
+}
+
+func TestProviderCachesSuccessfulTransportPerSIM(t *testing.T) {
+	t.Parallel()
+	provider := &Provider{transportCache: make(map[string]string)}
+	first := vowifi.SIMIdentity{ICCID: "8901000000000000001", HomeMCC: "001", HomeMNC: "01"}
+	second := vowifi.SIMIdentity{ICCID: "8901000000000000002", HomeMCC: "001", HomeMNC: "01"}
+	provider.rememberTransport(first, "udp")
+	if got := provider.cachedTransport(first); got != "udp" {
+		t.Fatalf("cached first transport = %q", got)
+	}
+	if got := provider.cachedTransport(second); got != "" {
+		t.Fatalf("second SIM inherited cached transport %q", got)
+	}
+}
+
+func TestUDPRegisterRetransmitsBeforeTransactionTimeout(t *testing.T) {
+	t.Parallel()
+	connection := &registerRetransmitConn{response: []byte(strings.Join([]string{
+		"SIP/2.0 200 OK",
+		"Call-ID: register-retransmit-test",
+		"CSeq: 7 REGISTER",
+		"Content-Length: 0",
+		"",
+		"",
+	}, "\r\n"))}
+	session := &Session{
+		provider: &Provider{config: Config{
+			TransactionTimeout: 3 * time.Second,
+			Logger:             slog.New(slog.NewTextHandler(io.Discard, nil)),
+		}},
+		request:   vowifi.IMSRequest{Identity: vowifi.SIMIdentity{HomeMCC: "001", HomeMNC: "01"}},
+		transport: "udp",
+		conn:      connection,
+		callID:    "register-retransmit-test",
+	}
+	response, err := session.exchange(context.Background(), []byte("REGISTER test"), 7)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response.StatusCode != 200 || connection.writes != 2 {
+		t.Fatalf("response=%#v writes=%d, want SIP 200 after one retransmission", response, connection.writes)
 	}
 }
 

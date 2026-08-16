@@ -351,13 +351,15 @@ func TestStateProjectorPreservesConcreteDataplaneMode(t *testing.T) {
 	}
 	projector := StateProjector{Store: database}
 	if err := projector.Save(context.Background(), vowifi.State{
-		DeviceID:      "ec25",
-		Phase:         vowifi.PhaseIMSReady,
-		TunnelReady:   true,
-		IMSReady:      true,
-		TunnelName:    "vocat-swu-ec25",
-		DataplaneMode: "userspace",
-		UpdatedAt:     time.Now().UTC(),
+		DeviceID:           "ec25",
+		Phase:              vowifi.PhaseIMSReady,
+		TunnelReady:        true,
+		IMSReady:           true,
+		TunnelName:         "vocat-swu-ec25",
+		DataplaneMode:      "userspace",
+		CarrierProfile:     "vodafone-uk",
+		CarrierProfileFrom: "hplmn",
+		UpdatedAt:          time.Now().UTC(),
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -374,6 +376,13 @@ func TestStateProjectorPreservesConcreteDataplaneMode(t *testing.T) {
 	}
 	if tunnel["dataplane_mode"] != "userspace" {
 		t.Fatalf("tunnel dataplane mode = %#v", tunnel["dataplane_mode"])
+	}
+	var extra map[string]any
+	if err := json.Unmarshal(runtime.Extra, &extra); err != nil {
+		t.Fatal(err)
+	}
+	if extra["carrier_profile"] != "vodafone-uk" || extra["carrier_profile_from"] != "hplmn" {
+		t.Fatalf("carrier profile projection = %#v", extra)
 	}
 }
 

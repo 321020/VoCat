@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"vocat/internal/device"
+	"vocat/internal/vowifi"
 	"vocat/internal/vowifi/integration"
 )
 
@@ -28,6 +29,10 @@ func (mapper nativeQMIControllerMapper) ReadNativeQMIIdentity(ctx context.Contex
 		return "", "", "", "", "", err
 	}
 	return mapper.Devices.ReadNativeQMIIdentity(ctx, physical)
+}
+
+func (mapper nativeQMIControllerMapper) ReadSIMMetadata(ctx context.Context, id string) (vowifi.SIMMetadata, error) {
+	return mapper.Mapper.ReadSIMMetadata(ctx, id)
 }
 
 func (mapper nativeQMIControllerMapper) ProbeNativeQMIApplication(ctx context.Context, id, preference string) ([]byte, string, error) {

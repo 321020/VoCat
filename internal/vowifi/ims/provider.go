@@ -36,20 +36,24 @@ var (
 // LocalAddress is empty, Provider uses the corresponding value proven by the
 // TunnelSession. The default transport is TCP and the default port is 5060.
 type Config struct {
-	PCSCF               string
-	LocalAddress        string
-	Transport           string
-	TransportByPLMN     map[string]string
-	Port                int
-	RegistrationExpiry  time.Duration
-	TransactionTimeout  time.Duration
-	PrivateIdentity     string
-	PublicIdentity      string
-	UserAgent           string
-	SecurityMode        SecurityMode
-	IPSecInstaller      IPSecSAInstaller
-	ProtectedClientPort int
-	ProtectedServerPort int
+	PCSCF           string
+	LocalAddress    string
+	Transport       string
+	TransportByPLMN map[string]string
+	// AutoTransportFallback tries the alternate TCP/UDP transport only when
+	// the initial P-CSCF attempt produced no SIP response at all. A challenge
+	// or rejection is authoritative and is never retried as another transport.
+	AutoTransportFallback bool
+	Port                  int
+	RegistrationExpiry    time.Duration
+	TransactionTimeout    time.Duration
+	PrivateIdentity       string
+	PublicIdentity        string
+	UserAgent             string
+	SecurityMode          SecurityMode
+	IPSecInstaller        IPSecSAInstaller
+	ProtectedClientPort   int
+	ProtectedServerPort   int
 	// SMSCenter is an operator-provided fallback when the SIM leaves EF_SMSP
 	// and AT+CSCA empty. It must be an international or national digit string.
 	SMSCenter string
@@ -71,9 +75,11 @@ type Config struct {
 // transaction and 3GPP AKAv1-MD5 authentication. It has no SIP stack or
 // runtime dependency outside the Go standard library.
 type Provider struct {
-	aka       vowifi.AKAProvider
-	config    Config
-	installer IPSecSAInstaller
+	aka            vowifi.AKAProvider
+	config         Config
+	installer      IPSecSAInstaller
+	transportMu    sync.RWMutex
+	transportCache map[string]string
 }
 
 func NewProvider(aka vowifi.AKAProvider, config Config) (*Provider, error) {
@@ -88,7 +94,10 @@ func NewProvider(aka vowifi.AKAProvider, config Config) (*Provider, error) {
 	if installer == nil {
 		installer = defaultIPSecInstaller()
 	}
-	return &Provider{aka: aka, config: normalized, installer: installer}, nil
+	return &Provider{
+		aka: aka, config: normalized, installer: installer,
+		transportCache: make(map[string]string),
+	}, nil
 }
 
 func normalizeConfig(config Config) (Config, error) {
@@ -224,9 +233,16 @@ func (provider *Provider) Start(ctx context.Context, request vowifi.IMSRequest) 
 	if provider.config.PCSCF != "" && !pcscfProvenByTunnel(endpoint, tunnel.PCSCF, provider.config.Port) {
 		return nil, errors.New("ims: configured P-CSCF is not proven by the SWu tunnel")
 	}
-	transport := transportForIdentity(provider.config, request.Identity)
-	if transport == "" {
+	transport, carrierSelected := carrierTransportForIdentity(provider.config, request.Identity)
+	if cached := provider.cachedTransport(request.Identity); cached != "" {
+		transport = cached
+		carrierSelected = true
+	}
+	if transport == "" && !carrierSelected {
 		transport = transportHint
+	}
+	if transport == "" {
+		transport = provider.config.Transport
 	}
 	if transport == "" {
 		transport = "tcp"
@@ -250,29 +266,94 @@ func (provider *Provider) Start(ctx context.Context, request vowifi.IMSRequest) 
 		return nil, errors.New("ims: configured local address is not assigned by the SWu tunnel")
 	}
 
-	connection, err := dialSIP(ctx, transport, localAddress, 0, endpoint.address())
-	if err != nil {
-		return nil, fmt.Errorf("ims: connect to P-CSCF: %w", err)
+	transports := []string{transport}
+	if provider.config.AutoTransportFallback {
+		alternate := "udp"
+		if transport == "udp" {
+			alternate = "tcp"
+		}
+		transports = append(transports, alternate)
 	}
-	session, err := newSession(provider, request, identities, endpoint, transport, connection)
-	if err != nil {
-		_ = connection.Close()
-		return nil, err
-	}
-	if err := session.establish(ctx); err != nil {
+	var lastErr error
+	for attempt, candidate := range transports {
+		connection, dialErr := dialSIP(ctx, candidate, localAddress, 0, endpoint.address())
+		if dialErr != nil {
+			lastErr = fmt.Errorf("ims: connect to P-CSCF over %s: %w", candidate, dialErr)
+			if attempt+1 < len(transports) && ctx.Err() == nil {
+				provider.logTransportFallback(request.Identity, candidate, transports[attempt+1], lastErr)
+				continue
+			}
+			return nil, lastErr
+		}
+		session, sessionErr := newSession(provider, request, identities, endpoint, candidate, connection)
+		if sessionErr != nil {
+			_ = connection.Close()
+			return nil, sessionErr
+		}
+		establishErr := session.establish(ctx)
+		if establishErr == nil {
+			provider.rememberTransport(request.Identity, candidate)
+			if attempt > 0 {
+				provider.config.Logger.Info("IMS automatic transport fallback succeeded",
+					"carrier_profile", vowifi.ResolveCarrierProfile(request.Identity).ID,
+					"transport", candidate)
+			}
+			return session, nil
+		}
+		sipResponseObserved := session.evidence.LastSIPCode != 0
 		session.abort()
-		return nil, err
+		lastErr = establishErr
+		if sipResponseObserved || attempt+1 >= len(transports) || ctx.Err() != nil {
+			return nil, lastErr
+		}
+		provider.logTransportFallback(request.Identity, candidate, transports[attempt+1], establishErr)
 	}
-	return session, nil
+	return nil, lastErr
 }
 
 func transportForIdentity(config Config, identity vowifi.SIMIdentity) string {
-	mcc := strings.TrimSpace(identity.HomeMCC)
-	mnc := strings.TrimSpace(identity.HomeMNC)
-	if transport := config.TransportByPLMN[mcc+mnc]; transport != "" {
+	if transport, selected := carrierTransportForIdentity(config, identity); selected {
 		return transport
 	}
 	return config.Transport
+}
+
+func carrierTransportForIdentity(config Config, identity vowifi.SIMIdentity) (string, bool) {
+	mcc := strings.TrimSpace(identity.HomeMCC)
+	mnc := strings.TrimSpace(identity.HomeMNC)
+	if transport := config.TransportByPLMN[mcc+mnc]; transport != "" {
+		return transport, true
+	}
+	if transport := vowifi.ResolveCarrierProfile(identity).IMSTransport; transport != "" {
+		return transport, true
+	}
+	return "", false
+}
+
+func transportCacheKey(identity vowifi.SIMIdentity) string {
+	if iccid := strings.TrimSpace(identity.ICCID); iccid != "" {
+		return "iccid:" + iccid
+	}
+	return "plmn:" + strings.TrimSpace(identity.HomeMCC) + "/" + strings.TrimSpace(identity.HomeMNC)
+}
+
+func (provider *Provider) cachedTransport(identity vowifi.SIMIdentity) string {
+	provider.transportMu.RLock()
+	transport := provider.transportCache[transportCacheKey(identity)]
+	provider.transportMu.RUnlock()
+	return transport
+}
+
+func (provider *Provider) rememberTransport(identity vowifi.SIMIdentity, transport string) {
+	provider.transportMu.Lock()
+	provider.transportCache[transportCacheKey(identity)] = transport
+	provider.transportMu.Unlock()
+}
+
+func (provider *Provider) logTransportFallback(identity vowifi.SIMIdentity, from, to string, err error) {
+	provider.config.Logger.Warn("IMS P-CSCF did not respond; trying alternate SIP transport",
+		"carrier_profile", vowifi.ResolveCarrierProfile(identity).ID,
+		"from_transport", from, "to_transport", to, "error", err)
 }
 
 type identitySet struct {
@@ -298,7 +379,7 @@ func deriveIdentities(identity vowifi.SIMIdentity, config Config) (identitySet, 
 	domain := fmt.Sprintf("ims.mnc%s.mcc%s.3gppnetwork.org", mnc, mcc)
 	privateDomain := domain
 	publicDomain := domain
-	if vowifi.IsATT310280(identity) {
+	if vowifi.ResolveCarrierProfile(identity).IMSIdentityProfile == vowifi.IMSProfileATT {
 		// AT&T provisions the IMPI and IMPU in its ISIM domains rather than
 		// the generic 3GPP PLMN IMS domain.
 		domain = "one.att.net"
@@ -620,18 +701,11 @@ func newSession(
 }
 
 func securityEncryptionForIdentity(identity vowifi.SIMIdentity) string {
-	if usesO2GermanyIMSProfile(identity) {
-		// O2 Germany's P-CSCF advertises the 3GPP integrity-only ESP profile.
-		// Proposing aes-cbc is rejected before the AKA challenge is issued.
-		return "null"
-	}
-	return "aes-cbc"
+	return vowifi.ResolveCarrierProfile(identity).IMSIPSecEncryption
 }
 
 func usesO2GermanyIMSProfile(identity vowifi.SIMIdentity) bool {
-	mcc := strings.TrimSpace(identity.HomeMCC)
-	mnc := strings.TrimLeft(strings.TrimSpace(identity.HomeMNC), "0")
-	return mcc+mnc == "2623"
+	return vowifi.ResolveCarrierProfile(identity).IMSRegisterProfile == vowifi.IMSProfileO2Germany
 }
 
 func (session *Session) abort() {
@@ -951,19 +1025,33 @@ func (session *Session) exchange(ctx context.Context, request []byte, cseq uint3
 			method: "REGISTER",
 		})
 	}
-	deadline := time.Now().Add(session.provider.config.TransactionTimeout)
-	if contextDeadline, ok := ctx.Deadline(); ok && contextDeadline.Before(deadline) {
-		deadline = contextDeadline
+	transactionDeadline := time.Now().Add(session.provider.config.TransactionTimeout)
+	if contextDeadline, ok := ctx.Deadline(); ok && contextDeadline.Before(transactionDeadline) {
+		transactionDeadline = contextDeadline
 	}
 	readUDP := session.protectedUDP
 	protectedUDP := session.securityActive && session.transport == "udp" && readUDP != nil
-	if err := session.conn.SetDeadline(deadline); err != nil {
-		return nil, fmt.Errorf("ims: set SIP transaction deadline: %w", err)
-	}
-	if protectedUDP {
-		if err := readUDP.SetReadDeadline(deadline); err != nil {
-			return nil, fmt.Errorf("ims: set protected SIP receive deadline: %w", err)
+	setReadDeadline := func(deadline time.Time) error {
+		if err := session.conn.SetDeadline(deadline); err != nil {
+			return fmt.Errorf("ims: set SIP transaction deadline: %w", err)
 		}
+		if protectedUDP {
+			if err := readUDP.SetReadDeadline(deadline); err != nil {
+				return fmt.Errorf("ims: set protected SIP receive deadline: %w", err)
+			}
+		}
+		return nil
+	}
+	retransmitInterval := time.Duration(0)
+	readDeadline := transactionDeadline
+	if session.transport == "udp" {
+		retransmitInterval = sipMessageRetransmitT1
+		if candidate := time.Now().Add(retransmitInterval); candidate.Before(readDeadline) {
+			readDeadline = candidate
+		}
+	}
+	if err := setReadDeadline(readDeadline); err != nil {
+		return nil, err
 	}
 	stopCancellation := context.AfterFunc(ctx, func() {
 		_ = session.conn.SetDeadline(time.Now())
@@ -976,6 +1064,7 @@ func (session *Session) exchange(ctx context.Context, request []byte, cseq uint3
 		return nil, fmt.Errorf("ims: send SIP REGISTER: %w", err)
 	}
 
+	retransmissions := 0
 	for {
 		var response *sipResponse
 		var err error
@@ -1004,6 +1093,31 @@ func (session *Session) exchange(ctx context.Context, request []byte, cseq uint3
 			if contextErr := ctx.Err(); contextErr != nil {
 				return nil, contextErr
 			}
+			var networkErr net.Error
+			if retransmitInterval > 0 && errors.As(err, &networkErr) && networkErr.Timeout() &&
+				time.Now().Before(transactionDeadline) {
+				retransmitInterval *= 2
+				if retransmitInterval > sipMessageRetransmitMax {
+					retransmitInterval = sipMessageRetransmitMax
+				}
+				nextDeadline := time.Now().Add(retransmitInterval)
+				if nextDeadline.After(transactionDeadline) {
+					nextDeadline = transactionDeadline
+				}
+				// The previous read deadline has already expired and net.Conn applies
+				// it to writes too. Extend it before retransmitting.
+				if deadlineErr := setReadDeadline(nextDeadline); deadlineErr != nil {
+					return nil, deadlineErr
+				}
+				if _, writeErr := session.conn.Write(request); writeErr != nil {
+					return nil, fmt.Errorf("ims: retransmit SIP REGISTER: %w", writeErr)
+				}
+				retransmissions++
+				session.provider.config.Logger.Debug("IMS SIP REGISTER retransmitted",
+					"carrier_profile", vowifi.ResolveCarrierProfile(session.request.Identity).ID,
+					"transport", session.transport, "attempt", retransmissions)
+				continue
+			}
 			return nil, fmt.Errorf("ims: receive SIP REGISTER response: %w", err)
 		}
 		if !strings.EqualFold(strings.TrimSpace(response.value("Call-ID")), session.callID) {
@@ -1014,6 +1128,10 @@ func (session *Session) exchange(ctx context.Context, request []byte, cseq uint3
 			continue
 		}
 		if response.StatusCode >= 100 && response.StatusCode < 200 {
+			retransmitInterval = 0
+			if err := setReadDeadline(transactionDeadline); err != nil {
+				return nil, err
+			}
 			continue
 		}
 		return response, nil

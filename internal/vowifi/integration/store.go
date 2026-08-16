@@ -234,6 +234,8 @@ func (projector StateProjector) Save(
 		"pure_airplane_policy": state.PureAirplanePolicy,
 		"home_mcc":             state.HomeMCC,
 		"home_mnc":             state.HomeMNC,
+		"carrier_profile":      state.CarrierProfile,
+		"carrier_profile_from": state.CarrierProfileFrom,
 		"warnings":             state.Warnings,
 		"cleanup_errors":       state.CleanupErrors,
 		"attempt":              state.Attempt,

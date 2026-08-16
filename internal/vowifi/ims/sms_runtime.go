@@ -755,7 +755,10 @@ func (session *Session) SendSMS(ctx context.Context, request vowifi.SMSSubmitReq
 
 func smsCenterForIdentity(config Config, identity vowifi.SIMIdentity) string {
 	plmn := strings.TrimSpace(identity.HomeMCC) + strings.TrimSpace(identity.HomeMNC)
-	return strings.TrimSpace(config.SMSCenterByPLMN[plmn])
+	if configured := strings.TrimSpace(config.SMSCenterByPLMN[plmn]); configured != "" {
+		return configured
+	}
+	return strings.TrimSpace(vowifi.ResolveCarrierProfile(identity).SMSCenter)
 }
 
 func smsRecipientType(recipient string) string {
