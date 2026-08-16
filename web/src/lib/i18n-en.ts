@@ -1005,6 +1005,13 @@ export const EN_DICT: Record<string, string> = {
   "绑定:": "Bound:",
   "鉴权:": "Auth:",
   国家规则: "Country Rules",
+  "MCC 国家规则": "MCC Country Rules",
+  规则: "Rule",
+  代理已启用: "Proxy enabled",
+  代理已禁用: "Proxy disabled",
+  切换代理状态失败: "Failed to change proxy status",
+  "代理已禁用；显式 ICCID 绑定将停止使用该线路且不会转为直连，尚未固化的 MCC 默认规则会回退直连":
+    "Proxy disabled. Explicit ICCID bindings stop using this route without falling back to direct; MCC defaults not yet materialized fall back to direct.",
   新增代理: "Add Proxy",
   新增实例: "Add Instance",
   删除规则: "Delete Rule",
@@ -1013,6 +1020,22 @@ export const EN_DICT: Record<string, string> = {
   "UDP 中继地址：": "UDP Relay Address: ",
   "规则按 SIM 归属 MCC 解析国家。例如 US 会覆盖 MCC 310/311/312/313/314/315/316 等表内分组；没有配置规则的国家默认直连。需要重启 VoWiFi 生效。":
     "Country is resolved from the SIM home MCC. For example, US covers the listed MCC 310/311/312/313/314/315/316 groups; countries without a rule use direct connection. Restart VoWiFi to take effect.",
+  "未绑定 ICCID 的卡会按 SIM 归属 MCC 匹配国家规则；首次命中后会生成独立的 ICCID 绑定。ICCID 绑定优先，未命中任何规则时直连。":
+    "A SIM without an ICCID binding uses the country rule matching its home MCC. The first match creates an independent ICCID binding. ICCID bindings take priority; otherwise unmatched SIMs connect directly.",
+  "为每个国家的 MCC 选择代理。未配置时直连；已有 ICCID 绑定始终优先，首次命中国家规则后会生成独立的 ICCID 绑定。":
+    "Choose a proxy for each country's MCC. Unconfigured MCCs connect directly. Existing ICCID bindings always take priority, and the first country-rule match creates an independent ICCID binding.",
+  "同一国家只能属于一个代理；选择已分配的国家会将它迁移到当前代理。":
+    "Each country can belong to only one proxy. Selecting a country assigned elsewhere moves it to this proxy.",
+  "搜索国家、地区代码或 MCC": "Search country, region code, or MCC",
+  "国家 / 地区": "Country / Region",
+  当前规则: "Current Rule",
+  当前代理: "This Proxy",
+  直连: "Direct",
+  "没有匹配的国家或 MCC": "No matching country or MCC",
+  "管理 VoWiFi 上游代理、MCC 国家规则以及实体 SIM / eSIM Profile 绑定":
+    "Manage VoWiFi upstream proxies, MCC country rules, and physical SIM / eSIM profile bindings",
+  "点击“新增代理”创建 SOCKS5 上游代理，再配置国家规则或 ICCID 绑定；未匹配的卡默认直连。":
+    "Create a SOCKS5 upstream proxy, then configure country rules or ICCID bindings. Unmatched SIMs connect directly by default.",
   "VoWiFi 通过此 Socks5 代理连接运营商，实现跨区域本地 VoWiFi。":
     "VoWiFi connects to the carrier through this Socks5 proxy, enabling cross-region local VoWiFi. ",
 

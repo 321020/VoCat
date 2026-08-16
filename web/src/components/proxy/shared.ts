@@ -29,6 +29,7 @@ export interface UpstreamProbeResult {
 
 export interface UpstreamRow extends UpstreamProxy {
   bindingCount: number;
+  countryNames: string[];
 }
 
 export function ipv6Hint(): string {

@@ -74,6 +74,17 @@ func TestCountryForMCCUsesEmbeddedCountryIndex(t *testing.T) {
 	}
 }
 
+func TestMCCsByCountryReturnsCompleteIndependentGrouping(t *testing.T) {
+	grouped := MCCsByCountry()
+	if got := grouped["GB"]; len(got) != 2 || got[0] != "234" || got[1] != "235" {
+		t.Fatalf("GB MCCs = %#v", got)
+	}
+	grouped["GB"][0] = "999"
+	if country, ok := CountryForMCC("234"); !ok || country != "GB" {
+		t.Fatalf("mutating returned grouping changed embedded index: (%q, %v)", country, ok)
+	}
+}
+
 func TestCarrierForIMSIHandlesTwoAndThreeDigitMNCs(t *testing.T) {
 	tests := []struct {
 		imsi        string
