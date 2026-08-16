@@ -207,6 +207,38 @@ func TestVerifySwitchedICCIDReadsLiveModem(t *testing.T) {
 	client.assertDone(t)
 }
 
+func TestVerifySwitchedICCIDAttemptsAllowsProactiveRefreshToSettle(t *testing.T) {
+	const target = "89492026266006792824"
+	client := &transcriptClient{steps: []clientStep{
+		{command: "AT+CCID", response: okResponse("+CCID: 89441000400128014257F")},
+		{command: "AT+CCID", response: okResponse("+CCID: " + target + "F")},
+	}}
+	manager, id := newStartedTestManager(t, client)
+	if !manager.canVerifyProfileSwitchWithoutRestart(id) {
+		t.Fatal("AT modem should be eligible for refresh verification before restart")
+	}
+	if err := manager.verifySwitchedICCIDAttempts(context.Background(), id, target, 2, 0); err != nil {
+		t.Fatalf("verifySwitchedICCIDAttempts: %v", err)
+	}
+	client.assertDone(t)
+}
+
+func TestProfileSwitchRefreshProbeTimeoutIsBounded(t *testing.T) {
+	for _, test := range []struct {
+		command time.Duration
+		want    time.Duration
+	}{
+		{command: 100 * time.Millisecond, want: 3 * time.Second},
+		{command: 3 * time.Second, want: 7 * time.Second},
+		{command: 30 * time.Second, want: 10 * time.Second},
+	} {
+		manager := &Manager{commandTimeout: test.command}
+		if got := profileSwitchRefreshProbeTimeout(manager); got != test.want {
+			t.Fatalf("command timeout %s: probe timeout = %s, want %s", test.command, got, test.want)
+		}
+	}
+}
+
 func TestEUMManufacturerForWatchData(t *testing.T) {
 	if got := eumManufacturerForEID("35840574202500000125000001855764"); got != "WatchData Technologies Ltd." {
 		t.Fatalf("manufacturer = %q", got)

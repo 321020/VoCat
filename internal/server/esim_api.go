@@ -427,14 +427,15 @@ func (s *Server) handleEsimSwitch(w http.ResponseWriter, r *http.Request, config
 		return
 	}
 	// Profile operations run with RF disabled. The eUICC remains accessible in
-	// CFUN=4, and the recovery path reapplies CFUN=4 as soon as the AT port comes
-	// back after the mandatory modem reset.
+	// CFUN=4. Devices that consume the requested eUICC REFRESH stay online;
+	// older AT modems enter the reset recovery path and reapply CFUN=4 when the
+	// port returns.
 	if _, err := s.devices.SetFlight(r.Context(), physicalID, true); err != nil {
 		s.writeDeviceError(w, err)
 		return
 	}
-	// A confirmed profile switch includes the EC20 reset and a live ICCID read,
-	// which normally takes longer than the server's ordinary response deadline.
+	// A confirmed profile switch always includes a live ICCID read and may also
+	// include the EC20 reset fallback, so it can exceed the ordinary deadline.
 	controller := http.NewResponseController(w)
 	_ = controller.SetWriteDeadline(time.Time{})
 	aidHex := firstNonEmpty(request.AIDHex, request.AIDHexCamel)

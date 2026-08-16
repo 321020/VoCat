@@ -829,7 +829,8 @@ func (manager *Manager) ESIMSwitchProfile(ctx context.Context, id string, iccid 
 	// stays a sibling of A0, directly under BF31.
 	// EnableProfile is a non-idempotent commit. Once its APDU starts, a browser
 	// disconnect or reverse-proxy timeout must not cancel it halfway through and
-	// skip the modem reset, otherwise EC20 remains in SIM failure (+CME 13).
+	// skip post-commit recovery; EC20 may otherwise remain in SIM failure
+	// (+CME 13).
 	commitContext, cancelCommit := context.WithTimeout(context.WithoutCancel(ctx), csimAPDUTimeout)
 	payload, err := channel.es10(commitContext, der)
 	cancelCommit()
@@ -900,6 +901,32 @@ func (manager *Manager) ESIMSwitchProfile(ctx context.Context, id string, iccid 
 		return err
 	}
 	manager.markCachedProfileEnabled(id, iccid)
+	// EnableProfile already requested an eUICC REFRESH. Some AT modems consume
+	// that proactive command and expose the new subscription immediately, so a
+	// full CFUN=1,1 reset would only add downtime. Give those devices a short
+	// chance to prove that their SIM cache is current; modems that keep reporting
+	// the old ICCID continue through the established reboot/recovery path below.
+	if manager.canVerifyProfileSwitchWithoutRestart(id) {
+		probeContext, cancelProbe := context.WithTimeout(
+			context.WithoutCancel(ctx),
+			profileSwitchRefreshProbeTimeout(manager),
+		)
+		probeErr := manager.verifySwitchedICCIDAttempts(probeContext, id, iccid, 3, time.Second)
+		cancelProbe()
+		if probeErr == nil {
+			// Repopulate the cached snapshot while the AT transport is still live.
+			// Verification above is authoritative, so snapshot refresh remains
+			// best-effort just as it is after the legacy reboot path.
+			refreshContext, cancelRefresh := context.WithTimeout(
+				context.WithoutCancel(ctx),
+				manager.longTimeout,
+			)
+			_, _ = manager.Refresh(refreshContext, id)
+			cancelRefresh()
+			manager.unlockESIM()
+			return nil
+		}
+	}
 	// The eUICC accepted the target profile. Reset and repopulate the modem in
 	// a detached recovery so it survives an HTTP disconnect, but keep this API
 	// call pending until the live modem ICCID proves that the switch took effect.
@@ -1182,13 +1209,41 @@ func profileSwitchVerificationTimeout(manager *Manager) time.Duration {
 	return timeout
 }
 
+func profileSwitchRefreshProbeTimeout(manager *Manager) time.Duration {
+	// Allow both standard ICCID commands to consume one ordinary command
+	// timeout, plus a small window for the eUICC REFRESH to settle. Keep the
+	// optimisation bounded so an older modem reaches its required reboot soon.
+	timeout := manager.commandTimeout*2 + time.Second
+	if timeout < 3*time.Second {
+		return 3 * time.Second
+	}
+	if timeout > 10*time.Second {
+		return 10 * time.Second
+	}
+	return timeout
+}
+
+func (manager *Manager) canVerifyProfileSwitchWithoutRestart(id string) bool {
+	_, native, err := manager.nativeQMIControl(id)
+	return err == nil && !native && !manager.isPCSCDevice(id)
+}
+
 // verifySwitchedICCID performs a fresh baseband read after recovery. An ES10c
 // result of zero only means the eUICC accepted the operation; the state change
 // is finalized by REFRESH/reset. The UI must not report success until the modem
 // is actually exposing the requested ICCID.
 func (manager *Manager) verifySwitchedICCID(ctx context.Context, id, expected string) error {
+	return manager.verifySwitchedICCIDAttempts(ctx, id, expected, 6, 2*time.Second)
+}
+
+func (manager *Manager) verifySwitchedICCIDAttempts(
+	ctx context.Context,
+	id string,
+	expected string,
+	attempts int,
+	interval time.Duration,
+) error {
 	expected = strings.TrimSpace(expected)
-	const attempts = 6
 	var lastICCID string
 	var lastErr error
 	for attempt := 0; attempt < attempts; attempt++ {
@@ -1250,7 +1305,7 @@ func (manager *Manager) verifySwitchedICCID(ctx context.Context, id, expected st
 		}
 		if attempt+1 < attempts {
 			select {
-			case <-time.After(2 * time.Second):
+			case <-time.After(interval):
 			case <-ctx.Done():
 				return fmt.Errorf("esim: verify enabled profile %s: %w", expected, ctx.Err())
 			}
