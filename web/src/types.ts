@@ -144,6 +144,38 @@ export interface DashboardDevice {
   model?: string;
 }
 
+export interface DashboardHostInfo {
+  cpuModel: string;
+  boardModel: string;
+  memoryModel: string;
+  diskModel: string;
+}
+
+export interface DashboardHostPerf {
+  cpuPercent: number;
+  memoryPercent: number;
+  memoryUsedBytes: number;
+  memoryTotalBytes: number;
+  diskPercent: number;
+  diskUsedBytes: number;
+  diskTotalBytes: number;
+  netRxBps: number;
+  netTxBps: number;
+}
+
+export interface DashboardHost {
+  host: DashboardHostInfo;
+  perf: DashboardHostPerf;
+}
+
+// 仪表盘定时任务卡只关心名字与下次执行时间。
+export interface DashboardUpcomingTask {
+  id: number;
+  name: string;
+  enabled: boolean;
+  nextRunAt: string;
+}
+
 export interface DeviceOverview extends DeviceListItem {
   atPort?: string;
   audioDevice?: string;

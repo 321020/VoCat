@@ -142,6 +142,9 @@ func (s *Server) routeDeviceAPI(w http.ResponseWriter, r *http.Request) bool {
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"data": s.dashboardDevices()})
 		return true
+	case "dashboard/host":
+		s.handleDashboardHost(w, r)
+		return true
 	case "devices":
 		return s.handleDevices(w, r)
 	case "devices/discovered":

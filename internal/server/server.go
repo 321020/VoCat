@@ -82,6 +82,7 @@ type Server struct {
 	updateApplying      bool
 	https               *httpsmode.Manager
 	netTraffic          *liveNetTracker
+	hostStats           *hostStatsSampler
 	publicIPMu          sync.RWMutex
 	publicIPs           map[string]cachedPublicIP
 	automaticTasks      *automaticTaskScheduler
@@ -133,6 +134,7 @@ func New(options Options) (*Server, error) {
 		updateToken:         strings.TrimSpace(options.UpdateToken),
 		https:               options.HTTPS,
 		netTraffic:          newLiveNetTracker(),
+		hostStats:           newHostStatsSampler(),
 		publicIPs:           make(map[string]cachedPublicIP),
 		updateCheck:         update.CheckLatest,
 		updateApply:         update.ApplyLatest,
