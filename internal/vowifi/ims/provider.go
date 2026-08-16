@@ -53,6 +53,9 @@ type Config struct {
 	// SMSCenter is an operator-provided fallback when the SIM leaves EF_SMSP
 	// and AT+CSCA empty. It must be an international or national digit string.
 	SMSCenter string
+	// SMSCenterByPLMN provides narrow carrier fallbacks without applying one
+	// operator's service-centre address to every SIM.
+	SMSCenterByPLMN map[string]string
 	// OnSMS is invoked after a valid inbound RP-DATA/SMS-DELIVER has been
 	// decoded. Returning an error causes an RP-ERROR delivery report.
 	OnSMS func(context.Context, ReceivedSMS) error
@@ -127,6 +130,19 @@ func normalizeConfig(config Config) (Config, error) {
 		transportByPLMN[plmn] = transport
 	}
 	config.TransportByPLMN = transportByPLMN
+	smsCenterByPLMN := make(map[string]string, len(config.SMSCenterByPLMN))
+	for plmn, smsCenter := range config.SMSCenterByPLMN {
+		plmn = strings.TrimSpace(plmn)
+		smsCenter = strings.TrimSpace(smsCenter)
+		if !digitsBetween(plmn, 5, 6) {
+			return Config{}, fmt.Errorf("ims: invalid SMS service-centre PLMN %q", plmn)
+		}
+		if !validSMSCenter(smsCenter) {
+			return Config{}, fmt.Errorf("ims: invalid SMS service-centre address for PLMN %s", plmn)
+		}
+		smsCenterByPLMN[plmn] = smsCenter
+	}
+	config.SMSCenterByPLMN = smsCenterByPLMN
 	if strings.TrimSpace(config.UserAgent) == "" {
 		config.UserAgent = "vocat/1"
 	}
@@ -163,13 +179,15 @@ func normalizeConfig(config Config) (Config, error) {
 	config.PublicIdentity = strings.TrimSpace(config.PublicIdentity)
 	config.UserAgent = strings.TrimSpace(config.UserAgent)
 	config.SMSCenter = strings.TrimSpace(config.SMSCenter)
-	if config.SMSCenter != "" {
-		digits := strings.TrimPrefix(config.SMSCenter, "+")
-		if !digitsBetween(digits, 3, 20) {
-			return Config{}, errors.New("ims: configured SMS service-centre address is invalid")
-		}
+	if config.SMSCenter != "" && !validSMSCenter(config.SMSCenter) {
+		return Config{}, errors.New("ims: configured SMS service-centre address is invalid")
 	}
 	return config, nil
+}
+
+func validSMSCenter(value string) bool {
+	digits := strings.TrimPrefix(strings.TrimSpace(value), "+")
+	return digitsBetween(digits, 3, 20)
 }
 
 func (provider *Provider) Start(ctx context.Context, request vowifi.IMSRequest) (vowifi.IMSSession, error) {

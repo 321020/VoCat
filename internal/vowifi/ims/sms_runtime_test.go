@@ -158,6 +158,28 @@ func TestSupportsSMSContentType(t *testing.T) {
 	}
 }
 
+func TestSMSCenterForIdentityUsesExactPLMN(t *testing.T) {
+	config := Config{SMSCenterByPLMN: map[string]string{
+		"23410":  "+447802000332",
+		"234010": "+447802000332",
+		"23415":  "+447785016005",
+	}}
+	for _, test := range []struct {
+		mnc  string
+		want string
+	}{
+		{mnc: "10", want: "+447802000332"},
+		{mnc: "010", want: "+447802000332"},
+		{mnc: "15", want: "+447785016005"},
+		{mnc: "30", want: ""},
+	} {
+		identity := vowifi.SIMIdentity{HomeMCC: "234", HomeMNC: test.mnc}
+		if got := smsCenterForIdentity(config, identity); got != test.want {
+			t.Errorf("smsCenterForIdentity(234/%s) = %q, want %q", test.mnc, got, test.want)
+		}
+	}
+}
+
 func multipartSMSRequest(t *testing.T, payload []byte) *sipRequest {
 	t.Helper()
 	var body bytes.Buffer
@@ -396,12 +418,25 @@ func serveOutboundSMS(listener *net.UDPConn, nonce string, readyForClose chan<- 
 	if err != nil {
 		return err
 	}
+	firstMessage := append([]byte(nil), packet[:count]...)
+	firstRemote := remote.String()
+	// Exercise the RFC SIP/UDP non-INVITE transaction retransmission path by
+	// deliberately dropping the first MESSAGE request.
+	count, remote, err = listener.ReadFromUDP(packet)
+	if err != nil {
+		return err
+	}
+	if remote.String() != firstRemote || !bytes.Equal(packet[:count], firstMessage) {
+		return errors.New("outbound MESSAGE retransmission changed transaction bytes or source")
+	}
 	message, err := parseSIPPacket(packet[:count])
 	if err != nil || message.Request == nil {
 		return fmt.Errorf("outbound MESSAGE parse: %v", err)
 	}
 	if message.Request.Method != "MESSAGE" || message.Request.URI != "tel:+447785016005" ||
-		strings.ToLower(message.Request.value("Content-Type")) != smsContentType {
+		strings.ToLower(message.Request.value("Content-Type")) != smsContentType ||
+		message.Request.value("Request-Disposition") != "no-fork" ||
+		message.Request.value("Allow") != "MESSAGE" {
 		return fmt.Errorf("unexpected outbound MESSAGE %#v", message.Request)
 	}
 	rpdu, err := parseRPDU(message.Request.Body)

@@ -73,6 +73,26 @@ func TestTransportForIdentityPreservesLeadingZeroMNCs(t *testing.T) {
 	}
 }
 
+func TestNormalizeConfigValidatesSMSCentersByPLMN(t *testing.T) {
+	config, err := normalizeConfig(Config{SMSCenterByPLMN: map[string]string{
+		" 23410 ": " +447802000332 ",
+	}})
+	if err != nil {
+		t.Fatalf("normalizeConfig() error = %v", err)
+	}
+	if got := config.SMSCenterByPLMN["23410"]; got != "+447802000332" {
+		t.Fatalf("normalized O2 SMSC = %q", got)
+	}
+	for _, invalid := range []Config{
+		{SMSCenterByPLMN: map[string]string{"234": "+447802000332"}},
+		{SMSCenterByPLMN: map[string]string{"23410": "not-a-number"}},
+	} {
+		if _, err := normalizeConfig(invalid); err == nil {
+			t.Fatalf("normalizeConfig(%#v) succeeded", invalid.SMSCenterByPLMN)
+		}
+	}
+}
+
 func TestProviderRegisterAKAParseEvidenceAndClose(t *testing.T) {
 	for _, test := range []struct {
 		name         string

@@ -734,9 +734,14 @@ func newVoWiFiOrchestrator(
 			"23410":  "udp",
 			"234010": "udp",
 		},
-		// Some Vodafone UK SIM profiles leave AT+CSCA empty; Vodafone publishes
-		// this service-centre number for manual SMS setup.
-		SMSCenter: "+447785016005",
+		// Some UK SIM profiles leave EF_SMSP/AT+CSCA empty. Keep fallbacks scoped
+		// to their HPLMN so an O2/giffgaff SIM can never inherit Vodafone's SMSC.
+		SMSCenterByPLMN: map[string]string{
+			"23410":  "+447802000332",
+			"234010": "+447802000332",
+			"23415":  "+447785016005",
+			"234015": "+447785016005",
+		},
 		OnSMS: func(ctx context.Context, message ims.ReceivedSMS) error {
 			extra, _ := json.Marshal(map[string]any{
 				"transport":                "ims",
