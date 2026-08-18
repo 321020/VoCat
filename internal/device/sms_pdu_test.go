@@ -263,3 +263,21 @@ func TestParseCMGLPreservesUndecodableRecord(t *testing.T) {
 		t.Fatalf("messages = %#v", messages)
 	}
 }
+
+func TestDecode8BitPDUShowsHexPayload(t *testing.T) {
+	// SMS-DELIVER with no SMSC, from +12345, DCS=0xF5 (8-bit data,
+	// alphabet bits 0x0c), UDL=3. User data bytes are 0xAA 0xBB 0xCC.
+	// Built from the GSM-7 deliver vector by swapping the DCS to 0xF5
+	// and replacing the user data with three raw binary bytes.
+	message, err := decodeSMSPDU(
+		"000405912143F500F54210203040500003AABBCC",
+	)
+	if err != nil {
+		t.Fatalf("decode 8-bit: %v", err)
+	}
+	if message.Encoding != SMSEncoding8BitPDU ||
+		message.Text != "AABBCC" ||
+		message.RawUserData != "AABBCC" {
+		t.Fatalf("8-bit message = %#v", message)
+	}
+}
