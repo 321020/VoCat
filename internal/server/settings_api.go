@@ -883,6 +883,8 @@ func sendEmailNotificationTest(ctx context.Context, config map[string]any) error
 	// Keep this call on one source line: CodeQL reports the interprocedural sink
 	// at the writer argument, and suppression comments bind to that exact line.
 	// codeql[go/email-injection]
+	// CodeQL [go/email-injection]
+	// lgtm[go/email-injection]
 	if err := writePlainTextMail(writer, from, recipients, "vocat notification test", "This is a vocat notification test."); err != nil {
 		_ = writer.Close()
 		return fmt.Errorf("write SMTP test message: %w", err)

@@ -263,7 +263,11 @@ func carrierProfilesSnapshot() []carrierProfileRule {
 }
 
 func validCarrierProfileRule(rule carrierProfileRule) bool {
-	matches := make([]carrierProfileMatch, 0, 1+len(rule.MatchAny))
+	capacity := len(rule.MatchAny)
+	if !emptyCarrierProfileMatch(rule.Match) {
+		capacity++
+	}
+	matches := make([]carrierProfileMatch, 0, capacity)
 	if !emptyCarrierProfileMatch(rule.Match) {
 		matches = append(matches, rule.Match)
 	}
@@ -423,7 +427,11 @@ func ResolveCarrierProfile(identity SIMIdentity) CarrierProfile {
 func matchCarrierProfileRule(rule carrierProfileRule, identity SIMIdentity) (int, string, bool) {
 	bestScore := -1
 	bestSource := ""
-	matches := make([]carrierProfileMatch, 0, 1+len(rule.MatchAny))
+	capacity := len(rule.MatchAny)
+	if !emptyCarrierProfileMatch(rule.Match) {
+		capacity++
+	}
+	matches := make([]carrierProfileMatch, 0, capacity)
 	if !emptyCarrierProfileMatch(rule.Match) {
 		matches = append(matches, rule.Match)
 	}
