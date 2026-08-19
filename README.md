@@ -196,6 +196,11 @@ those fixed nodes and does not provide complete multi-device or hot-plug discove
 
 The GHCR image is published for `linux/amd64` and `linux/arm64`.
 
+> [!TIP]
+> **NAS / QNAP Container Station Deployment Note**:
+> On NAS operating systems like QNAP QTS / QuTS hero (Container Station), custom non-root administrator accounts and volume isolation mechanisms may cause Docker named volumes (e.g. `-v vocat-data:/opt/vocat/data`) to resolve to different isolated paths between the one-off `bootstrap-admin` initialization and the daemon service container, leading to "Incorrect password" errors during Web login.
+> For NAS environments, it is strongly recommended to replace named volumes with a host absolute path bind mount (e.g. `-v /share/Container/vocat/data:/opt/vocat/data` on QNAP) for both initialization and runtime to guarantee consistent SQLite database persistence.
+
 ### USB SIM readers
 
 USB SIM readers use the Linux PC/SC service. The one-click installer installs

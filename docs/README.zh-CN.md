@@ -175,6 +175,11 @@ docker run -d \
 
 GHCR 镜像发布为 `linux/amd64` 与 `linux/arm64`。
 
+> [!TIP]
+> **NAS / 威联通 (QNAP Container Station) 部署说明**：
+> 在威联通等 NAS 系统的 Container Station 下部署时，由于系统的非 Root 自定义管理员权限与卷隔离机制，使用 Docker 命名卷（如 `-v vocat-data:/opt/vocat/data`）在执行一次性初始化 `bootstrap-admin` 和启动常驻服务时，两者的卷极易被解析至不同的隔离路径，导致 Web 端登录时提示密码错误。
+> 建议在 NAS 环境下部署时，将 `-v vocat-data:/opt/vocat/data` 替换为宿主机的绝对路径挂载（例如威联通上的 `-v /share/Container/vocat/data:/opt/vocat/data`），以确保初始化与运行期读写同一个 SQLite 数据库文件。
+
 ### USB SIM 读卡器
 
 USB SIM 读卡器通过 Linux PC/SC 服务访问。一键安装脚本会在支持的软件包管理器上
