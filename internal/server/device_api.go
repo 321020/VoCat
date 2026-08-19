@@ -581,7 +581,7 @@ func (s *Server) handleDevicePath(
 		if !s.requirePhysicalDevice(w, physicalPresent) {
 			return true
 		}
-		return s.handleUSSD(w, r, physicalID)
+		return s.handleUSSD(w, r, config, physicalID)
 	case "actions/ussd/continue":
 		return s.handleUSSDContinue(w, r)
 	case "actions/ussd/cancel":
@@ -1142,7 +1142,34 @@ func validateATCommand(command string, force bool) error {
 	return nil
 }
 
-func (s *Server) handleUSSD(w http.ResponseWriter, r *http.Request, id string) bool {
+// imsUSSIController is the optional VoWiFi runtime capability used to route a
+// USSD request over IMS (3GPP TS 24.390) when VoWiFi is enabled and the IMS
+// session is registered. device.Manager does not implement it; the VoWiFi
+// runtime manager does.
+type imsUSSIController interface {
+	SendUSSI(context.Context, string, vowifi.USSISubmitRequest) (vowifi.USSISubmitResult, error)
+}
+
+// openUSSDSession mirrors device.Manager.openUSSDSession but lives on the HTTP
+// server so a USSI awaiting-input reply can hand back a token the existing
+// continue/cancel endpoints understand. The token is only a device handle;
+// the IMS session owns the actual dialog.
+func (s *Server) openUSSDSession(deviceID string) string {
+	return s.ussdSessions.open(deviceID)
+}
+
+// ussdSessionDevice resolves a USSD session token created by openUSSDSession
+// back to its device id, matching device.ErrUSSDSessionNotFound semantics.
+func (s *Server) ussdSessionDevice(sessionID string) (string, error) {
+	return s.ussdSessions.device(sessionID)
+}
+
+// dropUSSDSession releases a USSD session token.
+func (s *Server) dropUSSDSession(sessionID string) {
+	s.ussdSessions.drop(sessionID)
+}
+
+func (s *Server) handleUSSD(w http.ResponseWriter, r *http.Request, config store.Device, id string) bool {
 	if !requireMethod(w, r, http.MethodPost) {
 		return true
 	}
@@ -1156,19 +1183,59 @@ func (s *Server) handleUSSD(w http.ResponseWriter, r *http.Request, id string) b
 	}
 	ctx, cancel := actionRequestContext(r.Context(), request.TimeoutMs)
 	defer cancel()
+	// VoWiFi-first: when VoWiFi owns the radio the cellular CUSD path has no
+	// network to talk to (CFUN=4 returns +CME ERROR: 30). Route over IMS/USSI
+	// when the IMS session is registered, and fall back to cellular CUSD only
+	// when USSI is not ready or the runtime is unavailable.
+	if config.VoWiFiEnabled && s.vowifi != nil {
+		sender, canSendIMS := s.vowifi.(imsUSSIController)
+		if canSendIMS {
+			if state, stateErr := s.vowifi.State(id); stateErr == nil && state.IMSReady {
+				result, sendErr := sender.SendUSSI(ctx, id, vowifi.USSISubmitRequest{Code: request.Command})
+				if sendErr == nil {
+					writeUSSDResult(w, ussdResultFromUSSI(result, id, s))
+					return true
+				}
+				if !errors.Is(sendErr, vowifi.ErrUSSINotReady) {
+					s.writeDeviceError(w, sendErr)
+					return true
+				}
+				// ErrUSSINotReady: fall through to cellular CUSD.
+			}
+		}
+	}
 	result, err := s.devices.USSD(ctx, id, request.Command)
 	if err != nil {
 		s.writeDeviceError(w, err)
 		return true
 	}
-	writeJSON(w, http.StatusOK, map[string]any{
-		"data": map[string]any{
-			"result": result.Text,
-			"raw":    result.Raw,
-			"dcs":    result.DCS,
-		},
-	})
+	writeUSSDResult(w, result)
 	return true
+}
+
+// ussdResultFromUSSI maps a USSI result onto the device.USSDResult shape that
+// writeUSSDResult expects. A USSI awaiting-input reply opens a server-side
+// session token via the device manager so the existing continue/cancel
+// endpoints keep working; the token maps back to the device and the continue
+// handler re-enters the USSI path through the same imsUSSIController.
+func ussdResultFromUSSI(result vowifi.USSISubmitResult, deviceID string, server *Server) device.USSDResult {
+	mapped := device.USSDResult{
+		Text:         result.Text,
+		Raw:          result.Raw,
+		DCS:          result.DCS,
+		Status:       result.Status,
+		Continueable: result.Continueable,
+	}
+	// USSI has no inline continue/terminate flag in the 2xx response body, so
+	// treat any non-empty successful reply as potentially multi-round. The cancel
+	// endpoint drops the local token; the network will time the dialog out if it
+	// was actually final.
+	if mapped.Status != "failed" && mapped.Status != "terminated" && mapped.Text != "" {
+		mapped.Status = "awaiting_input"
+		mapped.Continueable = true
+		mapped.SessionID = server.openUSSDSession(deviceID)
+	}
+	return mapped
 }
 
 func (s *Server) handleFlightMode(w http.ResponseWriter, r *http.Request, config store.Device, physicalID string) bool {
