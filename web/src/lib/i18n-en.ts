@@ -948,6 +948,7 @@ export const EN_DICT: Record<string, string> = {
   "通知重试发送失败": "Notification resend failed",
   "通知重试发送成功": "Notification resent",
   "配置存储在数据库中，部分字段可能需要重启生效": "Configuration is stored in the database; some fields may require a restart to take effect",
+  "配置策略": "Profile Policy",
   "配置已保存，但部分变更需要重启服务后生效": "Configuration saved, but some changes require a service restart",
   "采样中断": "Sampling interrupted",
   "重启中": "Rebooting",

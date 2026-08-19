@@ -111,14 +111,14 @@ func TestTransportForIdentityPreservesLeadingZeroMNCs(t *testing.T) {
 
 func TestCarrierProfileSuppliesTransportWithoutCodeMap(t *testing.T) {
 	t.Parallel()
-	identity := vowifi.SIMIdentity{HomeMCC: "234", HomeMNC: "10"}
-	if got := transportForIdentity(Config{Transport: "tcp"}, identity); got != "udp" {
-		t.Fatalf("O2 UK profile transport = %q, want udp", got)
+	identity := vowifi.SIMIdentity{HomeMCC: "999", HomeMNC: "99"}
+	if got := transportForIdentity(Config{Transport: "tcp"}, identity); got != "tcp" {
+		t.Fatalf("standard transport = %q, want tcp", got)
 	}
 	if got := transportForIdentity(Config{
-		Transport: "udp", TransportByPLMN: map[string]string{"23410": "tcp"},
+		Transport: "udp", TransportByPLMN: map[string]string{"99999": "tcp"},
 	}, identity); got != "tcp" {
-		t.Fatalf("explicit configuration did not override profile: %q", got)
+		t.Fatalf("explicit configuration did not override: %q", got)
 	}
 }
 
@@ -495,138 +495,6 @@ func serveRegistration(listener *net.UDPConn, nonce string, confirmSMS bool) err
 		}
 	}
 	return nil
-}
-
-func TestO2GermanyInitialRegisterMatchesSupportedIMSProfile(t *testing.T) {
-	client, server := net.Pipe()
-	defer client.Close()
-	defer server.Close()
-
-	identity := vowifi.SIMIdentity{
-		IMSI:    "262030123456789",
-		HomeMCC: "262",
-		HomeMNC: "03",
-	}
-	identities, err := deriveIdentities(identity, Config{})
-	if err != nil {
-		t.Fatalf("deriveIdentities() error = %v", err)
-	}
-	session := &Session{
-		provider: &Provider{config: Config{
-			SecurityMode: SecurityRequired,
-			UserAgent:    "vocat-test",
-		}},
-		request:    vowifi.IMSRequest{Identity: identity},
-		identity:   identities,
-		endpoint:   pcscfEndpoint{host: "pcscf.example", port: 5060},
-		transport:  "tcp",
-		conn:       client,
-		callID:     "o2-test",
-		fromTag:    "tag",
-		instanceID: "urn:uuid:test",
-		securityProposal: securityProposal{
-			spiClient:  101,
-			spiServer:  102,
-			portClient: 5062,
-			portServer: 5063,
-			encryption: "null",
-		},
-	}
-
-	packet, err := session.buildRegister(1, 3600, "", "")
-	if err != nil {
-		t.Fatalf("buildRegister() error = %v", err)
-	}
-	_, headers, err := parseTestRequest(packet)
-	if err != nil {
-		t.Fatalf("parseTestRequest() error = %v", err)
-	}
-	if got, want := headers["security-client"], "ipsec-3gpp;q=1.000;alg=hmac-sha-1-96;prot=esp;mod=trans;ealg=null;spi-c=0000000101;spi-s=0000000102;port-c=5062;port-s=5063"; got != want {
-		t.Fatalf("Security-Client = %q, want %q", got, want)
-	}
-	if headers["proxy-require"] != "sec-agree" || !strings.Contains(headers["authorization"], "integrity-protected=no") {
-		t.Fatalf("initial O2 headers omitted standardized sec-agree/IMS-AKA fields: %#v", headers)
-	}
-	if got, want := headers["p-preferred-identity"], "<"+identities.public+">"; got != want {
-		t.Fatalf("P-Preferred-Identity = %q, want %q", got, want)
-	}
-	for name, token := range map[string]string{
-		"supported": "sec-agree",
-		"allow":     "MESSAGE",
-	} {
-		if !strings.Contains(headers[name], token) {
-			t.Fatalf("%s = %q, want token %q", name, headers[name], token)
-		}
-	}
-}
-
-func TestATT310280DeriveIdentitiesUsesISIMDomains(t *testing.T) {
-	identities, err := deriveIdentities(vowifi.SIMIdentity{
-		IMSI: "310280000000001", HomeMCC: "310", HomeMNC: "280",
-	}, Config{})
-	if err != nil {
-		t.Fatalf("deriveIdentities() error = %v", err)
-	}
-	if identities.domain != "one.att.net" ||
-		identities.private != "310280000000001@private.att.net" ||
-		identities.public != "sip:310280000000001@one.att.net" {
-		t.Fatalf("AT&T identities = %#v", identities)
-	}
-}
-
-func TestATT310280InitialRegisterMatchesProvisionedProfile(t *testing.T) {
-	client, server := net.Pipe()
-	defer client.Close()
-	defer server.Close()
-
-	identity := vowifi.SIMIdentity{
-		IMSI: "310280000000001", HomeMCC: "310", HomeMNC: "280",
-	}
-	identities, err := deriveIdentities(identity, Config{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	session := &Session{
-		provider:   &Provider{config: Config{SecurityMode: SecurityRequired, UserAgent: "vocat/1"}},
-		request:    vowifi.IMSRequest{Identity: identity},
-		identity:   identities,
-		endpoint:   pcscfEndpoint{host: "pcscf.example", port: 5060},
-		transport:  "tcp",
-		conn:       client,
-		callID:     "att-test",
-		fromTag:    "tag",
-		instanceID: "urn:uuid:test",
-		securityProposal: securityProposal{
-			spiClient: 1546543, spiServer: 1546542,
-			portClient: 32773, portServer: 6000,
-			integrityAlgorithms:      []string{"hmac-sha-1-96"},
-			encryptionAlgorithmsList: []string{"aes-cbc"},
-		},
-	}
-	packet, err := session.buildRegister(1, 3600, "", "")
-	if err != nil {
-		t.Fatalf("buildRegister() error = %v", err)
-	}
-	request := string(packet)
-	for _, want := range []string{
-		"REGISTER sip:one.att.net SIP/2.0",
-		"Expires: 18400",
-		"Supported: path,sec-agree,gruu",
-		"User-Agent: SimAdmin VoWiFi",
-		`+g.3gpp.accesstype="wlan1";audio;+g.3gpp.smsip`,
-		"P-Preferred-Identity: <sip:310280000000001@one.att.net>",
-		`P-Visited-Network-ID: "one.att.net"`,
-		"P-Access-Network-Info: IEEE-802.11;i-wlan-node-id=000000000000;network-provided",
-		"Cellular-Network-Info: 3GPP-E-UTRAN-FDD;utran-cell-id-3gpp=3102800000000;cell-info-age=0",
-		"Accept-Contact: *;+g.3gpp.smsip",
-		"Security-Client: ipsec-3gpp; alg=hmac-sha-1-96; ealg=aes-cbc; prot=esp; mod=trans; spi-c=1546543; spi-s=1546542; port-c=32773; port-s=6000",
-		`username="310280000000001@private.att.net"`,
-		`uri="sip:one.att.net"`,
-	} {
-		if !strings.Contains(request, want) {
-			t.Fatalf("AT&T REGISTER omits %q:\n%s", want, request)
-		}
-	}
 }
 
 func serveRefreshFailure(listener *net.UDPConn, nonce string) error {

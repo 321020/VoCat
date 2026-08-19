@@ -176,13 +176,13 @@ func TestOutgoingLocalNumberUsesIMSPhoneContextAndMMTelHeaders(t *testing.T) {
 	wire := <-wireResult
 
 	for _, expected := range []string{
-		"INVITE sip:888@ims.mnc033.mcc234.3gppnetwork.org SIP/2.0\r\n",
-		"To: <sip:888@ims.mnc033.mcc234.3gppnetwork.org>\r\n",
+		"INVITE tel:888;phone-context=ims.mnc033.mcc234.3gppnetwork.org SIP/2.0\r\n",
+		"To: <tel:888;phone-context=ims.mnc033.mcc234.3gppnetwork.org>\r\n",
 		"From: <sip:+447700900123@ims.mnc033.mcc234.3gppnetwork.org>;tag=local-tag\r\n",
 		"P-Preferred-Identity: <tel:+447700900123>\r\n",
 		"P-Preferred-Service: " + mmtelServiceURN + "\r\n",
 		`Accept-Contact: *;+g.3gpp.icsi-ref="` + mmtelFeatureTag + `"` + "\r\n",
-		"P-Access-Network-Info: IEEE-802.11;i-wlan-node-id=000000000000;country=GB;network-provided\r\n",
+		"P-Access-Network-Info: IEEE-802.11;i-wlan-node-id=000000000000;network-provided\r\n",
 		"User-Agent: VoCat Test\r\n",
 		"Accept: application/sdp\r\n",
 	} {

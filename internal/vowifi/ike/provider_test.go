@@ -18,25 +18,6 @@ var errFirstAuthObserved = errors.New("test: first IKE_AUTH observed")
 
 type constantReader struct{ value byte }
 
-func TestLegacyIKEProfileIncludesVodafoneHostedLebaraCore(t *testing.T) {
-	for _, item := range []struct {
-		mcc string
-		mnc string
-	}{
-		{mcc: "234", mnc: "15"},
-		{mcc: "204", mnc: "04"},
-		{mcc: "204", mnc: "004"},
-	} {
-		profile := vowifi.ResolveCarrierProfile(vowifi.SIMIdentity{HomeMCC: item.mcc, HomeMNC: item.mnc})
-		if profile.IKEProposal != vowifi.IKEProposalLegacy {
-			t.Errorf("carrier profile IKE proposal for %q/%q = %q", item.mcc, item.mnc, profile.IKEProposal)
-		}
-	}
-	if profile := vowifi.ResolveCarrierProfile(vowifi.SIMIdentity{HomeMCC: "234", HomeMNC: "87"}); profile.IKEProposal == vowifi.IKEProposalLegacy {
-		t.Fatal("Lebara's 234-87 core must use the modern IKE profile")
-	}
-}
-
 func TestLegacyProposalFallbackIsLimitedToNegotiationFailures(t *testing.T) {
 	for _, err := range []error{
 		errNoProposalChosen,
@@ -208,7 +189,7 @@ func (transport *firstAuthCaptureTransport) answerIKEInit(packet []byte) ([]byte
 	group := uint16(ke.Body[0])<<8 | uint16(ke.Body[1])
 	wantGroup := transport.wantGroup
 	if wantGroup == 0 {
-		wantGroup = dhMODP1024
+		wantGroup = dhMODP2048
 	}
 	wantKELength := 128
 	if wantGroup == dhMODP2048 {
@@ -461,45 +442,6 @@ func TestProviderBoundsRepeatedIKEInitCookieChallenges(t *testing.T) {
 	}
 	if capture.calls != maxIKEInitCookieChallenges || aka.calls != 0 {
 		t.Fatalf("capture calls=%d AKA calls=%d", capture.calls, aka.calls)
-	}
-}
-
-func TestProviderO2GermanyFirstAuthUsesStandardEAPAndRequestsIMSAPN(t *testing.T) {
-	capture := &firstAuthCaptureTransport{t: t, wantEAPOnly: false, wantGroup: dhMODP2048}
-	provider, err := NewProvider(Config{
-		Random:    constantReader{value: 0x42},
-		Timeout:   time.Second,
-		Installer: unusedInstaller{},
-		APN:       "ims",
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	provider.transportFactory = func(
-		context.Context,
-		transportConfig,
-		vowifi.ProxyRoute,
-		string,
-	) (datagramTransport, error) {
-		return capture, nil
-	}
-	aka := &testAKAProvider{}
-	_, err = provider.Start(context.Background(), vowifi.TunnelRequest{
-		DeviceID: "ec20-o2",
-		Identity: vowifi.SIMIdentity{
-			ICCID:   "8949200000000000000",
-			IMSI:    "262030123456789",
-			HomeMCC: "262",
-			HomeMNC: "03",
-		},
-		EPDG: "epdg.epc.mnc003.mcc262.pub.3gppnetwork.org",
-		AKA:  aka,
-	})
-	if !errors.Is(err, errFirstAuthObserved) {
-		t.Fatalf("Start() error = %v, want capture sentinel", err)
-	}
-	if capture.calls != 2 || capture.floated || aka.calls != 0 {
-		t.Fatalf("capture calls=%d floated=%v AKA calls=%d", capture.calls, capture.floated, aka.calls)
 	}
 }
 

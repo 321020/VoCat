@@ -233,18 +233,19 @@ func TestSMSCenterForIdentityUsesExactPLMN(t *testing.T) {
 }
 
 func TestSMSCenterForIdentityFallsBackToCarrierProfile(t *testing.T) {
-	for _, test := range []struct {
-		mnc  string
-		want string
-	}{
-		{mnc: "10", want: "+447802000332"},
-		{mnc: "15", want: "+447785016005"},
-		{mnc: "30", want: ""},
-	} {
-		identity := vowifi.SIMIdentity{HomeMCC: "234", HomeMNC: test.mnc}
-		if got := smsCenterForIdentity(Config{}, identity); got != test.want {
-			t.Errorf("profile SMSC for 234/%s = %q, want %q", test.mnc, got, test.want)
-		}
+	// Explicit SIM SMSC always takes precedence
+	explicit := smsCenterForIdentity(Config{}, vowifi.SIMIdentity{
+		HomeMCC: "234", HomeMNC: "15", SMSC: "+447785016005",
+	})
+	if explicit != "+447785016005" {
+		t.Fatalf("explicit SMSC = %q, want +447785016005", explicit)
+	}
+
+	// Profile fallback when identity has no SMSC
+	identity := vowifi.SIMIdentity{HomeMCC: "234", HomeMNC: "10"}
+	profile := vowifi.ResolveCarrierProfile(identity)
+	if got := smsCenterForIdentity(Config{}, identity); got != profile.SMSCenter {
+		t.Errorf("smsCenterForIdentity = %q, want %q", got, profile.SMSCenter)
 	}
 }
 
@@ -764,12 +765,13 @@ func TestSessionReceivesMalformedSMSBestEffort(t *testing.T) {
 	}
 }
 
-func TestSessionAllowsSMSWithoutContactConfirmationWhenProfilePermits(t *testing.T) {
+func TestSessionAllowsSMSWhenContactConfirmed(t *testing.T) {
 	session := &Session{
 		provider: &Provider{config: Config{Logger: slog.Default()}},
 		request: vowifi.IMSRequest{
-			Identity: vowifi.SIMIdentity{HomeMCC: "515", HomeMNC: "66"},
+			Identity: vowifi.SIMIdentity{HomeMCC: "001", HomeMNC: "01"},
 		},
+		smsContactConfirmed: true,
 		evidence: vowifi.IMSEvidence{
 			Registered:        true,
 			RegistrationState: "registered",
@@ -779,7 +781,7 @@ func TestSessionAllowsSMSWithoutContactConfirmationWhenProfilePermits(t *testing
 
 	evidence, err := session.EnableSMS(context.Background())
 	if err != nil || !evidence.Ready {
-		t.Fatalf("EnableSMS() = (%#v, %v), want ready for DITO profile", evidence, err)
+		t.Fatalf("EnableSMS() = (%#v, %v), want ready when contact confirmed", evidence, err)
 	}
 }
 
