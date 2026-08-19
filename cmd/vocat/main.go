@@ -759,6 +759,7 @@ func newVoWiFiOrchestrator(
 				"service_center_timestamp": message.ServiceCenterTimestamp,
 				"raw_rpdu":                 message.RawRPDU,
 				"raw_tpdu":                 message.RawTPDU,
+				"decode_error":             message.DecodeError,
 			})
 			partsTotal := 1
 			if message.Concat != nil && message.Concat.Total > 0 {

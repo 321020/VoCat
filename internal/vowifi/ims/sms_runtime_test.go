@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"log/slog"
 	"mime/multipart"
 	"net"
 	"net/textproto"
@@ -721,6 +722,86 @@ func serveInboundUSSI(listener *net.UDPConn, nonce string, readyForClose chan<- 
 	return err
 }
 
+func TestSessionReceivesMalformedSMSBestEffort(t *testing.T) {
+	request := &sipRequest{
+		Headers: map[string][]string{
+			"content-type":              {smsContentType},
+			"content-transfer-encoding": {"binary"},
+			"call-id":                   {"malformed-test"},
+			"p-asserted-identity":       {"<sip:ipsmgw@example.test>"},
+		},
+		Body: []byte{0x01, 0x2a, 0x00, 0x00, 0x03, 0xff, 0xff, 0xff},
+	}
+
+	received := make(chan ReceivedSMS, 1)
+	session := &Session{
+		provider: &Provider{config: Config{
+			Logger: slog.Default(),
+			OnSMS: func(_ context.Context, message ReceivedSMS) error {
+				received <- message
+				return nil
+			},
+		}},
+		request:         vowifi.IMSRequest{DeviceID: "ec20", Identity: vowifi.SIMIdentity{IMSI: "001010123456789", HomeMCC: "001", HomeMNC: "01"}},
+		conn:            &fakeConn{},
+		transactions:    make(map[sipTransactionKey]chan *sipResponse),
+		fromTag:         "tag",
+		nextRPReference: 1,
+	}
+
+	session.processSMSMessage(request)
+
+	select {
+	case message := <-received:
+		if message.DecodeError == "" {
+			t.Fatal("expected DecodeError to be set")
+		}
+		if message.RawRPDU == "" || message.RawTPDU == "" {
+			t.Fatalf("expected raw payloads to be preserved, got %#v", message)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for best-effort SMS callback")
+	}
+}
+
+func TestSessionAllowsSMSWithoutContactConfirmationWhenProfilePermits(t *testing.T) {
+	session := &Session{
+		provider: &Provider{config: Config{Logger: slog.Default()}},
+		request: vowifi.IMSRequest{
+			Identity: vowifi.SIMIdentity{HomeMCC: "515", HomeMNC: "66"},
+		},
+		evidence: vowifi.IMSEvidence{
+			Registered:        true,
+			RegistrationState: "registered",
+		},
+		expiresAt: time.Now().Add(time.Hour),
+	}
+
+	evidence, err := session.EnableSMS(context.Background())
+	if err != nil || !evidence.Ready {
+		t.Fatalf("EnableSMS() = (%#v, %v), want ready for DITO profile", evidence, err)
+	}
+}
+
+func TestSessionRequiresSMSContactConfirmationByDefault(t *testing.T) {
+	session := &Session{
+		provider: &Provider{config: Config{Logger: slog.Default()}},
+		request: vowifi.IMSRequest{
+			Identity: vowifi.SIMIdentity{HomeMCC: "001", HomeMNC: "01"},
+		},
+		evidence: vowifi.IMSEvidence{
+			Registered:        true,
+			RegistrationState: "registered",
+		},
+		expiresAt: time.Now().Add(time.Hour),
+	}
+
+	evidence, err := session.EnableSMS(context.Background())
+	if !errors.Is(err, ErrSMSCapabilityNotConfirmed) || evidence.Ready {
+		t.Fatalf("EnableSMS() = (%#v, %v), want not-ready", evidence, err)
+	}
+}
+
 func buildUSSDBody(text string) []byte {
 	encoded, dcs, err := encodeUSSDBody(text)
 	if err != nil {
@@ -858,3 +939,20 @@ func serveOutboundUSSI(listener *net.UDPConn, nonce string, readyForClose chan<-
 	_, err = listener.WriteToUDP(testResponse(200, "OK", registerCallID, headers["cseq"], nil), remote)
 	return err
 }
+
+// fakeConn is a minimal net.Conn useful for tests that only need LocalAddr
+// to succeed and do not care about the actual SIP MESSAGE delivery report.
+type fakeConn struct{}
+
+func (*fakeConn) Read([]byte) (int, error)         { return 0, errors.New("fakeConn: closed") }
+func (*fakeConn) Write(source []byte) (int, error) { return len(source), nil }
+func (*fakeConn) Close() error                     { return nil }
+func (*fakeConn) LocalAddr() net.Addr {
+	return &net.UDPAddr{IP: net.IPv4(192, 0, 2, 10), Port: 5060}
+}
+func (*fakeConn) RemoteAddr() net.Addr {
+	return &net.UDPAddr{IP: net.IPv4(192, 0, 2, 20), Port: 5060}
+}
+func (*fakeConn) SetDeadline(time.Time) error      { return nil }
+func (*fakeConn) SetReadDeadline(time.Time) error  { return nil }
+func (*fakeConn) SetWriteDeadline(time.Time) error { return nil }
