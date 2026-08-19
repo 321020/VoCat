@@ -891,10 +891,8 @@ func (session *Session) parseUSSIReply(response *sipResponse) (string, *int) {
 }
 
 func (session *Session) ussiTarget() string {
-	if number, _, ok := vowifi.ExtractAssociatedMSISDN(session.evidence); ok {
-		if normalized := normalizeE164(number); normalized != "" {
-			return "tel:" + normalized
-		}
+	if domain := strings.TrimSpace(session.identity.domain); domain != "" {
+		return "sip:" + domain
 	}
 	return session.identity.public
 }

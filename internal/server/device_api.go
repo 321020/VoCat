@@ -1183,6 +1183,37 @@ func (s *Server) handleUSSD(w http.ResponseWriter, r *http.Request, config store
 	}
 	ctx, cancel := actionRequestContext(r.Context(), request.TimeoutMs)
 	defer cancel()
+
+	cmd := strings.TrimSpace(request.Command)
+	if cmd == "*#06#" || cmd == "*#06" {
+		imei := config.ModemIMEI
+		if imei == "" {
+			if runtime, runtimeErr := s.store.DeviceRuntime(ctx, id); runtimeErr == nil {
+				imei = runtime.IMEI
+			}
+		}
+		if imei != "" {
+			writeUSSDResult(w, device.USSDResult{
+				Text:   fmt.Sprintf("IMEI: %s", imei),
+				Status: "final",
+			})
+			return true
+		}
+	}
+	if cmd == "*#0000#" || cmd == "*#0000" {
+		firmware := ""
+		if runtime, runtimeErr := s.store.DeviceRuntime(ctx, id); runtimeErr == nil {
+			firmware = runtime.Firmware
+		}
+		if firmware != "" {
+			writeUSSDResult(w, device.USSDResult{
+				Text:   fmt.Sprintf("Software Version: %s", firmware),
+				Status: "final",
+			})
+			return true
+		}
+	}
+
 	// VoWiFi-first: when VoWiFi owns the radio the cellular CUSD path has no
 	// network to talk to (CFUN=4 returns +CME ERROR: 30). Route over IMS/USSI
 	// when the IMS session is registered, and fall back to cellular CUSD only
