@@ -411,7 +411,7 @@ func ResolveCarrierProfile(identity SIMIdentity) CarrierProfile {
 			continue
 		}
 		bestScore = score
-		resolved = applyCarrierProfileRule(resolved, rule, source)
+		resolved = applyCarrierProfileRule(resolved, rule, source, identity)
 	}
 	return resolved
 }
@@ -441,16 +441,18 @@ func matchCarrierProfileRule(rule carrierProfileRule, identity SIMIdentity) (int
 func matchCarrierProfile(match carrierProfileMatch, identity SIMIdentity) (int, string, bool) {
 	score := 0
 	sources := make([]string, 0, 6)
+	hasHomePLMNMatch := false
 	if len(match.HomePLMNs) > 0 {
 		wanted := canonicalPLMN(identity.HomeMCC, identity.HomeMNC)
-		if wanted == "" || !matchesAny(match.HomePLMNs, func(value string) bool {
+		if wanted != "" && matchesAny(match.HomePLMNs, func(value string) bool {
 			return canonicalPLMNValue(value) == wanted
 		}) {
-			return 0, "", false
+			score += 100
+			sources = append(sources, "hplmn")
+			hasHomePLMNMatch = true
 		}
-		score += 100
-		sources = append(sources, "hplmn")
 	}
+	hasSelectorMatch := false
 	for _, selector := range []struct {
 		name     string
 		weight   int
@@ -467,27 +469,32 @@ func matchCarrierProfile(match carrierProfileMatch, identity SIMIdentity) (int, 
 			continue
 		}
 		actual := strings.TrimSpace(selector.actual)
-		if actual == "" || !matchesAny(selector.values, func(prefix string) bool {
+		if actual != "" && matchesAny(selector.values, func(prefix string) bool {
 			prefix = strings.TrimSpace(prefix)
 			if selector.foldCase {
 				return strings.HasPrefix(strings.ToLower(actual), strings.ToLower(prefix))
 			}
 			return strings.HasPrefix(actual, prefix)
 		}) {
+			score += selector.weight
+			sources = append(sources, selector.name)
+			hasSelectorMatch = true
+		} else if !hasHomePLMNMatch {
 			return 0, "", false
 		}
-		score += selector.weight
-		sources = append(sources, selector.name)
 	}
 	if len(match.SPNs) > 0 {
 		spn := strings.TrimSpace(identity.SPN)
-		if spn == "" || !matchesAny(match.SPNs, func(value string) bool {
+		if spn != "" && matchesAny(match.SPNs, func(value string) bool {
 			return strings.EqualFold(strings.TrimSpace(value), spn)
 		}) {
-			return 0, "", false
+			score += 20
+			sources = append(sources, "spn")
+			hasSelectorMatch = true
 		}
-		score += 20
-		sources = append(sources, "spn")
+	}
+	if !hasHomePLMNMatch && !hasSelectorMatch {
+		return 0, "", false
 	}
 	return score, strings.Join(sources, "+"), score > 0
 }
@@ -501,11 +508,43 @@ func matchesAny(values []string, match func(string) bool) bool {
 	return false
 }
 
-func applyCarrierProfileRule(base CarrierProfile, rule carrierProfileRule, source string) CarrierProfile {
+func applyCarrierProfileRule(base CarrierProfile, rule carrierProfileRule, source string, identity SIMIdentity) CarrierProfile {
 	base.ID = rule.ID
 	base.MatchSource = source
 	base.RouteMCC = strings.TrimSpace(rule.Route.MCC)
 	base.RouteMNC = strings.TrimSpace(rule.Route.MNC)
+	if base.RouteMCC == "" {
+		currentPLMN := canonicalPLMN(identity.HomeMCC, identity.HomeMNC)
+		if currentPLMN != "" {
+			for _, m := range append([]carrierProfileMatch{rule.Match}, rule.MatchAny...) {
+				for _, plmn := range m.HomePLMNs {
+					if canonicalPLMNValue(plmn) == currentPLMN {
+						base.RouteMCC = strings.TrimSpace(identity.HomeMCC)
+						base.RouteMNC = strings.TrimSpace(identity.HomeMNC)
+						break
+					}
+				}
+				if base.RouteMCC != "" {
+					break
+				}
+			}
+		}
+		if base.RouteMCC == "" {
+			for _, m := range append([]carrierProfileMatch{rule.Match}, rule.MatchAny...) {
+				for _, plmn := range m.HomePLMNs {
+					plmn = canonicalPLMNValue(plmn)
+					if len(plmn) >= 5 {
+						base.RouteMCC = plmn[:3]
+						base.RouteMNC = plmn[3:]
+						break
+					}
+				}
+				if base.RouteMCC != "" {
+					break
+				}
+			}
+		}
+	}
 	base.EPDG = strings.ToLower(strings.TrimSpace(rule.EPDG.Hostname))
 	if value := strings.TrimSpace(rule.IKE.Proposal); value != "" {
 		base.IKEProposal = value
@@ -647,17 +686,152 @@ func IsATT310280(identity SIMIdentity) bool {
 }
 
 func applyAssignedCarrierRoute(identity SIMIdentity) SIMIdentity {
-	if strings.TrimSpace(identity.EPDG) != "" {
+	profile := ResolveCarrierProfile(identity)
+	if profile.ID != CarrierProfileStandard && profile.RouteMCC != "" {
+		identity.HomeMCC = profile.RouteMCC
+		identity.HomeMNC = profile.RouteMNC
+		if profile.EPDG != "" {
+			identity.EPDG = profile.EPDG
+		} else {
+			identity.EPDG = standardEPDGHostname(profile.RouteMCC, profile.RouteMNC)
+		}
 		return identity
 	}
-	profile := ResolveCarrierProfile(identity)
-	switch {
-	case profile.EPDG != "":
-		identity.EPDG = profile.EPDG
-	case profile.RouteMCC != "":
-		identity.EPDG = standardEPDGHostname(profile.RouteMCC, profile.RouteMNC)
+
+	if strings.TrimSpace(identity.ICCID) != "" {
+		if mcc, mnc, ok := HomePLMNFromICCID(identity.ICCID); ok {
+			imsiCountry := countryCodeForMCC(identity.HomeMCC)
+			iccidCountry := countryCodeForMCC(mcc)
+			if identity.HomeMCC == "" || (imsiCountry != "" && iccidCountry != "" && imsiCountry != iccidCountry) {
+				identity.HomeMCC = mcc
+				identity.HomeMNC = mnc
+			}
+		}
+	}
+	if strings.TrimSpace(identity.EPDG) == "" && identity.HomeMCC != "" && identity.HomeMNC != "" {
+		identity.EPDG = standardEPDGHostname(identity.HomeMCC, identity.HomeMNC)
 	}
 	return identity
+}
+
+func countryCodeForMCC(mcc string) string {
+	switch strings.TrimSpace(mcc) {
+	case "515":
+		return "PH"
+	case "262":
+		return "DE"
+	case "204":
+		return "NL"
+	case "234", "235":
+		return "GB"
+	case "460":
+		return "CN"
+	case "454":
+		return "HK"
+	case "466", "467":
+		return "TW"
+	case "525":
+		return "SG"
+	case "440", "441":
+		return "JP"
+	case "450":
+		return "KR"
+	case "310", "311", "312", "313", "314", "315", "316":
+		return "US"
+	case "302":
+		return "CA"
+	case "505":
+		return "AU"
+	case "208":
+		return "FR"
+	case "214":
+		return "ES"
+	case "222":
+		return "IT"
+	case "228":
+		return "CH"
+	case "232":
+		return "AT"
+	case "206":
+		return "BE"
+	case "260":
+		return "PL"
+	case "520":
+		return "TH"
+	case "510":
+		return "ID"
+	case "502":
+		return "MY"
+	}
+	return ""
+}
+
+// HomePLMNFromICCID infers the home MCC/MNC from well-known global ICCID prefixes.
+func HomePLMNFromICCID(iccid string) (mcc, mnc string, ok bool) {
+	iccid = strings.TrimSpace(iccid)
+	if len(iccid) < 6 || !strings.HasPrefix(iccid, "89") {
+		return "", "", false
+	}
+	prefixes := []struct {
+		prefix string
+		mcc    string
+		mnc    string
+	}{
+		// Philippines
+		{"896366", "515", "66"}, // DITO
+		{"896302", "515", "02"}, // Globe
+		{"896303", "515", "03"}, // Smart
+		// Germany
+		{"894920", "262", "02"}, // Vodafone DE
+		{"894901", "262", "01"}, // Telekom DE
+		{"894902", "262", "03"}, // O2 DE
+		{"894903", "262", "03"},
+		{"894907", "262", "07"},
+		// United Kingdom
+		{"894410", "234", "15"}, // Vodafone UK
+		{"894415", "234", "15"},
+		{"894411", "234", "30"}, // EE
+		{"894430", "234", "30"},
+		{"894420", "234", "20"}, // Three UK
+		{"894421", "234", "10"}, // O2 UK
+		// Netherlands
+		{"8937204", "204", "04"}, // Vodafone NL
+		{"893104", "204", "04"},
+		{"893108", "204", "08"}, // KPN
+		{"893116", "204", "16"}, // Odido
+		// Hong Kong
+		{"8985201", "454", "00"}, // CSL
+		{"8985203", "454", "03"}, // 3 HK
+		{"898523", "454", "03"},
+		{"8985204", "454", "12"}, // CMHK
+		{"8985206", "454", "06"}, // SmarTone
+		// China
+		{"898600", "460", "00"}, // China Mobile
+		{"898602", "460", "00"},
+		{"898604", "460", "00"},
+		{"898607", "460", "00"},
+		{"898601", "460", "01"}, // China Unicom
+		{"898606", "460", "01"},
+		{"898609", "460", "01"},
+		{"898603", "460", "03"}, // China Telecom
+		{"898605", "460", "03"},
+		{"898611", "460", "03"},
+		// Taiwan
+		{"8988601", "466", "92"}, // Chunghwa
+		{"8988602", "466", "97"}, // Taiwan Mobile
+		{"8988603", "466", "01"}, // FarEasTone
+		// Singapore
+		{"896501", "525", "01"}, // Singtel
+		{"896502", "525", "05"}, // StarHub
+		{"896503", "525", "03"}, // M1
+		{"896504", "525", "10"}, // SIMBA
+	}
+	for _, entry := range prefixes {
+		if strings.HasPrefix(iccid, entry.prefix) {
+			return entry.mcc, entry.mnc, true
+		}
+	}
+	return "", "", false
 }
 
 // EPDGDNSClientSubnet returns a deliberately scoped EDNS client subnet for an
@@ -671,6 +845,103 @@ func EPDGDNSClientSubnet(host string) string {
 				return strings.TrimSpace(rule.EPDG.DNSClientSubnet)
 			}
 		}
+	}
+	if idx := strings.Index(host, ".mcc"); idx >= 0 && len(host) >= idx+7 {
+		mcc := host[idx+4 : idx+7]
+		if decimalString(mcc) {
+			if subnet := MCCDefaultClientSubnet(mcc); subnet != "" {
+				return subnet
+			}
+		}
+	}
+	return ""
+}
+
+// MCCDefaultClientSubnet returns the standard GeoDNS EDNS client subnet for a country MCC.
+func MCCDefaultClientSubnet(mcc string) string {
+	switch strings.TrimSpace(mcc) {
+	case "262": // Germany
+		return "139.7.0.0/16"
+	case "204": // Netherlands
+		return "109.39.0.0/16"
+	case "234", "235": // UK
+		return "212.183.0.0/16"
+	case "515": // Philippines
+		return "112.198.0.0/16"
+	case "454": // Hong Kong
+		return "203.0.0.0/16"
+	case "466", "467": // Taiwan
+		return "210.0.0.0/16"
+	case "525": // Singapore
+		return "202.166.0.0/16"
+	case "440", "441": // Japan
+		return "126.0.0.0/16"
+	case "450": // South Korea
+		return "211.0.0.0/16"
+	case "310", "311", "312", "313", "314", "315", "316": // USA
+		return "198.228.0.0/16"
+	case "302": // Canada
+		return "142.0.0.0/16"
+	case "505": // Australia
+		return "1.120.0.0/16"
+	case "520": // Thailand
+		return "171.96.0.0/16"
+	case "510": // Indonesia
+		return "182.0.0.0/16"
+	case "502": // Malaysia
+		return "115.132.0.0/16"
+	case "208": // France
+		return "194.51.0.0/16"
+	case "214": // Spain
+		return "212.166.0.0/16"
+	case "222": // Italy
+		return "83.224.0.0/16"
+	case "228": // Switzerland
+		return "178.192.0.0/16"
+	case "232": // Austria
+		return "194.138.0.0/16"
+	case "206": // Belgium
+		return "193.190.0.0/16"
+	case "260": // Poland
+		return "83.0.0.0/16"
+	case "268": // Portugal
+		return "194.65.0.0/16"
+	case "272": // Ireland
+		return "193.1.0.0/16"
+	case "238": // Denmark
+		return "193.162.0.0/16"
+	case "240": // Sweden
+		return "194.236.0.0/16"
+	case "242": // Norway
+		return "193.69.0.0/16"
+	case "244": // Finland
+		return "193.64.0.0/16"
+	case "202": // Greece
+		return "194.219.0.0/16"
+	case "216": // Hungary
+		return "195.199.0.0/16"
+	case "230": // Czech Republic
+		return "195.113.0.0/16"
+	case "286": // Turkey
+		return "195.175.0.0/16"
+	case "425": // Israel
+		return "192.114.0.0/16"
+	case "404", "405": // India
+		return "103.0.0.0/16"
+	case "655": // South Africa
+		return "196.0.0.0/16"
+	case "724": // Brazil
+		return "177.0.0.0/16"
+	case "334": // Mexico
+		return "187.188.0.0/16"
+	case "452": // Vietnam
+		return "118.69.0.0/16"
+	case "455": // Macao
+		return "202.175.0.0/16"
+	case "530": // New Zealand
+		return "202.27.0.0/16"
+	case "460": // China
+		return "223.5.5.0/24"
 	}
 	return ""
 }

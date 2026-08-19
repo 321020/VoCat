@@ -1,6 +1,6 @@
 {
   "metadata": {
-    "count": 651,
+    "count": 652,
     "generated_at": "2026-08-19T17:12:07Z",
     "source": "dwilliamsuk/ios-carrier-bundles"
   },
@@ -11610,6 +11610,34 @@
           "73002",
           "73003"
         ]
+      }
+    },
+    {
+      "id": "ipcc-dito-51566",
+      "match": {
+        "home_plmns": [
+          "51566",
+          "515066"
+        ],
+        "iccid_prefixes": [
+          "896366"
+        ],
+        "spns": [
+          "DITO"
+        ]
+      },
+      "route": {
+        "mcc": "515",
+        "mnc": "66"
+      },
+      "epdg": {
+        "hostname": "epdg.epc.mnc066.mcc515.pub.3gppnetwork.org"
+      },
+      "ike": {
+        "proposal": "modern"
+      },
+      "ims": {
+        "ipsec_encryption": "aes-cbc"
       }
     }
   ],

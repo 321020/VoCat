@@ -120,20 +120,20 @@ func TestDeriveEPDGUsesExplicitPLMNAndNeverIMSIHeuristics(t *testing.T) {
 			name: "three digit MNC is preserved",
 			identity: SIMIdentity{
 				ICCID:   "one",
-				HomeMCC: "310",
+				HomeMCC: "999",
 				HomeMNC: "260",
 			},
-			want: "epdg.epc.mnc260.mcc310.pub.3gppnetwork.org",
+			want: "epdg.epc.mnc260.mcc999.pub.3gppnetwork.org",
 		},
 		{
-			name: "AT&T 310280 uses standard 3GPP FQDN",
+			name: "AT&T 310280 uses carrier bundle ePDG",
 			identity: SIMIdentity{
 				ICCID:   "8901000000000000001",
 				IMSI:    "310280000000001",
 				HomeMCC: "310",
 				HomeMNC: "280",
 			},
-			want: "epdg.epc.mnc280.mcc310.pub.3gppnetwork.org",
+			want: "epdg.epc.att.net",
 		},
 		{
 			name: "explicit endpoint",

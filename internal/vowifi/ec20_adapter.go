@@ -30,6 +30,7 @@ const (
 	usimAIDPrefix         = "A0000000871002"
 	isimAIDPrefix         = "A0000000871004"
 	efADDecimal           = 28589 // 0x6FAD
+	efEHPLMNDecimal       = 28441 // 0x6F19 (3GPP TS 31.102 EF_EHPLMN)
 	channelCleanupTimeout = 3 * time.Second
 )
 
@@ -239,12 +240,77 @@ func (adapter *EC20Adapter) readHomePLMN(
 			return mcc, mnc, nil
 		}
 	}
-	// Exact assigned HPLMN prefixes are data, not an MNC-length heuristic. The
-	// target Vodafone UK SIM is 234/15. Unknown assignments remain fail-closed.
+	// Exact assigned HPLMN prefixes are data, not an MNC-length heuristic.
 	if mcc, mnc, ok := assignedHomePLMN(imsi); ok {
 		return mcc, mnc, nil
 	}
+	// 3GPP TS 31.102 Section 4.2.84: Query EF_EHPLMN (Equivalent Home PLMN).
+	if ehplmns, err := adapter.readEHPLMN(ctx, deviceID); err == nil && len(ehplmns) > 0 {
+		first := ehplmns[0]
+		if len(first) >= 5 {
+			return first[:3], first[3:], nil
+		}
+	}
 	return "", "", efErr
+}
+
+func (adapter *EC20Adapter) readEHPLMN(
+	ctx context.Context,
+	deviceID string,
+) ([]string, error) {
+	commands := []string{
+		fmt.Sprintf("AT+CRSM=176,%d,0,0,0", efEHPLMNDecimal),
+		fmt.Sprintf("AT+CRSM=176,%d,0,0,12", efEHPLMNDecimal),
+	}
+	var lastErr error
+	for _, command := range commands {
+		response, err := adapter.execute(ctx, deviceID, command)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		data, err := parseCRSMData(response)
+		if err != nil || len(data) < 3 {
+			lastErr = err
+			continue
+		}
+		plmns := parsePLMNListFromBytes(data)
+		if len(plmns) > 0 {
+			return plmns, nil
+		}
+	}
+	if lastErr == nil {
+		lastErr = errors.New("vocat: EF_EHPLMN is empty or unavailable")
+	}
+	return nil, lastErr
+}
+
+func parsePLMNListFromBytes(data []byte) []string {
+	var plmns []string
+	for i := 0; i+3 <= len(data); i += 3 {
+		b1, b2, b3 := data[i], data[i+1], data[i+2]
+		mcc1 := b1 & 0x0f
+		mcc2 := (b1 >> 4) & 0x0f
+		mcc3 := b2 & 0x0f
+		mnc3 := (b2 >> 4) & 0x0f
+		mnc1 := b3 & 0x0f
+		mnc2 := (b3 >> 4) & 0x0f
+
+		if mcc1 > 9 || mcc2 > 9 || mcc3 > 9 || mnc1 > 9 || mnc2 > 9 {
+			continue
+		}
+		mcc := fmt.Sprintf("%d%d%d", mcc1, mcc2, mcc3)
+		var mnc string
+		if mnc3 <= 9 {
+			mnc = fmt.Sprintf("%d%d%d", mnc1, mnc2, mnc3)
+		} else {
+			mnc = fmt.Sprintf("%d%d", mnc1, mnc2)
+		}
+		if len(mcc) == 3 && (len(mnc) == 2 || len(mnc) == 3) {
+			plmns = append(plmns, mcc+mnc)
+		}
+	}
+	return plmns
 }
 
 func assignedHomePLMN(imsi string) (mcc, mnc string, ok bool) {
