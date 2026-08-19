@@ -519,7 +519,7 @@ func (session *Session) processSMSMessage(request *sipRequest) {
 			RawTPDU:                strings.ToUpper(hex.EncodeToString(rpdu.tpdu)),
 			DecodeError:            errorString(decodeErr),
 		}
-		if status.MessageReference == 0 && message.MessageReference == nil && decodeErr == nil {
+		if status.MessageReference == 0 && status.StatusCode == 0 && decodeErr == nil {
 			session.logInboundSMS(slog.LevelWarn, "IMS inbound SMS status report is incomplete", request,
 				"stage", "tpdu", "rp_reference", int(rpdu.reference))
 			session.sendLoggedDeliveryReport(request, buildRPError(rpdu.reference, 95), "rp_error")
