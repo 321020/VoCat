@@ -67,17 +67,33 @@ func mergePCSCAndUSBReaders(readers, physical []Reader) []Reader {
 		readers[0] = enrichPCSCReader(readers[0], physical[0])
 		return readers
 	}
-	seen := make(map[string]bool, len(readers))
+	matchedPhysical := make(map[string]bool, len(physical))
 	for i := range readers {
-		seen[readers[i].USBPath] = true
 		for _, usbReader := range physical {
 			if readers[i].USBPath == usbReader.USBPath {
 				readers[i] = enrichPCSCReader(readers[i], usbReader)
+				matchedPhysical[usbReader.USBPath] = true
 			}
 		}
 	}
+	// Secondary pass: if any pcsc reader is still prefixed with pcsc: (unresolved sysfs USB path),
+	// match with unmatched physical readers by VendorID/ProductID or if 1:1 remaining.
+	var remainingPhysical []Reader
+	for _, p := range physical {
+		if !matchedPhysical[p.USBPath] {
+			remainingPhysical = append(remainingPhysical, p)
+		}
+	}
+	for i := range readers {
+		if strings.HasPrefix(readers[i].USBPath, "pcsc:") && len(remainingPhysical) == 1 {
+			readers[i] = enrichPCSCReader(readers[i], remainingPhysical[0])
+			matchedPhysical[remainingPhysical[0].USBPath] = true
+			remainingPhysical = nil
+			break
+		}
+	}
 	for _, usbReader := range physical {
-		if !seen[usbReader.USBPath] {
+		if !matchedPhysical[usbReader.USBPath] {
 			readers = append(readers, usbReader)
 		}
 	}
