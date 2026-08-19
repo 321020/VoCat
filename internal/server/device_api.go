@@ -1045,13 +1045,14 @@ func (s *Server) handleAT(w http.ResponseWriter, r *http.Request, id string) boo
 	var request struct {
 		Command   string `json:"cmd"`
 		TimeoutMs int    `json:"timeout_ms"`
+		Force     bool   `json:"force"`
 	}
 	if err := s.decodeJSON(w, r, &request); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
 		return true
 	}
 	command := strings.TrimSpace(request.Command)
-	if err := validateATCommand(command); err != nil {
+	if err := validateATCommand(command, request.Force); err != nil {
 		writeError(w, http.StatusBadRequest, "unsafe_at_command", err.Error())
 		return true
 	}
@@ -1100,13 +1101,16 @@ func (s *Server) handleAT(w http.ResponseWriter, r *http.Request, id string) boo
 	return true
 }
 
-func validateATCommand(command string) error {
+func validateATCommand(command string, force bool) error {
 	upper := strings.ToUpper(command)
 	if len(command) < 2 || len(command) > 512 || !strings.HasPrefix(upper, "AT") {
 		return errors.New("AT command must start with AT and contain at most 512 characters")
 	}
 	if strings.ContainsAny(command, "\r\n\x00") {
 		return errors.New("AT command must contain exactly one line")
+	}
+	if force {
+		return nil
 	}
 	canonical := strings.NewReplacer(" ", "", "\t", "").Replace(upper)
 	for _, blocked := range []string{

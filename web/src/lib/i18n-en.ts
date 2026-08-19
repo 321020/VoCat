@@ -685,6 +685,8 @@ export const EN_DICT: Record<string, string> = {
   "AT 终端暂不可用": "AT terminal unavailable",
   "AT=串口 / QMI=纯 QMI": "AT=serial / QMI=pure QMI",
   "AT=传统串口 / QMI=纯 QMI": "AT=legacy serial / QMI=pure QMI",
+  "强制发送 AT 指令": "Force-send AT command",
+  "强制模式允许发送默认被拦截的 AT 指令（如切网、拨号、短信、USSD），误操作可能导致断网或费用扣除。": "Force mode allows sending AT commands that are normally blocked (e.g. mode switching, dialing, SMS, USSD). Mistakes may disconnect the network or incur charges.",
   "E911地址": "E911 Address",
   "E911地址设置页面打开失败": "Failed to open the E911 address setup page",
   "IMEI 绑定": "IMEI Binding",
