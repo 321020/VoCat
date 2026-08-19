@@ -70,9 +70,21 @@ type Config struct {
 	// IMS (3GPP TS 24.390). Returning an error is logged but does not affect
 	// the 200 OK already sent, because USSI has no RP-ACK transport.
 	OnUSSD func(context.Context, ReceivedUSSD) error
+	// OnIncomingCall is invoked when an incoming voice call (INVITE) is received over IMS.
+	OnIncomingCall func(context.Context, ReceivedCall) error
 	// Logger receives structured IMS runtime diagnostics. Inbound SMS logs do
 	// not include message text or raw protocol payloads.
 	Logger *slog.Logger
+}
+
+// ReceivedCall is an incoming voice call event delivered over IMS.
+type ReceivedCall struct {
+	DeviceID  string
+	IMSI      string
+	CallID    string
+	Caller    string
+	Called    string
+	Timestamp time.Time
 }
 
 // Provider implements vowifi.IMSProvider using a small RFC 3261 REGISTER

@@ -80,6 +80,53 @@ func TestIncomingCallCanBeRejected(t *testing.T) {
 	}
 }
 
+func TestIncomingCallTriggersOnIncomingCallCallback(t *testing.T) {
+	var captured ReceivedCall
+	called := make(chan struct{}, 1)
+	provider := &Provider{
+		config: Config{
+			OnIncomingCall: func(_ context.Context, call ReceivedCall) error {
+				captured = call
+				called <- struct{}{}
+				return nil
+			},
+		},
+	}
+	session := &Session{
+		provider: provider,
+		fromTag:  "local-tag",
+		calls:    make(map[string]*imsCall),
+		request: vowifi.IMSRequest{
+			DeviceID: "ec20-test",
+			Identity: vowifi.SIMIdentity{IMSI: "123456789012345"},
+		},
+		identity: identitySet{public: "sip:+447700900123@example.test"},
+	}
+	packet, err := parseSIPPacket([]byte(strings.Join([]string{
+		"INVITE sip:user@example.test SIP/2.0",
+		"Via: SIP/2.0/UDP 192.0.2.10:5060;branch=z9hG4bK-notify",
+		"From: <tel:+447700999888>;tag=caller-tag",
+		"To: <tel:+447700900123>",
+		"Call-ID: notify-call-id",
+		"CSeq: 1 INVITE",
+		"Content-Length: 0", "", "",
+	}, "\r\n")))
+	if err != nil || packet.Request == nil {
+		t.Fatalf("parse INVITE: %v", err)
+	}
+	session.handleCallRequest(packet.Request, func([]byte) error { return nil })
+
+	select {
+	case <-called:
+	case <-time.After(2 * time.Second):
+		t.Fatal("OnIncomingCall was not invoked within timeout")
+	}
+
+	if captured.DeviceID != "ec20-test" || captured.Caller != "+447700999888" || captured.Called != "+447700900123" || captured.CallID != "notify-call-id" {
+		t.Fatalf("captured call = %#v", captured)
+	}
+}
+
 func TestRejectedOutgoingCallRetainsSIPReason(t *testing.T) {
 	session := &Session{calls: make(map[string]*imsCall)}
 	call := &imsCall{public: vowifi.Call{ID: "rejected", State: "dialing"}}

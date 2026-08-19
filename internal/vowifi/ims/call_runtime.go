@@ -368,6 +368,25 @@ func (session *Session) handleCallRequest(request *sipRequest, respond func([]by
 		session.callMu.Lock()
 		session.calls[callID] = call
 		session.callMu.Unlock()
+		if session.provider != nil && session.provider.config.OnIncomingCall != nil {
+			calledNumber := identityNumber(request.value("To"))
+			if calledNumber == "" {
+				calledNumber = session.identity.public
+			}
+			receivedCall := ReceivedCall{
+				DeviceID:  session.request.DeviceID,
+				IMSI:      session.request.Identity.IMSI,
+				CallID:    callID,
+				Caller:    number,
+				Called:    calledNumber,
+				Timestamp: time.Now().UTC(),
+			}
+			go func() {
+				ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+				defer cancel()
+				_ = session.provider.config.OnIncomingCall(ctx, receivedCall)
+			}()
+		}
 		response, err := buildSIPResponseWithBody(request, 180, session.fromTag, nil)
 		if err == nil {
 			_ = respond(response)
