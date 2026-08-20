@@ -42,9 +42,12 @@ func TestImportCarrierIPCCConvertsBinaryAndXMLPlistsSafely(t *testing.T) {
 				},
 				"IMSConfig": map[string]any{
 					"EnableWiFiCallingWithoutEntitlement": true,
-					"Signaling":                           map[string]any{"UseIPSec": true},
-					"Media":                               map[string]any{"SupportPCMA": false},
-					"Emergency":                           map[string]any{"E911OverITechSupported": true},
+					"Signaling": map[string]any{
+						"UseIPSec":                   true,
+						"CountryOfOriginationFormat": "PANI",
+					},
+					"Media":     map[string]any{"SupportPCMA": false},
+					"Emergency": map[string]any{"E911OverITechSupported": true},
 				},
 			},
 		},
@@ -79,6 +82,7 @@ func TestImportCarrierIPCCConvertsBinaryAndXMLPlistsSafely(t *testing.T) {
 		"entitlement_bypass_ignored",
 		"apn_settings_ignored",
 		"device_media_overrides_ignored",
+		"country_of_origination_format_not_imported",
 		"emergency_settings_ignored",
 	} {
 		if !hasIPCCWarning(result.Warnings, code) {

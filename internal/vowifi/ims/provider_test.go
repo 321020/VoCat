@@ -377,6 +377,7 @@ func serveRegistration(listener *net.UDPConn, nonce string, confirmSMS bool) err
 		for _, forbidden := range []string{
 			"p-visited-network-id",
 			"p-preferred-identity",
+			"p-access-network-info",
 		} {
 			if headers[forbidden] != "" {
 				return fmt.Errorf(
@@ -385,9 +386,6 @@ func serveRegistration(listener *net.UDPConn, nonce string, confirmSMS bool) err
 					headers[forbidden],
 				)
 			}
-		}
-		if headers["p-access-network-info"] != "IEEE-802.11;i-wlan-node-id=000000000000;network-provided" {
-			return fmt.Errorf("REGISTER P-Access-Network-Info = %q", headers["p-access-network-info"])
 		}
 		if !strings.Contains(headers["allow"], "MESSAGE") ||
 			!strings.Contains(string(packet[:count]), "Accept-Contact: *;+g.3gpp.smsip") {
@@ -495,6 +493,26 @@ func serveRegistration(listener *net.UDPConn, nonce string, confirmSMS bool) err
 		}
 	}
 	return nil
+}
+
+func TestOptionalRegisterHeaderRequiresExplicitNonemptyValue(t *testing.T) {
+	explicit := "  IEEE-802.11;i-wlan-node-id=aabbccddeeff  "
+	empty := "  "
+	for _, test := range []struct {
+		name  string
+		value *string
+		want  string
+	}{
+		{name: "unspecified", value: nil, want: ""},
+		{name: "explicit omission", value: &empty, want: ""},
+		{name: "explicit value", value: &explicit, want: "IEEE-802.11;i-wlan-node-id=aabbccddeeff"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if got := optionalRegisterHeader(test.value); got != test.want {
+				t.Fatalf("optionalRegisterHeader() = %q, want %q", got, test.want)
+			}
+		})
+	}
 }
 
 func serveRefreshFailure(listener *net.UDPConn, nonce string) error {

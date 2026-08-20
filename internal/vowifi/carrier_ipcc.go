@@ -661,6 +661,12 @@ func inspectIgnoredCarrierFields(plists []ipccPlist, warnings *ipccWarningSet) {
 				warnings.add("apn_settings_ignored", "APN settings and credentials are outside the VoCat carrier-profile importer", fullPath)
 			case key == "media" && strings.Contains(strings.ToLower(strings.Join(keyPath, ".")), "imsconfig"):
 				warnings.add("device_media_overrides_ignored", "device-family media and codec overrides require hardware validation and were not imported", fullPath)
+			case key == "countryoforiginationformat":
+				warnings.add(
+					"country_of_origination_format_not_imported",
+					"CountryOfOriginationFormat was not imported because VoCat has no trusted runtime country source; a P-Access-Network-Info value must not be fabricated",
+					fullPath,
+				)
 			case strings.Contains(key, "emergency") || strings.Contains(key, "e911"):
 				warnings.add("emergency_settings_ignored", "emergency-service settings are never imported", fullPath)
 			}
