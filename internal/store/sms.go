@@ -92,15 +92,16 @@ func saveSMSMessage(
 		if mergeErr != nil {
 			return SMSMessage{}, fmt.Errorf("merge concatenated SMS segment: %w", mergeErr)
 		}
-		if existingErr == nil && !changed {
-			// This segment is already folded into the stored row (a periodic modem
-			// rescan redelivers every segment). Leave the row untouched so the
-			// durable id stays put and Telegram does not re-notify.
-			return existing, nil
-		}
-		value.Body = mergedBody
-		extra = mergedExtra
 		if existingErr == nil {
+			if !changed {
+				if value.Read != existing.Read {
+					if _, err := executor.ExecContext(ctx, `UPDATE sms_messages SET is_read = ?, updated_at = ? WHERE id = ?`, boolInt(value.Read), now.Unix(), existing.ID); err != nil {
+						return SMSMessage{}, fmt.Errorf("update concatenated SMS read state: %w", err)
+					}
+					existing.Read = value.Read
+				}
+				return existing, nil
+			}
 			// A new segment advanced the message. Replace the stale partial row so
 			// the merged row receives a fresh durable id; the Telegram id-cursor
 			// then surfaces the now-more-complete message exactly once. Carry
@@ -116,6 +117,8 @@ func saveSMSMessage(
 				value.Timestamp = existing.Timestamp
 			}
 		}
+		value.Body = mergedBody
+		extra = mergedExtra
 	}
 	if value.Timestamp.IsZero() {
 		value.Timestamp = now
@@ -171,7 +174,10 @@ func saveSMSMessage(
 			source = excluded.source,
 			parts_total = excluded.parts_total,
 			delivery_state = excluded.delivery_state,
-			is_read = excluded.is_read,
+			is_read = CASE
+				WHEN sms_messages.is_read = 1 THEN 1
+				ELSE excluded.is_read
+			END,
 			extra_json = excluded.extra_json,
 			updated_at = excluded.updated_at
 	`,
@@ -505,6 +511,25 @@ func (s *Store) MarkSMSThreadRead(
 		return 0, fmt.Errorf("read marked SMS count: %w", err)
 	}
 	return affected, nil
+}
+
+func (s *Store) MarkSMSMessagesRead(ctx context.Context, ids []int64) error {
+	if len(ids) == 0 {
+		return nil
+	}
+	placeholders := make([]string, len(ids))
+	args := make([]any, 0, len(ids)+1)
+	args = append(args, time.Now().UTC().Unix())
+	for i, id := range ids {
+		placeholders[i] = "?"
+		args = append(args, id)
+	}
+	query := fmt.Sprintf("UPDATE sms_messages SET is_read = 1, updated_at = ? WHERE id IN (%s) AND is_read = 0", strings.Join(placeholders, ","))
+	_, err := s.db.ExecContext(ctx, query, args...)
+	if err != nil {
+		return fmt.Errorf("mark SMS messages read: %w", err)
+	}
+	return nil
 }
 
 // ListSMSContacts derives contacts and thread counters from messages. No

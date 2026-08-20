@@ -579,6 +579,20 @@ func TestSMSPersistenceAndDerivedThreads(t *testing.T) {
 	if len(contacts) != 1 || contacts[0].UnreadCount != 0 {
 		t.Fatalf("thread should be read: %+v", contacts)
 	}
+
+	// A subsequent periodic modem AT sync with raw unread state must not revert is_read back to 0.
+	if _, err := database.SaveSMSMessage(ctx, SMSMessage{
+		MessageID: "network-1", DeviceID: "ec20-1", IMSI: "46000",
+		Peer: "10086", Direction: "inbound", Body: "第一条（完整）",
+		Timestamp: base, Status: "received", Read: false,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	contacts, err = database.ListSMSContacts(ctx, SMSFilter{Peer: "10086"})
+	if err != nil || len(contacts) != 1 || contacts[0].UnreadCount != 0 {
+		t.Fatalf("thread read state must survive modem rescan: %+v", contacts)
+	}
+
 	deleted, err := database.DeleteSMSThread(ctx, "ec20-1", "46000", "10086")
 	if err != nil || deleted != 2 {
 		t.Fatalf("DeleteSMSThread() = %d, %v", deleted, err)

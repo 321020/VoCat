@@ -101,10 +101,16 @@ func (s *Server) handleSMSThread(w http.ResponseWriter, r *http.Request) {
 			s.writeStoreError(w, err)
 			return
 		}
-		for _, message := range messages {
-			if !message.Read && (message.Direction == "inbound" || message.Direction == "received") {
-				message.Read = true
-				_, _ = s.store.SaveSMSMessage(r.Context(), message)
+		unreadIDs := make([]int64, 0, len(messages))
+		for i := range messages {
+			if !messages[i].Read && (messages[i].Direction == "inbound" || messages[i].Direction == "received") {
+				messages[i].Read = true
+				unreadIDs = append(unreadIDs, messages[i].ID)
+			}
+		}
+		if len(unreadIDs) > 0 {
+			if markErr := s.store.MarkSMSMessagesRead(r.Context(), unreadIDs); markErr != nil {
+				s.logger.Warn("mark SMS messages read failed", "error", markErr)
 			}
 		}
 		reverseSMS(messages)
