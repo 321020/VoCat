@@ -580,7 +580,7 @@ func TestHandleESIMNotificationsListAndRetry(t *testing.T) {
 	controller := &fakeEsimNotificationController{items: []device.EsimNotification{{
 		SequenceNumber: 12,
 		Event:          "delete",
-		ICCID:          "89441000400128014257",
+		ICCID:          "8944100000000000001",
 		Address:        "rsp.example.com",
 		AIDHex:         "A0000005591010FFFFFFFF8900000100",
 		CanRetry:       true,

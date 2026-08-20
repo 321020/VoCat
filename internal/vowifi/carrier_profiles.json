@@ -6452,6 +6452,39 @@
       }
     },
     {
+      "id": "ipcc-ctexcel-23433",
+      "match": {
+        "home_plmns": [
+          "23433",
+          "23430"
+        ],
+        "spns": [
+          "CTExcel",
+          "CTExcel UK",
+          "China Telecom",
+          "China Telecom UK"
+        ],
+        "iccid_prefixes": [
+          "894430"
+        ]
+      },
+      "route": {
+        "mcc": "234",
+        "mnc": "33"
+      },
+      "epdg": {
+        "hostname": "epdg.epc.mnc033.mcc234.pub.3gppnetwork.org"
+      },
+      "ike": {
+        "proposal": "modern"
+      },
+      "ims": {
+        "dial_uri_scheme": "sip",
+        "user_eq_phone": true,
+        "ipsec_encryption": "aes-cbc"
+      }
+    },
+    {
       "id": "ipcc-ee-23433",
       "match": {
         "home_plmns": [

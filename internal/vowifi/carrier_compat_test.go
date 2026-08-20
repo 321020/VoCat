@@ -117,3 +117,19 @@ func TestGlobalRoamingProviderResolution(t *testing.T) {
 		t.Fatalf("Jersey Telecom profile = %#v", jersey)
 	}
 }
+
+func TestCTExcelMVNOResolution(t *testing.T) {
+	ctexcel := ResolveCarrierProfile(SIMIdentity{
+		IMSI:    "234330000000001",
+		ICCID:   "8944300000000000001",
+		SPN:     "CTExcel",
+		HomeMCC: "234",
+		HomeMNC: "33",
+	})
+	if ctexcel.ID != "ipcc-ctexcel-23433" {
+		t.Fatalf("CTExcel profile ID = %q, want ipcc-ctexcel-23433", ctexcel.ID)
+	}
+	if ctexcel.IMSDialURIScheme != "sip" || !ctexcel.IMSUserEqPhone {
+		t.Fatalf("CTExcel dial URI scheme = %q, userEqPhone = %v", ctexcel.IMSDialURIScheme, ctexcel.IMSUserEqPhone)
+	}
+}

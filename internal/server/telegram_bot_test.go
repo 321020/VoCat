@@ -122,7 +122,7 @@ func TestResolveTelegramPhoneNumberRejectsPlaceholderAndStaleRuntime(t *testing.
 	}
 	state := &vowifi.State{
 		ICCID:       "previous-card",
-		PhoneNumber: "+447386083638",
+		PhoneNumber: "+447700900123",
 	}
 	if got := resolveTelegramPhoneNumber("", state, snapshot); got != "--" {
 		t.Fatalf("stale or placeholder number leaked as %q", got)
@@ -135,10 +135,10 @@ func TestResolveTelegramPhoneNumberRejectsPlaceholderAndStaleRuntime(t *testing.
 }
 
 func TestTelegramCarrierPresentationSeparatesHomeAndServingNetworks(t *testing.T) {
-	if got := telegramHomeCarrier("234336570710174"); !strings.Contains(got, "🇬🇧") || !strings.Contains(got, "23433") {
+	if got := telegramHomeCarrier("234330000000001"); !strings.Contains(got, "🇬🇧") || !strings.Contains(got, "23433") {
 		t.Fatalf("home carrier = %q", got)
 	}
-	if got := telegramHomeCarrier("454006395879502", "Saily"); !strings.Contains(got, "1O1O / csl / Club Sim") || !strings.Contains(got, "45400") || !strings.Contains(got, "🇭🇰") || strings.Contains(got, "Saily") {
+	if got := telegramHomeCarrier("454000000000001", "Saily"); !strings.Contains(got, "1O1O / csl / Club Sim") || !strings.Contains(got, "45400") || !strings.Contains(got, "🇭🇰") || strings.Contains(got, "Saily") {
 		t.Fatalf("profile brand overrode home carrier = %q", got)
 	}
 	if got := telegramHomeCarrier("999991234567890", "Unknown Brand"); got != "Unknown Brand" {

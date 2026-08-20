@@ -508,7 +508,7 @@ func matchCarrierProfile(match carrierProfileMatch, identity SIMIdentity) (int, 
 			score += 20
 			sources = append(sources, "spn")
 			hasSelectorMatch = true
-		} else if !hasHomePLMNMatch || spn != "" {
+		} else {
 			return 0, "", false
 		}
 	}
