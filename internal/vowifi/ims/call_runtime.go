@@ -799,16 +799,10 @@ func (session *Session) callOriginatingIdentitiesLocked(profile vowifi.CarrierPr
 }
 
 func (session *Session) pAccessNetworkInfo() string {
-	profile := vowifi.ResolveCarrierProfile(session.request.Identity)
-	node := strings.TrimSpace(profile.PANINode)
-	if node == "" {
-		node = "000000000000"
+	if session.paniResolved {
+		return ueProvidedPANI(session.pani)
 	}
-	value := "IEEE-802.11;i-wlan-node-id=" + node
-	if country := strings.ToUpper(strings.TrimSpace(profile.PANICountry)); country != "" {
-		value += ";country=" + country
-	}
-	return value + ";network-provided"
+	return sessionPAccessNetworkInfo(session.instanceID)
 }
 
 func (session *Session) callUserAgent() string {

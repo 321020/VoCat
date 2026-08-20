@@ -82,7 +82,6 @@ func TestImportCarrierIPCCConvertsBinaryAndXMLPlistsSafely(t *testing.T) {
 		"entitlement_bypass_ignored",
 		"apn_settings_ignored",
 		"device_media_overrides_ignored",
-		"country_of_origination_format_not_imported",
 		"emergency_settings_ignored",
 	} {
 		if !hasIPCCWarning(result.Warnings, code) {

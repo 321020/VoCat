@@ -662,11 +662,9 @@ func inspectIgnoredCarrierFields(plists []ipccPlist, warnings *ipccWarningSet) {
 			case key == "media" && strings.Contains(strings.ToLower(strings.Join(keyPath, ".")), "imsconfig"):
 				warnings.add("device_media_overrides_ignored", "device-family media and codec overrides require hardware validation and were not imported", fullPath)
 			case key == "countryoforiginationformat":
-				warnings.add(
-					"country_of_origination_format_not_imported",
-					"CountryOfOriginationFormat was not imported because VoCat has no trusted runtime country source; a P-Access-Network-Info value must not be fabricated",
-					fullPath,
-				)
+				// PANI is access/session metadata, not a carrier location constant.
+				// The IMS runtime provides one globally and consistently across
+				// REGISTER, MESSAGE, RP-ACK and dialogs, so no profile field is needed.
 			case strings.Contains(key, "emergency") || strings.Contains(key, "e911"):
 				warnings.add("emergency_settings_ignored", "emergency-service settings are never imported", fullPath)
 			}

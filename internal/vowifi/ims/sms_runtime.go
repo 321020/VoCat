@@ -56,6 +56,7 @@ type ReceivedSMS struct {
 	RawTPDU                string
 	DecodeError            string
 }
+
 // ReceivedSMSStatus is network delivery evidence for one submitted SMS part.
 type ReceivedSMSStatus struct {
 	DeviceID               string
@@ -1165,6 +1166,9 @@ func (session *Session) sendSIPMessageWith(
 		fmt.Sprintf("CSeq: %d MESSAGE", cseq),
 		"P-Preferred-Identity: <"+session.identity.public+">",
 	)
+	if pani := session.pAccessNetworkInfo(); pani != "" {
+		lines = append(lines, "P-Access-Network-Info: "+pani)
+	}
 	if acceptContactTag != "" {
 		lines = append(lines, "Accept-Contact: *;+g.3gpp."+acceptContactTag)
 	}

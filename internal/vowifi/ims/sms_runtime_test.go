@@ -352,6 +352,10 @@ func serveInboundSMS(listener *net.UDPConn, nonce string, readyForClose chan<- s
 	if err != nil {
 		return err
 	}
+	registerPANI := headers["p-access-network-info"]
+	if err := validateTestPANI(registerPANI); err != nil {
+		return fmt.Errorf("initial REGISTER PANI: %w", err)
+	}
 	callID := headers["call-id"]
 	if _, err = listener.WriteToUDP(testResponse(401, "Unauthorized", callID, headers["cseq"], []string{
 		`WWW-Authenticate: Digest realm="ims.mnc001.mcc001.3gppnetwork.org", nonce="` + nonce + `", algorithm=AKAv1-MD5, qop="auth"`,
@@ -365,6 +369,9 @@ func serveInboundSMS(listener *net.UDPConn, nonce string, readyForClose chan<- s
 	_, headers, err = parseTestRequest(packet[:count])
 	if err != nil {
 		return err
+	}
+	if headers["p-access-network-info"] != registerPANI {
+		return errors.New("authenticated REGISTER changed PANI")
 	}
 	if _, err = listener.WriteToUDP(testResponse(200, "OK", callID, headers["cseq"], []string{
 		"Contact: " + headers["contact"] + ";expires=600",
@@ -433,6 +440,9 @@ func serveInboundSMS(listener *net.UDPConn, nonce string, readyForClose chan<- s
 		len(report.Request.Body) != 2 || report.Request.Body[0] != 0x02 || report.Request.Body[1] != 0x2a {
 		return fmt.Errorf("unexpected delivery report %#v", report.Request)
 	}
+	if report.Request.value("P-Access-Network-Info") != registerPANI {
+		return errors.New("inbound SMS RP-ACK did not reuse REGISTER PANI")
+	}
 	if _, err = listener.WriteToUDP(testResponse(200, "OK", report.Request.value("Call-ID"), report.Request.value("CSeq"), nil), remote); err != nil {
 		return err
 	}
@@ -449,6 +459,9 @@ func serveInboundSMS(listener *net.UDPConn, nonce string, readyForClose chan<- s
 	if headers["expires"] != "0" {
 		return errors.New("expected deregistration")
 	}
+	if headers["p-access-network-info"] != registerPANI {
+		return errors.New("deregistration changed PANI")
+	}
 	_, err = listener.WriteToUDP(testResponse(200, "OK", callID, headers["cseq"], nil), remote)
 	return err
 }
@@ -463,6 +476,10 @@ func serveOutboundSMS(listener *net.UDPConn, nonce string, readyForClose chan<- 
 	if err != nil {
 		return err
 	}
+	registerPANI := headers["p-access-network-info"]
+	if err := validateTestPANI(registerPANI); err != nil {
+		return fmt.Errorf("initial REGISTER PANI: %w", err)
+	}
 	registerCallID := headers["call-id"]
 	if _, err = listener.WriteToUDP(testResponse(401, "Unauthorized", registerCallID, headers["cseq"], []string{
 		`WWW-Authenticate: Digest realm="ims.mnc001.mcc001.3gppnetwork.org", nonce="` + nonce + `", algorithm=AKAv1-MD5, qop="auth"`,
@@ -476,6 +493,9 @@ func serveOutboundSMS(listener *net.UDPConn, nonce string, readyForClose chan<- 
 	_, headers, err = parseTestRequest(packet[:count])
 	if err != nil {
 		return err
+	}
+	if headers["p-access-network-info"] != registerPANI {
+		return errors.New("authenticated REGISTER changed PANI")
 	}
 	if _, err = listener.WriteToUDP(testResponse(200, "OK", registerCallID, headers["cseq"], []string{
 		"Contact: " + headers["contact"] + ";expires=600",
@@ -507,6 +527,9 @@ func serveOutboundSMS(listener *net.UDPConn, nonce string, readyForClose chan<- 
 		message.Request.value("Request-Disposition") != "no-fork" ||
 		message.Request.value("Allow") != "MESSAGE" {
 		return fmt.Errorf("unexpected outbound MESSAGE %#v", message.Request)
+	}
+	if message.Request.value("P-Access-Network-Info") != registerPANI {
+		return errors.New("outbound SMS MESSAGE did not reuse REGISTER PANI")
 	}
 	rpdu, err := parseRPDU(message.Request.Body)
 	if err != nil || rpdu.messageType != 0 || len(rpdu.tpdu) != 0 {
@@ -573,6 +596,9 @@ func serveOutboundSMS(listener *net.UDPConn, nonce string, readyForClose chan<- 
 		len(statusACK.Request.Body) != 2 || statusACK.Request.Body[0] != 0x02 || statusACK.Request.Body[1] != 0x2b {
 		return fmt.Errorf("unexpected status RP-ACK %#v (%v)", statusACK.Request, err)
 	}
+	if statusACK.Request.value("P-Access-Network-Info") != registerPANI {
+		return errors.New("status-report RP-ACK did not reuse REGISTER PANI")
+	}
 	if _, err = listener.WriteToUDP(testResponse(200, "OK", statusACK.Request.value("Call-ID"), statusACK.Request.value("CSeq"), nil), remote); err != nil {
 		return err
 	}
@@ -588,6 +614,9 @@ func serveOutboundSMS(listener *net.UDPConn, nonce string, readyForClose chan<- 
 	}
 	if headers["expires"] != "0" {
 		return errors.New("expected deregistration")
+	}
+	if headers["p-access-network-info"] != registerPANI {
+		return errors.New("deregistration changed PANI")
 	}
 	_, err = listener.WriteToUDP(testResponse(200, "OK", registerCallID, headers["cseq"], nil), remote)
 	return err

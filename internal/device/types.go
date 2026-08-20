@@ -146,6 +146,9 @@ const (
 	SMSEncodingGSM7Text SMSEncoding = "gsm7_text"
 	SMSEncodingGSM7PDU  SMSEncoding = "gsm7_pdu"
 	SMSEncodingUCS2PDU  SMSEncoding = "ucs2_pdu"
+	SMSEncodingUTF8PDU  SMSEncoding = "utf8_pdu"
+	SMSEncodingGB18030  SMSEncoding = "gb18030_pdu"
+	SMSEncodingLatin1   SMSEncoding = "latin1_pdu"
 	SMSEncoding8BitPDU  SMSEncoding = "8bit_pdu"
 	SMSEncodingUnknown  SMSEncoding = "unknown"
 )
