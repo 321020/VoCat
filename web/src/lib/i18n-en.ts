@@ -1175,4 +1175,31 @@ export const EN_DICT: Record<string, string> = {
   "绑定到该代理的国家规则将自动删除，相关国家会恢复直连。":
     "Country rules bound to this proxy will be deleted, and those countries will revert to a direct connection.",
   "{encoding} · 预计 {parts} 段 · {length} 字": "{encoding} · ~{parts} seg · {length} chars",
+
+  // Uptime & Monitoring translations
+  "运行优秀": "Excellent",
+  "正常监控": "Optimal",
+  "14天前": "14d ago",
+  "持续监测中": "Monitored",
+  "今天": "Today",
+  "昨天": "Yesterday",
+  "天前": "days ago",
+  "{days}天前": "{days}d ago",
+  "正常在线": "Online",
+  "部分离线": "Degraded",
+  "完全离线": "Offline",
+
+  // Additional missing system strings
+  "端口": "Port",
+  "错误详情": "Error Details",
+  "正在搜索网络": "Searching network",
+  "SM-DP+ 的公开 Profile 库存已耗尽，请稍后重试或更换服务。":
+    "The public profile inventory on the SM-DP+ is exhausted. Please try again later or use a different service.",
+  "此 SM-DP+ 的证书链不受当前 eUICC 信任；该卡不能使用此测试服务器。":
+    "The SM-DP+ certificate chain is not trusted by this eUICC; this card cannot use this test server.",
+  "激活码已被使用、已过期或被 SM-DP+ 拒绝，请更换新的 Matching ID。":
+    "The activation code has already been used, expired, or was rejected by SM-DP+. Please use a new Matching ID.",
+  "已发现该模组，但未找到 AT 串口：通常是 option 驱动未认该 PID 或模组处于 MBIM/RNDIS 组态。可 ":
+    "Modem detected, but no AT serial port found: option driver may not recognize this PID or modem is in MBIM/RNDIS mode. You can ",
 };
+
