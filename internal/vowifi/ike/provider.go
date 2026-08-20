@@ -187,6 +187,7 @@ func (provider *Provider) start(ctx context.Context, request vowifi.TunnelReques
 		{Type: payloadNonce, Body: initiatorNonce},
 		makeNotify(notifyNATSource, sourceHash),
 		makeNotify(notifyNATDestination, destinationHash),
+		makeNotify(notifyFragmentationSupported, nil),
 	}
 	var (
 		initRequest          []byte
@@ -243,6 +244,7 @@ func (provider *Provider) start(ctx context.Context, request vowifi.TunnelReques
 		}
 		break
 	}
+	peerSupportsFragmentation := hasNotifyType(initResponsePayloads, notifyFragmentationSupported)
 	saPayload, err := onePayload(initResponsePayloads, payloadSA)
 	if err != nil {
 		return nil, err
@@ -345,21 +347,19 @@ func (provider *Provider) start(ctx context.Context, request vowifi.TunnelReques
 		Flags:        flagInitiator,
 		MessageID:    1,
 	}
-	authRequest, err := encryptPayloads(authHeader, firstAuthPayloads, ikeSuite, keys.SKei, keys.SKai, provider.config.Random)
-	if err != nil {
-		return nil, err
-	}
-	authResponse, err := transport.RoundTrip(ctx, authRequest)
-	if err != nil {
-		return nil, err
-	}
-	authResponseHeader, authResponsePayloads, err := decryptAndValidate(
-		authResponse, initiatorSPI, responseHeader.ResponderSPI, exchangeIKEAuth, 1, ikeSuite, keys,
+	_, authResponsePayloads, err := sendAndReceiveIKEPayloads(
+		ctx,
+		transport,
+		authHeader,
+		firstAuthPayloads,
+		ikeSuite,
+		keys,
+		peerSupportsFragmentation,
+		provider.config.Random,
 	)
 	if err != nil {
 		return nil, err
 	}
-	_ = authResponseHeader
 	serverName := strings.TrimSpace(provider.config.ServerName)
 	if serverName == "" {
 		serverName = epdg
@@ -409,27 +409,27 @@ func (provider *Provider) start(ctx context.Context, request vowifi.TunnelReques
 				requestPayloads = append(requestPayloads, deviceIdentity)
 			}
 		}
-		eapRequest, err := encryptPayloads(ikeHeader{
+		eapHeader := ikeHeader{
 			InitiatorSPI: initiatorSPI,
 			ResponderSPI: responseHeader.ResponderSPI,
 			Exchange:     exchangeIKEAuth,
 			Flags:        flagInitiator,
 			MessageID:    messageID,
-		}, requestPayloads, ikeSuite, keys.SKei, keys.SKai, provider.config.Random)
-		if err != nil {
-			return nil, err
 		}
 		if requested, notifyErr := deviceIdentityRequested(currentPayloads); notifyErr != nil {
 			return nil, notifyErr
 		} else if requested {
 			deviceIdentityPending = true
 		}
-		eapResponse, err := transport.RoundTrip(ctx, eapRequest)
-		if err != nil {
-			return nil, err
-		}
-		_, currentPayloads, err = decryptAndValidate(
-			eapResponse, initiatorSPI, responseHeader.ResponderSPI, exchangeIKEAuth, messageID, ikeSuite, keys,
+		_, currentPayloads, err = sendAndReceiveIKEPayloads(
+			ctx,
+			transport,
+			eapHeader,
+			requestPayloads,
+			ikeSuite,
+			keys,
+			peerSupportsFragmentation,
+			provider.config.Random,
 		)
 		if err != nil {
 			return nil, err
@@ -454,22 +454,22 @@ func (provider *Provider) start(ctx context.Context, request vowifi.TunnelReques
 	}
 	messageID++
 	cleanupMessageID = messageID + 1
-	finalRequest, err := encryptPayloads(ikeHeader{
+	finalHeader := ikeHeader{
 		InitiatorSPI: initiatorSPI,
 		ResponderSPI: responseHeader.ResponderSPI,
 		Exchange:     exchangeIKEAuth,
 		Flags:        flagInitiator,
 		MessageID:    messageID,
-	}, []payload{initiatorAUTH}, ikeSuite, keys.SKei, keys.SKai, provider.config.Random)
-	if err != nil {
-		return nil, err
 	}
-	finalResponse, err := transport.RoundTrip(ctx, finalRequest)
-	if err != nil {
-		return nil, err
-	}
-	_, finalPayloads, err := decryptAndValidate(
-		finalResponse, initiatorSPI, responseHeader.ResponderSPI, exchangeIKEAuth, messageID, ikeSuite, keys,
+	_, finalPayloads, err := sendAndReceiveIKEPayloads(
+		ctx,
+		transport,
+		finalHeader,
+		[]payload{initiatorAUTH},
+		ikeSuite,
+		keys,
+		peerSupportsFragmentation,
+		provider.config.Random,
 	)
 	if err != nil {
 		return nil, err
@@ -763,7 +763,7 @@ func decryptAndValidate(
 	suite negotiatedSuite,
 	keys ikeKeys,
 ) (ikeHeader, []payload, error) {
-	header, payloads, err := decryptPayloads(packet, suite, keys.SKer, keys.SKar)
+	header, payloads, err := decryptPayloadsAny(packet, nil, suite, keys.SKer, keys.SKar)
 	if err != nil {
 		return ikeHeader{}, nil, err
 	}
@@ -776,6 +776,77 @@ func decryptAndValidate(
 		return ikeHeader{}, nil, fmt.Errorf("%w: encrypted response header does not match the request", errUnexpectedPacket)
 	}
 	return header, payloads, nil
+}
+
+func decryptAndValidateFragments(
+	packets [][]byte,
+	initiatorSPI [8]byte,
+	responderSPI [8]byte,
+	exchange uint8,
+	messageID uint32,
+	suite negotiatedSuite,
+	keys ikeKeys,
+) (ikeHeader, []payload, error) {
+	if len(packets) == 0 {
+		return ikeHeader{}, nil, errors.New("ike: empty exchange response")
+	}
+	if len(packets) == 1 {
+		return decryptAndValidate(packets[0], initiatorSPI, responderSPI, exchange, messageID, suite, keys)
+	}
+	header, payloads, err := decryptPayloadsAny(nil, packets, suite, keys.SKer, keys.SKar)
+	if err != nil {
+		return ikeHeader{}, nil, err
+	}
+	if header.InitiatorSPI != initiatorSPI ||
+		header.ResponderSPI != responderSPI ||
+		header.Exchange != exchange ||
+		header.MessageID != messageID ||
+		header.Flags&flagResponse == 0 ||
+		header.Flags&flagInitiator != 0 {
+		return ikeHeader{}, nil, fmt.Errorf("%w: encrypted response header does not match the request", errUnexpectedPacket)
+	}
+	return header, payloads, nil
+}
+
+func sendAndReceiveIKEPayloads(
+	ctx context.Context,
+	transport datagramTransport,
+	header ikeHeader,
+	payloads []payload,
+	suite negotiatedSuite,
+	keys ikeKeys,
+	peerSupportsFragmentation bool,
+	random io.Reader,
+) (ikeHeader, []payload, error) {
+	var outboundPackets [][]byte
+	var err error
+	if peerSupportsFragmentation {
+		outboundPackets, err = encryptPayloadsFragmented(header, payloads, suite, keys.SKei, keys.SKai, defaultIKEFragmentSize, random)
+	} else {
+		pkt, encryptErr := encryptPayloads(header, payloads, suite, keys.SKei, keys.SKai, random)
+		if encryptErr != nil {
+			return ikeHeader{}, nil, encryptErr
+		}
+		outboundPackets = [][]byte{pkt}
+	}
+	if err != nil {
+		return ikeHeader{}, nil, err
+	}
+	inboundPackets, err := transport.RoundTripExchange(ctx, outboundPackets)
+	if err != nil {
+		return ikeHeader{}, nil, err
+	}
+	return decryptAndValidateFragments(inboundPackets, header.InitiatorSPI, header.ResponderSPI, header.Exchange, header.MessageID, suite, keys)
+}
+
+func hasNotifyType(payloads []payload, notifyType uint16) bool {
+	for _, item := range payloadsOfType(payloads, payloadNotify) {
+		kind, _, err := parseNotify(item)
+		if err == nil && kind == notifyType {
+			return true
+		}
+	}
+	return false
 }
 
 var errNoProposalChosen = errors.New("ike: responder reported NO_PROPOSAL_CHOSEN")

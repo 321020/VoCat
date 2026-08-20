@@ -76,7 +76,7 @@ func (transport *firstAuthCaptureTransport) Float(context.Context) error {
 	return nil
 }
 
-func (transport *firstAuthCaptureTransport) RoundTrip(_ context.Context, packet []byte) ([]byte, error) {
+func (transport *firstAuthCaptureTransport) RoundTrip(ctx context.Context, packet []byte) ([]byte, error) {
 	transport.calls++
 	if len(transport.cookieChallenge) > 0 {
 		switch transport.calls {
@@ -104,6 +104,17 @@ func (transport *firstAuthCaptureTransport) RoundTrip(_ context.Context, packet 
 	default:
 		return nil, errors.New("test: unexpected exchange")
 	}
+}
+
+func (transport *firstAuthCaptureTransport) RoundTripExchange(ctx context.Context, packets [][]byte) ([][]byte, error) {
+	if len(packets) == 0 {
+		return nil, errors.New("test: empty outbound packets")
+	}
+	resp, err := transport.RoundTrip(ctx, packets[0])
+	if err != nil {
+		return nil, err
+	}
+	return [][]byte{resp}, nil
 }
 
 func (transport *firstAuthCaptureTransport) answerIKECookie(packet []byte) ([]byte, error) {
@@ -146,8 +157,8 @@ func (transport *firstAuthCaptureTransport) verifyIKECookie(packet []byte) error
 		return errors.New("test: first retried IKE_SA_INIT payload is not the expected COOKIE")
 	}
 	cookies := payloadsOfType(payloads, payloadNotify)
-	if len(cookies) != 3 {
-		return fmt.Errorf("test: retried IKE_SA_INIT has %d notify payloads, want 3", len(cookies))
+	if len(cookies) != 4 {
+		return fmt.Errorf("test: retried IKE_SA_INIT has %d notify payloads, want 4", len(cookies))
 	}
 	found := false
 	for _, item := range cookies {
