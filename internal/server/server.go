@@ -160,7 +160,7 @@ func New(options Options) (*Server, error) {
 	mux.HandleFunc("/", server.handleSPA)
 
 	server.handler = server.recoverPanics(
-		server.securityHeaders(server.accessControl(server.logRequests(mux))),
+		server.securityHeaders(server.accessControl(server.logUserOperation(mux))),
 	)
 	return server, nil
 }
@@ -557,16 +557,14 @@ func requireMethod(w http.ResponseWriter, r *http.Request, allowed string) bool 
 	return false
 }
 
-type statusWriter struct {
+type operationStatusWriter struct {
 	http.ResponseWriter
 	status int
 }
 
-func (w *statusWriter) Unwrap() http.ResponseWriter {
-	return w.ResponseWriter
-}
+func (w *operationStatusWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
 
-func (w *statusWriter) WriteHeader(status int) {
+func (w *operationStatusWriter) WriteHeader(status int) {
 	if w.status != 0 {
 		return
 	}
@@ -574,23 +572,58 @@ func (w *statusWriter) WriteHeader(status int) {
 	w.ResponseWriter.WriteHeader(status)
 }
 
-func (s *Server) logRequests(next http.Handler) http.Handler {
+// logUserOperation records state-changing API actions, not request traffic.
+// GET/HEAD polling, assets, health checks and the live log stream are never
+// emitted, keeping the diagnostic page focused on actions a user initiated.
+func (s *Server) logUserOperation(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		startedAt := time.Now()
-		writer := &statusWriter{ResponseWriter: w}
+		if !strings.HasPrefix(r.URL.Path, "/api/") ||
+			r.Method == http.MethodGet || r.Method == http.MethodHead || r.Method == http.MethodOptions ||
+			strings.HasPrefix(r.URL.Path, "/api/auth/") || strings.HasPrefix(r.URL.Path, "/api/logs/") {
+			next.ServeHTTP(w, r)
+			return
+		}
+		writer := &operationStatusWriter{ResponseWriter: w}
 		next.ServeHTTP(writer, r)
 		status := writer.status
 		if status == 0 {
 			status = http.StatusOK
 		}
-		s.logger.Info(
-			"http request",
-			"method", r.Method,
-			"path", r.URL.Path,
+		level := slog.LevelInfo
+		outcome := "success"
+		message := "user operation completed"
+		if status >= http.StatusBadRequest {
+			level = slog.LevelWarn
+			outcome = "failed"
+			message = "user operation failed"
+		}
+		s.logger.Log(r.Context(), level, message,
+			"category", operationPathCategory(r.URL.Path),
+			"event", "user.operation",
+			"operation", strings.TrimPrefix(r.URL.Path, "/api/"),
+			"outcome", outcome,
 			"status", status,
-			"duration", time.Since(startedAt),
 		)
 	})
+}
+
+func operationPathCategory(path string) string {
+	path = strings.ToLower(path)
+	switch {
+	case strings.Contains(path, "/sms"):
+		return "sms"
+	case strings.Contains(path, "/call"):
+		return "call"
+	case strings.Contains(path, "/vowifi") || strings.Contains(path, "/ims"):
+		return "vowifi"
+	case strings.Contains(path, "/network") || strings.Contains(path, "/operator"):
+		return "network"
+	case strings.Contains(path, "/device") || strings.Contains(path, "/esim") ||
+		strings.Contains(path, "/ussd") || strings.Contains(path, "/at"):
+		return "hardware"
+	default:
+		return "operation"
+	}
 }
 
 func (s *Server) securityHeaders(next http.Handler) http.Handler {

@@ -1017,6 +1017,15 @@ func TestEventsPoliciesAndTraffic(t *testing.T) {
 	if err != nil || len(logs) != 1 || logs[0].Message != "ready" {
 		t.Fatalf("log filter result = %+v, %v", logs, err)
 	}
+	if _, err := database.AppendLogEvent(ctx, LogEvent{
+		Time: recent, Level: "info", Message: " HTTP REQUEST ",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	logs, err = database.ListLogEvents(ctx, LogFilter{Level: "info", ExcludeMessage: "http request"})
+	if err != nil || len(logs) != 1 || logs[0].Message != "ready" {
+		t.Fatalf("excluded log filter result = %+v, %v", logs, err)
+	}
 	auditDeleted, logDeleted, err := database.PruneEvents(
 		ctx,
 		old.Add(time.Minute),

@@ -911,7 +911,7 @@ func (session *Session) logInboundSMS(level slog.Level, message string, request 
 	if session != nil && session.provider != nil && session.provider.config.Logger != nil {
 		logger = session.provider.config.Logger
 	}
-	base := []any{"device_id", session.request.DeviceID}
+	base := []any{"category", "sms", "subsystem", "ims", "device_id", session.request.DeviceID}
 	if request != nil {
 		base = append(base,
 			"call_id", strings.TrimSpace(request.value("Call-ID")),
@@ -1091,6 +1091,8 @@ func (session *Session) logOutboundSMS(level slog.Level, message string, attribu
 	}
 	plmn := strings.TrimSpace(session.request.Identity.HomeMCC) + strings.TrimSpace(session.request.Identity.HomeMNC)
 	base := []any{
+		"category", "sms",
+		"subsystem", "ims",
 		"device_id", session.request.DeviceID,
 		"home_plmn", plmn,
 		"transport", session.transport,

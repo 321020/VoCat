@@ -467,11 +467,12 @@ type LogEvent struct {
 }
 
 type LogFilter struct {
-	Level    string
-	Since    time.Time
-	Until    time.Time
-	BeforeID int64
-	Limit    int
+	Level          string
+	ExcludeMessage string
+	Since          time.Time
+	Until          time.Time
+	BeforeID       int64
+	Limit          int
 }
 
 type CardPolicy struct {

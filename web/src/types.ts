@@ -432,12 +432,13 @@ export interface SecuritySettings {
   clientAllowed: boolean;
 }
 
-// 运行日志保留策略：默认不限制，可按条数或天数限制。
+// 运行日志保留策略：全局硬上限 10000 条，可配置更严格的条数或天数限制。
 export interface LoggingSettings {
   mode: "unlimited" | "count" | "days";
   count: number;
   days: number;
   storedLogs: number;
+  maxLogs: number;
 }
 
 export interface SystemInfo {

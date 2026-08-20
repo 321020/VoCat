@@ -146,6 +146,8 @@ func (session *Session) DialCall(ctx context.Context, number string) (vowifi.Cal
 	session.callMu.Unlock()
 	if session.provider != nil && session.provider.config.Logger != nil {
 		session.provider.config.Logger.Info("IMS call started",
+			"category", "call",
+			"device_id", session.request.DeviceID,
 			"direction", "outgoing",
 			"identity_source", identitySource,
 			"target_scheme", strings.ToLower(strings.TrimSuffix(strings.SplitN(target, ":", 2)[0], ":")),
@@ -228,6 +230,8 @@ func (session *Session) watchOutgoingCall(call *imsCall, key sipTransactionKey) 
 			} else {
 				if ackErr := session.sendRejectedInviteACK(call, response); ackErr != nil && session.provider != nil && session.provider.config.Logger != nil {
 					session.provider.config.Logger.Warn("IMS rejected INVITE ACK failed",
+						"category", "call",
+						"device_id", session.request.DeviceID,
 						"carrier_profile", vowifi.ResolveCarrierProfile(session.request.Identity).ID,
 						"sip_status", response.StatusCode,
 						"error", safeSIPDiagnostic(ackErr.Error()),
@@ -368,6 +372,14 @@ func (session *Session) handleCallRequest(request *sipRequest, respond func([]by
 		session.callMu.Lock()
 		session.calls[callID] = call
 		session.callMu.Unlock()
+		if session.provider != nil && session.provider.config.Logger != nil {
+			session.provider.config.Logger.Info("IMS incoming call received",
+				"category", "call",
+				"device_id", session.request.DeviceID,
+				"caller", call.public.Number,
+				"call_id", call.public.ID,
+			)
+		}
 		if session.provider != nil && session.provider.config.OnIncomingCall != nil {
 			calledNumber := identityNumber(request.value("To"))
 			if calledNumber == "" {
@@ -837,6 +849,8 @@ func (session *Session) logCallResponse(response *sipResponse, diagnostic string
 		return
 	}
 	session.provider.config.Logger.Info("IMS call response",
+		"category", "call",
+		"device_id", session.request.DeviceID,
 		"carrier_profile", vowifi.ResolveCarrierProfile(session.request.Identity).ID,
 		"sip_status", response.StatusCode,
 		"diagnostic", diagnostic,

@@ -206,6 +206,11 @@ func (manager *Manager) Discover(ctx context.Context) ([]Device, error) {
 	}
 	seen := make(map[string]struct{}, len(candidates))
 
+	type discoveryEvent struct {
+		connected bool
+		candidate modem.Candidate
+	}
+	events := make([]discoveryEvent, 0)
 	manager.mu.Lock()
 	for _, candidate := range candidates {
 		if strings.TrimSpace(candidate.ID) == "" {
@@ -218,7 +223,11 @@ func (manager *Manager) Discover(ctx context.Context) ([]Device, error) {
 				candidate:  candidate,
 				discovered: true,
 			}
+			events = append(events, discoveryEvent{connected: true, candidate: candidate})
 			continue
+		}
+		if !state.discovered {
+			events = append(events, discoveryEvent{connected: true, candidate: candidate})
 		}
 		if state.candidate.ATPort.OpenPath() != candidate.ATPort.OpenPath() {
 			state.resetClientOnLock = true
@@ -231,10 +240,28 @@ func (manager *Manager) Discover(ctx context.Context) ([]Device, error) {
 		if _, ok := seen[id]; ok {
 			continue
 		}
+		if state.discovered {
+			events = append(events, discoveryEvent{candidate: state.candidate})
+		}
 		state.discovered = false
 		stale = append(stale, state)
 	}
 	manager.mu.Unlock()
+	if manager.logger != nil {
+		for _, event := range events {
+			message := "hardware disconnected"
+			if event.connected {
+				message = "hardware connected"
+			}
+			manager.logger.Info(message,
+				"event", "hardware.discovery",
+				"device_id", event.candidate.ID,
+				"hardware_kind", event.candidate.HardwareKind,
+				"vendor_id", event.candidate.VendorID,
+				"product_id", event.candidate.ProductID,
+			)
+		}
+	}
 
 	for _, state := range stale {
 		state.opMu.Lock()
@@ -382,6 +409,11 @@ func (manager *Manager) setResult(
 		return
 	}
 	previousError := state.lastError
+	var previousSnapshot *Snapshot
+	if state.snapshot != nil {
+		value := *state.snapshot
+		previousSnapshot = &value
+	}
 	if snapshot != nil {
 		value := *snapshot
 		value.Warnings = append([]string(nil), snapshot.Warnings...)
@@ -394,6 +426,13 @@ func (manager *Manager) setResult(
 		state.lastError = ""
 	}
 	shouldLog := err != nil && manager.logger != nil && previousError != err.Error()
+	registrationChanged := snapshot != nil && manager.logger != nil &&
+		(previousSnapshot == nil ||
+			previousSnapshot.RegistrationStatus != snapshot.RegistrationStatus ||
+			previousSnapshot.OperatorCode != snapshot.OperatorCode ||
+			previousSnapshot.AccessTech != snapshot.AccessTech ||
+			previousSnapshot.PSAttached != snapshot.PSAttached ||
+			previousSnapshot.SIMStatus != snapshot.SIMStatus)
 	backend := state.backend
 	hardwareKind := state.candidate.HardwareKind
 	manager.mu.Unlock()
@@ -404,6 +443,21 @@ func (manager *Manager) setResult(
 			"backend", backend,
 			"hardware_kind", hardwareKind,
 			"error", HardwareErrorDetail(err),
+		)
+	}
+	if registrationChanged {
+		manager.logger.Info(
+			"cellular registration state changed",
+			"category", "network",
+			"event", "network.registration",
+			"device_id", id,
+			"sim_status", snapshot.SIMStatus,
+			"registration_status", snapshot.RegistrationStatus,
+			"registration_source", snapshot.RegistrationSource,
+			"operator", snapshot.OperatorName,
+			"operator_code", snapshot.OperatorCode,
+			"access_technology", snapshot.AccessTech,
+			"packet_service_attached", snapshot.PSAttached,
 		)
 	}
 }

@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -19,7 +20,9 @@ var ErrNotFound = errors.New("store: not found")
 
 // Store owns the SQLite connection used by the process.
 type Store struct {
-	db *sql.DB
+	db           *sql.DB
+	logMu        sync.Mutex
+	logClearedAt time.Time
 }
 
 type Admin struct {

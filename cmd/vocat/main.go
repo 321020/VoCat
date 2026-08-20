@@ -41,7 +41,7 @@ import (
 )
 
 func main() {
-	logs := loghub.New(slog.NewJSONHandler(os.Stdout, nil), 2000)
+	logs := loghub.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelDebug}), 2000)
 	logger := slog.New(logs)
 
 	args := os.Args[1:]
@@ -206,7 +206,8 @@ func run(logger *slog.Logger, logs *loghub.Hub) error {
 	}
 
 	cardReaders := pcsc.New()
-	deviceManager, err := device.NewManager(device.Options{CardReaders: cardReaders, Logger: logger})
+	deviceLogger := logger.With("category", "hardware")
+	deviceManager, err := device.NewManager(device.Options{CardReaders: cardReaders, Logger: deviceLogger})
 	if err != nil {
 		return fmt.Errorf("create device manager: %w", err)
 	}
@@ -227,7 +228,7 @@ func run(logger *slog.Logger, logs *loghub.Hub) error {
 	}()
 	pollContext, cancelPolling := context.WithCancel(context.Background())
 	defer cancelPolling()
-	go pollDeviceSnapshots(pollContext, logger, database, deviceManager)
+	go pollDeviceSnapshots(pollContext, deviceLogger, database, deviceManager)
 	go restoreConfiguredCellularData(pollContext, logger, database, deviceManager)
 	go collectCellularTraffic(pollContext, logger, database)
 	go persistLogsToStore(pollContext, logger, logs, database)
@@ -640,7 +641,7 @@ func configureVoWiFiRuntime(
 		Devices: mapper,
 	}
 	manager := vowifiruntime.New(vowifiruntime.Options{
-		Logger:  logger,
+		Logger:  logger.With("category", "vowifi"),
 		OnState: projector.Save,
 		Factory: func(factoryContext context.Context, deviceID string) (*vowifi.Orchestrator, error) {
 			deviceConfig, err := database.Device(factoryContext, deviceID)
@@ -717,7 +718,7 @@ func protectVoWiFiStartupRadioWithRetry(
 	physicalID string,
 	attempts int,
 	delay time.Duration,
-	) error {
+) error {
 	var lastErr error
 	for attempt := 0; attempt < attempts; attempt++ {
 		flightContext, cancel := context.WithTimeout(ctx, 10*time.Second)
@@ -759,14 +760,15 @@ func newVoWiFiOrchestrator(
 	if apn == "" {
 		apn = "ims"
 	}
+	vowifiLogger := logger.With("category", "vowifi", "device_id", deviceConfig.ID)
 	tunnelProvider, err := ike.NewProvider(ike.Config{
-		APN: apn, Logger: logger, AutoProposalFallback: true,
+		APN: apn, Logger: vowifiLogger, AutoProposalFallback: true,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("device %q IKE provider: %w", deviceConfig.ID, err)
 	}
 	imsProvider, err := ims.NewProvider(adapter, ims.Config{
-		Logger: logger,
+		Logger: vowifiLogger,
 		// Carrier-specific transport and SMSC defaults live in the shared data
 		// profile. Prefer network-provided P-CSCF hints, then safely try the
 		// alternate transport only if no SIP response was observed.
@@ -983,6 +985,10 @@ func persistLogsToStore(
 			if !ok {
 				return
 			}
+			if loghub.IsHTTPAccessEntry(entry) {
+				continue
+			}
+			entry = loghub.SanitizeEntry(entry)
 			var fields json.RawMessage
 			if len(entry.Fields) > 0 {
 				if raw, err := json.Marshal(entry.Fields); err == nil {

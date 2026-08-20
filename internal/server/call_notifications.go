@@ -98,11 +98,21 @@ func (s *Server) NotifyIncomingCall(ctx context.Context, notification IncomingCa
 	if notification.Time.IsZero() {
 		notification.Time = time.Now().UTC()
 	}
+	if s.logger != nil {
+		s.logger.Info("incoming call detected",
+			"category", "call",
+			"event", "call.incoming",
+			"device_id", notification.DeviceID,
+			"caller", notification.Caller,
+			"called", notification.Called,
+			"transport", notification.Environment,
+		)
+	}
 
 	dedupKey := fmt.Sprintf("%s:%s", notification.DeviceID, notification.Caller)
 	if shouldSuppressDuplicateCall(dedupKey, notification.Time, callDeduplicationWindow) {
 		if s.logger != nil {
-			s.logger.Debug("suppressed duplicate incoming call notification", "device_id", notification.DeviceID, "caller", notification.Caller)
+			s.logger.Debug("suppressed duplicate incoming call notification", "category", "call", "device_id", notification.DeviceID, "caller", notification.Caller)
 		}
 		return
 	}
@@ -137,7 +147,7 @@ func (s *Server) NotifyIncomingCall(ctx context.Context, notification IncomingCa
 		}
 		if err := sendCallNotification(destCtx, channel, config, notification); err != nil {
 			if s.logger != nil {
-				s.logger.Warn("send incoming call notification", "channel", channel, "device_id", notification.DeviceID, "caller", notification.Caller, "error", err)
+				s.logger.Warn("send incoming call notification", "category", "call", "channel", channel, "device_id", notification.DeviceID, "caller", notification.Caller, "raw_error", err)
 			}
 		}
 	}

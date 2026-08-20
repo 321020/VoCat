@@ -1002,6 +1002,11 @@ func (s *Server) handleVoWiFiReconnect(
 }
 
 func (s *Server) writeVoWiFiError(w http.ResponseWriter, err error) {
+	s.logger.Warn("VoWiFi operation failed",
+		"category", "vowifi",
+		"event", "vowifi.operation_failed",
+		"raw_error", err,
+	)
 	switch {
 	case errors.Is(err, vowifiruntime.ErrNotRegistered):
 		writeError(w, http.StatusServiceUnavailable, "vowifi_device_unavailable", "the configured device has no VoWiFi runtime")
@@ -1012,7 +1017,6 @@ func (s *Server) writeVoWiFiError(w http.ResponseWriter, err error) {
 	case errors.Is(err, vowifi.ErrNotRunning):
 		writeError(w, http.StatusConflict, "vowifi_not_running", "VoWiFi is not running")
 	default:
-		s.logger.Warn("VoWiFi action rejected", "error", err)
 		writeError(w, http.StatusBadGateway, "vowifi_error", err.Error())
 	}
 }
@@ -1070,6 +1074,13 @@ func (s *Server) handleAT(w http.ResponseWriter, r *http.Request, id string) boo
 				text += "\n"
 			}
 			text += commandErr.Final
+			s.logger.Warn("AT command rejected by modem",
+				"category", "hardware",
+				"event", "hardware.at_rejected",
+				"device_id", id,
+				"modem_final", commandErr.Final,
+				"raw_response", text,
+			)
 			writeJSON(w, http.StatusOK, map[string]any{
 				"data": map[string]any{
 					"response":    text,
@@ -1509,6 +1520,11 @@ func (s *Server) requirePhysicalDevice(w http.ResponseWriter, present bool) bool
 }
 
 func (s *Server) writeDeviceError(w http.ResponseWriter, err error) {
+	s.logger.Warn("hardware operation failed",
+		"category", "hardware",
+		"event", "hardware.operation_failed",
+		"raw_error", device.HardwareErrorDetail(err),
+	)
 	switch {
 	case errors.Is(err, device.ErrNotFound):
 		writeError(w, http.StatusNotFound, "device_not_found", "device was not found or is no longer present")
@@ -1547,9 +1563,6 @@ func (s *Server) writeDeviceError(w http.ResponseWriter, err error) {
 	case errors.Is(err, context.Canceled):
 		writeError(w, http.StatusRequestTimeout, "request_canceled", "the modem request was canceled")
 	default:
-		// Preserve the hardware failure reason in the operator-visible log while
-		// keeping AT payloads and long APDU material out of it.
-		s.logger.Warn("device operation failed", "error", device.HardwareErrorDetail(err))
 		writeError(w, http.StatusBadGateway, "modem_error", "the device operation failed")
 	}
 }

@@ -369,16 +369,26 @@ func (s *Server) handleSMSSend(w http.ResponseWriter, r *http.Request) {
 	if sendErr != nil {
 		data["retry_safe"] = false
 		if result.PartsAccepted > 0 {
+			s.logger.Warn("multipart SMS was only partially accepted",
+				"category", "sms", "event", "sms.submission",
+				"device_id", request.DeviceID, "peer", request.Phone,
+				"transport", "cellular_at", "parts_attempted", result.PartsAttempted,
+				"parts_accepted", result.PartsAccepted, "raw_error", sendErr,
+			)
 			data["warning"] = "Only part of the multipart SMS was accepted by the modem. Do not retry the whole message."
 			writeJSON(w, http.StatusAccepted, map[string]any{"data": data})
 			return
 		}
 		s.logger.Warn(
 			"SMS submission failed after modem interaction",
+			"category", "sms",
+			"event", "sms.submission",
 			"device_id", request.DeviceID,
+			"peer", request.Phone,
+			"transport", "cellular_at",
 			"parts_attempted", result.PartsAttempted,
 			"parts_accepted", result.PartsAccepted,
-			"error", sendErr,
+			"raw_error", sendErr,
 		)
 		writeJSON(w, http.StatusBadGateway, map[string]any{
 			"error": apiError{
@@ -390,6 +400,12 @@ func (s *Server) handleSMSSend(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !result.AllPartsAccepted {
+		s.logger.Warn("SMS submission was not confirmed",
+			"category", "sms", "event", "sms.submission",
+			"device_id", request.DeviceID, "peer", request.Phone,
+			"transport", "cellular_at", "modem_final", result.ModemFinal,
+			"parts_attempted", result.PartsAttempted, "parts_accepted", result.PartsAccepted,
+		)
 		writeJSON(w, http.StatusBadGateway, map[string]any{
 			"error": apiError{
 				Code:    "sms_submission_unconfirmed",
@@ -399,6 +415,11 @@ func (s *Server) handleSMSSend(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
+	s.logger.Info("SMS submission accepted",
+		"category", "sms", "event", "sms.submission",
+		"device_id", request.DeviceID, "peer", request.Phone,
+		"transport", "cellular_at", "parts", result.PartsAccepted,
+	)
 	writeJSON(w, http.StatusAccepted, map[string]any{"data": data})
 }
 
@@ -475,6 +496,12 @@ func (s *Server) writeIMSSMSSendResult(
 		"outcome":             smsSendOutcome(result.AllPartsAccepted, result.PartsAccepted, result.PartsTotal, result.DeliveryConfirmed),
 	}
 	if sendErr != nil {
+		s.logger.Warn("IMS SMS submission failed",
+			"category", "sms", "event", "sms.submission",
+			"device_id", deviceID, "peer", result.To, "transport", "ims",
+			"parts_attempted", result.PartsAttempted, "parts_accepted", result.PartsAccepted,
+			"raw_error", sendErr,
+		)
 		data["retry_safe"] = false
 		data["warning"] = sendErr.Error()
 		if result.PartsAccepted == 0 {
@@ -489,6 +516,11 @@ func (s *Server) writeIMSSMSSendResult(
 		}
 	}
 	if !result.AllPartsAccepted && result.PartsAccepted == 0 {
+		s.logger.Warn("IMS SMS submission was not confirmed",
+			"category", "sms", "event", "sms.submission",
+			"device_id", deviceID, "peer", result.To, "transport", "ims",
+			"parts_attempted", result.PartsAttempted, "parts_accepted", result.PartsAccepted,
+		)
 		writeJSON(w, http.StatusBadGateway, map[string]any{
 			"error": apiError{
 				Code:    "ims_sms_submission_unconfirmed",
@@ -497,6 +529,19 @@ func (s *Server) writeIMSSMSSendResult(
 			"data": data,
 		})
 		return
+	}
+	if result.AllPartsAccepted {
+		s.logger.Info("IMS SMS submission accepted",
+			"category", "sms", "event", "sms.submission",
+			"device_id", deviceID, "peer", result.To, "transport", "ims",
+			"parts", result.PartsAccepted,
+		)
+	} else {
+		s.logger.Warn("multipart IMS SMS was only partially accepted",
+			"category", "sms", "event", "sms.submission",
+			"device_id", deviceID, "peer", result.To, "transport", "ims",
+			"parts_attempted", result.PartsAttempted, "parts_accepted", result.PartsAccepted,
+		)
 	}
 	writeJSON(w, http.StatusAccepted, map[string]any{"data": data})
 }
@@ -653,7 +698,7 @@ func (s *Server) syncModemSMS(ctx context.Context, onlyDevice string) {
 				"delivery_status":    message.DeliveryStatus,
 				"data_coding_scheme": message.DataCodingScheme,
 			})
-			_, saveErr := s.store.SaveSMSMessage(ctx, store.SMSMessage{
+			saved, saveErr := s.store.SaveSMSMessage(ctx, store.SMSMessage{
 				MessageID:     messageID,
 				DeviceID:      config.ID,
 				ModemIMEI:     modemIMEI,
@@ -670,7 +715,14 @@ func (s *Server) syncModemSMS(ctx context.Context, onlyDevice string) {
 				Extra:         extra,
 			})
 			if saveErr != nil {
-				s.logger.Warn("persist modem SMS failed", "device_id", config.ID, "error", saveErr)
+				s.logger.Warn("persist modem SMS failed", "category", "sms", "device_id", config.ID, "raw_error", saveErr)
+			} else if saved.Direction == "inbound" && saved.CreatedAt.Unix() == saved.UpdatedAt.Unix() {
+				s.logger.Info("cellular SMS received",
+					"category", "sms", "event", "sms.received",
+					"device_id", config.ID, "peer", saved.Peer,
+					"transport", "cellular_at", "encoding", message.Encoding,
+					"parts", saved.PartsTotal,
+				)
 			}
 		}
 	}
@@ -770,6 +822,6 @@ func (s *Server) writeStoreError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusNotFound, "not_found", "the requested record was not found")
 		return
 	}
-	s.logger.Error("database operation failed", "error", err)
+	s.logger.Error("database operation failed", "category", "system", "event", "store.operation_failed", "raw_error", err)
 	writeError(w, http.StatusInternalServerError, "database_error", "the database operation failed")
 }
