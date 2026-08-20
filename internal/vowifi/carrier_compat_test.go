@@ -73,3 +73,47 @@ func TestResolveCarrierProfileStandardHasNoRegisterOverrides(t *testing.T) {
 		t.Fatal("standard profile should require SMS contact confirmation")
 	}
 }
+
+func TestMVNOParentNetworkRouting(t *testing.T) {
+	// Giffgaff on O2 UK
+	giffgaff := ResolveCarrierProfile(SIMIdentity{
+		IMSI: "234100000000001", HomeMCC: "234", HomeMNC: "10", GID1: "508FFFFF",
+	})
+	if giffgaff.RouteMCC != "234" || giffgaff.RouteMNC != "10" {
+		t.Fatalf("giffgaff Route PLMN = %s-%s, want 234-10", giffgaff.RouteMCC, giffgaff.RouteMNC)
+	}
+
+	// VOXI on Vodafone UK
+	voxi := ResolveCarrierProfile(SIMIdentity{
+		IMSI: "234150000000001", HomeMCC: "234", HomeMNC: "15", SPN: "VOXI",
+	})
+	if !strings.Contains(voxi.ID, "voxi") || voxi.RouteMCC != "234" || voxi.RouteMNC != "15" {
+		t.Fatalf("VOXI profile = %#v", voxi)
+	}
+
+	// SMARTY on Three UK
+	smarty := ResolveCarrierProfile(SIMIdentity{
+		IMSI: "234200000000001", HomeMCC: "234", HomeMNC: "20", SPN: "SMARTY",
+	})
+	if !strings.Contains(smarty.ID, "smarty") || smarty.RouteMCC != "234" || smarty.RouteMNC != "20" {
+		t.Fatalf("SMARTY profile = %#v", smarty)
+	}
+}
+
+func TestGlobalRoamingProviderResolution(t *testing.T) {
+	// Truphone / BetterRoaming global 90143
+	truphone := ResolveCarrierProfile(SIMIdentity{
+		IMSI: "901430000000001", HomeMCC: "901", HomeMNC: "43",
+	})
+	if (!strings.Contains(truphone.ID, "truphone") && !strings.Contains(truphone.ID, "1global")) || truphone.EPDG != "epdg.eps.truphone.net" {
+		t.Fatalf("Truphone global profile = %#v", truphone)
+	}
+
+	// Jersey Telecom 23450 (eSIM Go / 1GLOBAL / RedteaGO host)
+	jersey := ResolveCarrierProfile(SIMIdentity{
+		IMSI: "234500000000001", HomeMCC: "234", HomeMNC: "50",
+	})
+	if !strings.Contains(jersey.ID, "jersey-telecom") || jersey.EPDG != "epdg.epc.mnc050.mcc234.pub.3gppnetwork.org" {
+		t.Fatalf("Jersey Telecom profile = %#v", jersey)
+	}
+}

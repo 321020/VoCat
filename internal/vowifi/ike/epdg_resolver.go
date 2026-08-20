@@ -29,20 +29,27 @@ func resolveEPDG(ctx context.Context, resolver *net.Resolver, host string) ([]ne
 		resolver = net.DefaultResolver
 	}
 	normalized := strings.ToLower(strings.TrimSuffix(strings.TrimSpace(host), "."))
-	addresses, systemErr := resolver.LookupIPAddr(ctx, host)
-	validSystemAddresses := filterValidPublicEPDGAddresses(addresses)
-	if systemErr == nil && len(validSystemAddresses) > 0 {
-		return validSystemAddresses, nil
+	hostsToTry := []string{normalized}
+	if alt := alternate3GPPHostname(normalized); alt != "" && alt != normalized {
+		hostsToTry = append(hostsToTry, alt)
+	}
+
+	var systemErr error
+	for _, targetHost := range hostsToTry {
+		addresses, err := resolver.LookupIPAddr(ctx, targetHost)
+		if err == nil {
+			valid := filterValidPublicEPDGAddresses(addresses)
+			if len(valid) > 0 {
+				return valid, nil
+			}
+		} else {
+			systemErr = err
+		}
 	}
 
 	subnet := vowifi.EPDGDNSClientSubnet(normalized)
 	client := &http.Client{Timeout: 8 * time.Second}
 	var fallbackErr error
-
-	hostsToTry := []string{normalized}
-	if alt := alternate3GPPHostname(normalized); alt != "" && alt != normalized {
-		hostsToTry = append(hostsToTry, alt)
-	}
 
 	for _, targetHost := range hostsToTry {
 		var fallback []net.IPAddr

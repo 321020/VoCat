@@ -396,8 +396,8 @@ func decimalString(value string) bool {
 // ResolveCarrierProfile returns the most specific built-in match. Exact SIM
 // attributes add specificity, so a constrained MVNO rule wins over its host
 // PLMN without weakening the default match for unrelated subscriptions.
-func ResolveCarrierProfile(identity SIMIdentity) CarrierProfile {
-	resolved := CarrierProfile{
+func defaultCarrierProfile() CarrierProfile {
+	return CarrierProfile{
 		ID:                 CarrierProfileStandard,
 		MatchSource:        "standard",
 		IKEProposal:        IKEProposalModern,
@@ -408,6 +408,13 @@ func ResolveCarrierProfile(identity SIMIdentity) CarrierProfile {
 		IMSDialURIScheme:   "tel",
 		IMSVoiceCodecs:     []string{"PCMA", "PCMU"},
 	}
+}
+
+// ResolveCarrierProfile returns the most specific built-in match. Exact SIM
+// attributes add specificity, so a constrained MVNO rule wins over its host
+// PLMN without weakening the default match for unrelated subscriptions.
+func ResolveCarrierProfile(identity SIMIdentity) CarrierProfile {
+	resolved := defaultCarrierProfile()
 	bestScore := -1
 	for _, rule := range carrierProfilesSnapshot() {
 		score, source, matched := matchCarrierProfileRule(rule, identity)
@@ -415,7 +422,7 @@ func ResolveCarrierProfile(identity SIMIdentity) CarrierProfile {
 			continue
 		}
 		bestScore = score
-		resolved = applyCarrierProfileRule(resolved, rule, source, identity)
+		resolved = applyCarrierProfileRule(defaultCarrierProfile(), rule, source, identity)
 	}
 	return resolved
 }
@@ -458,6 +465,8 @@ func matchCarrierProfile(match carrierProfileMatch, identity SIMIdentity) (int, 
 			score += 100
 			sources = append(sources, "hplmn")
 			hasHomePLMNMatch = true
+		} else if identity.HomeMCC != "" && identity.HomeMNC != "" {
+			return 0, "", false
 		}
 	}
 	hasSelectorMatch := false
@@ -487,7 +496,7 @@ func matchCarrierProfile(match carrierProfileMatch, identity SIMIdentity) (int, 
 			score += selector.weight
 			sources = append(sources, selector.name)
 			hasSelectorMatch = true
-		} else if !hasHomePLMNMatch {
+		} else if !hasHomePLMNMatch || selector.name == "gid1" || selector.name == "gid2" {
 			return 0, "", false
 		}
 	}
@@ -499,6 +508,8 @@ func matchCarrierProfile(match carrierProfileMatch, identity SIMIdentity) (int, 
 			score += 20
 			sources = append(sources, "spn")
 			hasSelectorMatch = true
+		} else if !hasHomePLMNMatch || spn != "" {
+			return 0, "", false
 		}
 	}
 	if !hasHomePLMNMatch && !hasSelectorMatch {

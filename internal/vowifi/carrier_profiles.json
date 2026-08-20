@@ -4054,6 +4054,19 @@
         "home_plmns": [
           "23450"
         ]
+      },
+      "route": {
+        "mcc": "234",
+        "mnc": "50"
+      },
+      "epdg": {
+        "hostname": "epdg.epc.mnc050.mcc234.pub.3gppnetwork.org"
+      },
+      "ike": {
+        "proposal": "modern"
+      },
+      "ims": {
+        "ipsec_encryption": "aes-cbc"
       }
     },
     {
@@ -5724,16 +5737,98 @@
     },
     {
       "id": "ipcc-giffgaff-23410",
-      "match": {
-        "home_plmns": [
-          "23410"
-        ],
-        "gid1_prefixes": [
-          "508"
-        ]
+      "match_any": [
+        {
+          "home_plmns": [
+            "23410"
+          ],
+          "gid1_prefixes": [
+            "508"
+          ]
+        },
+        {
+          "home_plmns": [
+            "23410"
+          ],
+          "spns": [
+            "giffgaff"
+          ]
+        }
+      ],
+      "route": {
+        "mcc": "234",
+        "mnc": "10"
       },
       "epdg": {
         "hostname": "epdg.epc.mnc010.mcc234.pub.3gppnetwork.org"
+      },
+      "ike": {
+        "proposal": "modern"
+      },
+      "ims": {
+        "ipsec_encryption": "aes-cbc"
+      }
+    },
+    {
+      "id": "ipcc-voxi-23415",
+      "match_any": [
+        {
+          "home_plmns": [
+            "23415"
+          ],
+          "spns": [
+            "VOXI"
+          ]
+        },
+        {
+          "home_plmns": [
+            "23415"
+          ],
+          "gid1_prefixes": [
+            "4E"
+          ]
+        }
+      ],
+      "route": {
+        "mcc": "234",
+        "mnc": "15"
+      },
+      "epdg": {
+        "hostname": "epdg.epc.mnc015.mcc234.pub.3gppnetwork.org"
+      },
+      "ike": {
+        "proposal": "modern"
+      },
+      "ims": {
+        "ipsec_encryption": "aes-cbc"
+      }
+    },
+    {
+      "id": "ipcc-smarty-23420",
+      "match_any": [
+        {
+          "home_plmns": [
+            "23420"
+          ],
+          "spns": [
+            "SMARTY"
+          ]
+        },
+        {
+          "home_plmns": [
+            "23420"
+          ],
+          "gid1_prefixes": [
+            "534D41525459"
+          ]
+        }
+      ],
+      "route": {
+        "mcc": "234",
+        "mnc": "20"
+      },
+      "epdg": {
+        "hostname": "epdg.epc.mnc020.mcc234.pub.3gppnetwork.org"
       },
       "ike": {
         "proposal": "modern"
@@ -9659,6 +9754,19 @@
           ],
           "gid1_prefixes": [
             "547275554B3030656E"
+          ]
+        },
+        {
+          "home_plmns": [
+            "90143",
+            "90128"
+          ]
+        },
+        {
+          "spns": [
+            "Truphone",
+            "BetterRoaming",
+            "1GLOBAL"
           ]
         }
       ],

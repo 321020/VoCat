@@ -330,6 +330,18 @@ func (manager *Manager) openEuiccAID(ctx context.Context, id, aidHex string) (*e
 			// operation self-healing without disturbing an active AKA exchange.
 			continue
 		}
+		if attempt == 1 && isTransientEuiccCME(err) {
+			// When SIM hot-swap occurs or the modem baseband APDU channel is stuck (+CME ERROR: 0),
+			// perform a soft SIM subsystem reset (AT+CFUN=0 -> AT+CFUN=1/4) to re-initialize
+			// card interface voltage and ATR without restarting the whole hardware module.
+			_ = manager.softResetForProfileSwitch(ctx, id)
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-time.After(600 * time.Millisecond):
+			}
+			continue
+		}
 		if !isTransientEuiccCME(err) {
 			return nil, err
 		}

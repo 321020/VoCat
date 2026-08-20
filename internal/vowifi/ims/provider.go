@@ -230,99 +230,109 @@ func (provider *Provider) Start(ctx context.Context, request vowifi.IMSRequest) 
 	if err != nil {
 		return nil, err
 	}
-	pcscf := provider.config.PCSCF
-	if pcscf == "" {
+	var pcscfCandidates []string
+	if provider.config.PCSCF != "" {
+		pcscfCandidates = []string{provider.config.PCSCF}
+	} else {
 		for _, candidate := range tunnel.PCSCF {
-			if strings.TrimSpace(candidate) != "" {
-				pcscf = candidate
-				break
+			candidate = strings.TrimSpace(candidate)
+			if candidate != "" {
+				pcscfCandidates = append(pcscfCandidates, candidate)
 			}
 		}
 	}
-	if pcscf == "" {
+	if len(pcscfCandidates) == 0 {
 		return nil, errors.New("ims: tunnel did not provide a P-CSCF")
 	}
-	endpoint, transportHint, err := parsePCSCF(pcscf, provider.config.Port)
-	if err != nil {
-		return nil, err
-	}
-	if provider.config.PCSCF != "" && !pcscfProvenByTunnel(endpoint, tunnel.PCSCF, provider.config.Port) {
-		return nil, errors.New("ims: configured P-CSCF is not proven by the SWu tunnel")
-	}
-	transport, carrierSelected := carrierTransportForIdentity(provider.config, request.Identity)
-	if cached := provider.cachedTransport(request.Identity); cached != "" {
-		transport = cached
-		carrierSelected = true
-	}
-	if transport == "" && !carrierSelected {
-		transport = transportHint
-	}
-	if transport == "" {
-		transport = provider.config.Transport
-	}
-	if transport == "" {
-		transport = "tcp"
-	}
-	localAddress := provider.config.LocalAddress
-	if localAddress == "" {
-		if endpointIP := net.ParseIP(endpoint.host); endpointIP != nil && endpointIP.To4() == nil {
-			localAddress = tunnel.LocalIPv6
-		} else {
-			localAddress = tunnel.LocalIPv4
-			if strings.TrimSpace(localAddress) == "" {
-				localAddress = tunnel.LocalIPv6
-			}
-		}
-	}
-	localAddress = strings.TrimSpace(strings.Split(localAddress, "/")[0])
-	if localAddress == "" {
-		return nil, errors.New("ims: tunnel did not provide a local address")
-	}
-	if !localAddressProvenByTunnel(localAddress, tunnel) {
-		return nil, errors.New("ims: configured local address is not assigned by the SWu tunnel")
-	}
 
-	transports := []string{transport}
-	if provider.config.AutoTransportFallback {
-		alternate := "udp"
-		if transport == "udp" {
-			alternate = "tcp"
-		}
-		transports = append(transports, alternate)
-	}
 	var lastErr error
-	for attempt, candidate := range transports {
-		connection, dialErr := dialSIP(ctx, candidate, localAddress, 0, endpoint.address())
-		if dialErr != nil {
-			lastErr = fmt.Errorf("ims: connect to P-CSCF over %s: %w", candidate, dialErr)
-			if attempt+1 < len(transports) && ctx.Err() == nil {
-				provider.logTransportFallback(request.Identity, candidate, transports[attempt+1], lastErr)
-				continue
+	for pcscfIndex, pcscf := range pcscfCandidates {
+		endpoint, transportHint, err := parsePCSCF(pcscf, provider.config.Port)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		if provider.config.PCSCF != "" && !pcscfProvenByTunnel(endpoint, tunnel.PCSCF, provider.config.Port) {
+			return nil, errors.New("ims: configured P-CSCF is not proven by the SWu tunnel")
+		}
+		transport, carrierSelected := carrierTransportForIdentity(provider.config, request.Identity)
+		if cached := provider.cachedTransport(request.Identity); cached != "" {
+			transport = cached
+			carrierSelected = true
+		}
+		if transport == "" && !carrierSelected {
+			transport = transportHint
+		}
+		if transport == "" {
+			transport = provider.config.Transport
+		}
+		if transport == "" {
+			transport = "tcp"
+		}
+		localAddress := provider.config.LocalAddress
+		if localAddress == "" {
+			if endpointIP := net.ParseIP(endpoint.host); endpointIP != nil && endpointIP.To4() == nil {
+				localAddress = tunnel.LocalIPv6
+			} else {
+				localAddress = tunnel.LocalIPv4
+				if strings.TrimSpace(localAddress) == "" {
+					localAddress = tunnel.LocalIPv6
+				}
 			}
-			return nil, lastErr
 		}
-		session, sessionErr := newSession(provider, request, identities, endpoint, candidate, connection)
-		if sessionErr != nil {
-			_ = connection.Close()
-			return nil, sessionErr
+		localAddress = strings.TrimSpace(strings.Split(localAddress, "/")[0])
+		if localAddress == "" {
+			return nil, errors.New("ims: tunnel did not provide a local address")
 		}
-		establishErr := session.establish(ctx)
-		if establishErr == nil {
-			provider.rememberTransport(request.Identity, candidate)
-			if attempt > 0 {
-				provider.config.Logger.Info("IMS automatic transport fallback succeeded",
-					"carrier_profile", vowifi.ResolveCarrierProfile(request.Identity).ID,
-					"transport", candidate)
+		if !localAddressProvenByTunnel(localAddress, tunnel) {
+			return nil, errors.New("ims: configured local address is not assigned by the SWu tunnel")
+		}
+
+		transports := []string{transport}
+		if provider.config.AutoTransportFallback {
+			alternate := "udp"
+			if transport == "udp" {
+				alternate = "tcp"
 			}
-			return session, nil
+			transports = append(transports, alternate)
 		}
-		sipResponseObserved := session.evidence.LastSIPCode != 0
-		session.abort()
-		lastErr = establishErr
-		if sipResponseObserved || attempt+1 >= len(transports) || ctx.Err() != nil {
-			return nil, lastErr
+		for attempt, candidate := range transports {
+			connection, dialErr := dialSIP(ctx, candidate, localAddress, 0, endpoint.address())
+			if dialErr != nil {
+				lastErr = fmt.Errorf("ims: connect to P-CSCF over %s: %w", candidate, dialErr)
+				if attempt+1 < len(transports) && ctx.Err() == nil {
+					provider.logTransportFallback(request.Identity, candidate, transports[attempt+1], lastErr)
+					continue
+				}
+				break
+			}
+			session, sessionErr := newSession(provider, request, identities, endpoint, candidate, connection)
+			if sessionErr != nil {
+				_ = connection.Close()
+				lastErr = sessionErr
+				break
+			}
+			establishErr := session.establish(ctx)
+			if establishErr == nil {
+				provider.rememberTransport(request.Identity, candidate)
+				if attempt > 0 || pcscfIndex > 0 {
+					provider.config.Logger.Info("IMS automatic transport fallback succeeded",
+						"carrier_profile", vowifi.ResolveCarrierProfile(request.Identity).ID,
+						"transport", candidate)
+				}
+				return session, nil
+			}
+			sipResponseObserved := session.evidence.LastSIPCode != 0
+			session.abort()
+			lastErr = establishErr
+			if sipResponseObserved || attempt+1 >= len(transports) || ctx.Err() != nil {
+				break
+			}
+			provider.logTransportFallback(request.Identity, candidate, transports[attempt+1], establishErr)
 		}
-		provider.logTransportFallback(request.Identity, candidate, transports[attempt+1], establishErr)
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
 	}
 	return nil, lastErr
 }
@@ -384,8 +394,13 @@ func deriveIdentities(identity vowifi.SIMIdentity, config Config) (identitySet, 
 	if !digitsBetween(imsi, 5, 16) {
 		return identitySet{}, errors.New("ims: SIM IMSI is unavailable or invalid")
 	}
-	mcc := strings.TrimSpace(identity.HomeMCC)
-	mnc := strings.TrimSpace(identity.HomeMNC)
+	profile := vowifi.ResolveCarrierProfile(identity)
+	mcc := strings.TrimSpace(profile.RouteMCC)
+	mnc := strings.TrimSpace(profile.RouteMNC)
+	if mcc == "" || mnc == "" {
+		mcc = strings.TrimSpace(identity.HomeMCC)
+		mnc = strings.TrimSpace(identity.HomeMNC)
+	}
 	if !digitsBetween(mcc, 3, 3) || !digitsBetween(mnc, 2, 3) {
 		return identitySet{}, errors.New("ims: home PLMN is unavailable or invalid")
 	}
@@ -395,7 +410,7 @@ func deriveIdentities(identity vowifi.SIMIdentity, config Config) (identitySet, 
 	domain := fmt.Sprintf("ims.mnc%s.mcc%s.3gppnetwork.org", mnc, mcc)
 	privateDomain := domain
 	publicDomain := domain
-	if vowifi.ResolveCarrierProfile(identity).IMSIdentityProfile == vowifi.IMSProfileATT {
+	if profile.IMSIdentityProfile == vowifi.IMSProfileATT {
 		// AT&T provisions the IMPI and IMPU in its ISIM domains rather than
 		// the generic 3GPP PLMN IMS domain.
 		domain = "one.att.net"
