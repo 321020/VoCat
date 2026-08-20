@@ -56,7 +56,6 @@ type ReceivedSMS struct {
 	RawTPDU                string
 	DecodeError            string
 }
-
 // ReceivedSMSStatus is network delivery evidence for one submitted SMS part.
 type ReceivedSMSStatus struct {
 	DeviceID               string

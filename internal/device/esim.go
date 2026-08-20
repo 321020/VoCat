@@ -1071,15 +1071,14 @@ func (manager *Manager) renameCachedProfile(id, iccid, nickname string) {
 	manager.esimCacheMu.Unlock()
 }
 
-// recoverAfterProfileSwitch owns the post-commit reset independently of the
-// initiating HTTP request. EC20 commonly drops the AT port while processing
-// CFUN=1,1, so the reset error is intentionally followed by discovery retries.
+// recoverAfterProfileSwitch owns the post-commit SIM reset independently of the
+// initiating HTTP request.
 func (manager *Manager) recoverAfterProfileSwitch(id string) {
 	resetContext, cancelReset := context.WithTimeout(context.Background(), manager.longTimeout)
 	if native, err := manager.powerCycleNativeQMISIM(resetContext, id); native {
 		cancelReset()
 		if err == nil {
-			time.Sleep(1500 * time.Millisecond)
+			time.Sleep(1 * time.Second)
 		}
 		// Native WWAN identity and profile verification are both QMI-backed.
 		// Do not enter the AT refresh path: OpenStick firmware can accept the
@@ -1088,52 +1087,39 @@ func (manager *Manager) recoverAfterProfileSwitch(id string) {
 	}
 	cancelReset()
 	if !manager.isPCSCDevice(id) {
-		resetContext, cancelReset := context.WithTimeout(context.Background(), manager.longTimeout)
-		_ = manager.rebootForProfileSwitch(resetContext, id)
+		resetContext, cancelReset := context.WithTimeout(context.Background(), manager.commandTimeout*2)
+		_ = manager.softResetForProfileSwitch(resetContext, id)
 		cancelReset()
 	}
 	manager.refreshAfterProfileSwitch(id)
 }
 
 // refreshAfterProfileSwitch repopulates the device snapshot in the background
-// after an eSIM profile switch + modem reboot. /overview only serves the cached
-// snapshot, and nothing else live-reads post-switch, so without this the card
-// stays on "--" forever. The EC20 takes ~10-15s to come back from AT+CFUN=1,1,
-// so we delay first, then retry with backoff. Transport errors during the
-// reboot window are fine — Fix 1 discards the poisoned client and reopens on
-// the next attempt. All errors are swallowed: this is best-effort self-healing
-// and setResult already records the last failure for the UI.
+// after an eSIM profile switch.
 func (manager *Manager) refreshAfterProfileSwitch(id string) {
 	if manager.isPCSCDevice(id) {
-		time.Sleep(750 * time.Millisecond)
-		for attempt := 0; attempt < 10; attempt++ {
-			ctx, cancel := context.WithTimeout(context.Background(), manager.commandTimeout*4)
+		time.Sleep(500 * time.Millisecond)
+		for attempt := 0; attempt < 5; attempt++ {
+			ctx, cancel := context.WithTimeout(context.Background(), manager.commandTimeout*2)
 			_, _ = manager.Discover(ctx)
 			_, err := manager.Refresh(ctx, id)
 			cancel()
 			if err == nil {
 				return
 			}
-			time.Sleep(time.Second)
+			time.Sleep(500 * time.Millisecond)
 		}
 		return
 	}
 	const (
-		settle   = 8 * time.Second
-		interval = 4 * time.Second
-		attempts = 6
+		settle   = 1 * time.Second
+		interval = 1 * time.Second
+		attempts = 5
 	)
 	time.Sleep(settle)
 	for attempt := 0; attempt < attempts; attempt++ {
-		ctx, cancel := context.WithTimeout(context.Background(), manager.commandTimeout*4)
-		_, _ = manager.Discover(ctx)
-		_, flightErr := manager.SetFlight(ctx, id, true)
-		var err error
-		if flightErr == nil {
-			_, err = manager.Refresh(ctx, id)
-		} else {
-			err = flightErr
-		}
+		ctx, cancel := context.WithTimeout(context.Background(), manager.commandTimeout*2)
+		_, err := manager.Refresh(ctx, id)
 		cancel()
 		if err == nil {
 			return
@@ -1233,7 +1219,7 @@ func (manager *Manager) canVerifyProfileSwitchWithoutRestart(id string) bool {
 // is finalized by REFRESH/reset. The UI must not report success until the modem
 // is actually exposing the requested ICCID.
 func (manager *Manager) verifySwitchedICCID(ctx context.Context, id, expected string) error {
-	return manager.verifySwitchedICCIDAttempts(ctx, id, expected, 6, 2*time.Second)
+	return manager.verifySwitchedICCIDAttempts(ctx, id, expected, 6, 1*time.Second)
 }
 
 func (manager *Manager) verifySwitchedICCIDAttempts(

@@ -631,13 +631,11 @@ func (manager *Manager) Reboot(ctx context.Context, id string) error {
 	return err
 }
 
-// rebootForProfileSwitch is the post-EnableProfile modem reset. After the eUICC
-// marks a new profile active, the modem keeps the old SIM cached and lands in
-// SIM failure (-CME 13) until it is bounced. ESIMSwitchProfile has already
-// released opMu by the time it calls this, so the reset is safe to take the
-// lock. This mirrors Reboot but is separate so the call site can't recurse into
-// a guarded-reset path.
-func (manager *Manager) rebootForProfileSwitch(ctx context.Context, id string) error {
+// softResetForProfileSwitch resets the baseband SIM stack using a soft CFUN sequence
+// (AT+CFUN=0 -> AT+CFUN=1/4) instead of rebooting the entire hardware module (AT+CFUN=1,1).
+// This causes the baseband to reload the new eSIM profile files within ~1-2 seconds
+// without disconnecting USB/PCIe or dropping serial communication ports.
+func (manager *Manager) softResetForProfileSwitch(ctx context.Context, id string) error {
 	state, err := manager.lookup(id)
 	if err != nil {
 		return err
@@ -652,14 +650,25 @@ func (manager *Manager) rebootForProfileSwitch(ctx context.Context, id string) e
 		manager.setResult(id, state, nil, err)
 		return err
 	}
-	commandCtx, cancel := manager.withTimeout(ctx, manager.longTimeout)
+	commandCtx, cancel := manager.withTimeout(ctx, manager.commandTimeout)
 	defer cancel()
-	_, err = client.Execute(commandCtx, "AT+CFUN=1,1")
-	if closeErr := client.Close(); err == nil {
-		err = closeErr
+
+	// 1. Cycle SIM interface to minimum functionality / clear cached SIM files
+	_, _ = client.Execute(commandCtx, "AT+CFUN=0")
+
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-time.After(500 * time.Millisecond):
 	}
-	state.client = nil
-	state.preFlightMode = nil
+
+	// 2. Restore radio to trigger fresh USIM file reading
+	targetCFUN := "AT+CFUN=1"
+	if state.snapshot != nil && state.snapshot.FlightMode {
+		targetCFUN = "AT+CFUN=4"
+	}
+	_, err = client.Execute(commandCtx, targetCFUN)
+
 	manager.clearSnapshot(id, state)
 	manager.setResult(id, state, nil, err)
 	return err
