@@ -76,13 +76,13 @@ type carrierProfileDocument struct {
 }
 
 type carrierProfileRule struct {
-	ID       string                         `json:"id"`
-	Match    carrierProfileMatch            `json:"match,omitzero"`
-	MatchAny []carrierProfileMatch          `json:"match_any,omitempty"`
-	Route    carrierProfileRoute            `json:"route,omitzero"`
-	EPDG     carrierProfileEPDG             `json:"epdg,omitzero"`
-	IKE      carrierProfileIKE              `json:"ike,omitzero"`
-	IMS      carrierProfileIMS              `json:"ims,omitzero"`
+	ID       string                `json:"id"`
+	Match    carrierProfileMatch   `json:"match,omitzero"`
+	MatchAny []carrierProfileMatch `json:"match_any,omitempty"`
+	Route    carrierProfileRoute   `json:"route,omitzero"`
+	EPDG     carrierProfileEPDG    `json:"epdg,omitzero"`
+	IKE      carrierProfileIKE     `json:"ike,omitzero"`
+	IMS      carrierProfileIMS     `json:"ims,omitzero"`
 }
 
 type carrierProfileMatch struct {
@@ -479,8 +479,12 @@ func matchCarrierProfile(match carrierProfileMatch, identity SIMIdentity) (int, 
 	}{
 		{name: "imsi", weight: 80, values: match.IMSIPrefixes, actual: identity.IMSI},
 		{name: "iccid", weight: 70, values: match.ICCIDPrefixes, actual: identity.ICCID},
-		{name: "gid1", weight: 50, values: match.GID1Prefixes, actual: identity.GID1, foldCase: true},
-		{name: "gid2", weight: 40, values: match.GID2Prefixes, actual: identity.GID2, foldCase: true},
+		// GID values identify an MVNO/service profile within a host network and
+		// therefore outrank the host issuer's broad ICCID prefix. Otherwise a
+		// home-PLMN+ICCID AT&T rule hides RedPocket/Cricket/etc. even when the SIM
+		// exposes the carrier bundle's exact GID selector.
+		{name: "gid1", weight: 90, values: match.GID1Prefixes, actual: identity.GID1, foldCase: true},
+		{name: "gid2", weight: 85, values: match.GID2Prefixes, actual: identity.GID2, foldCase: true},
 	} {
 		if len(selector.values) == 0 {
 			continue

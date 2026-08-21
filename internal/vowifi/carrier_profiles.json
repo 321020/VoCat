@@ -572,6 +572,14 @@
       "match_any": [
         {
           "home_plmns": [
+            "310170"
+          ],
+          "gid1_prefixes": [
+            "42"
+          ]
+        },
+        {
+          "home_plmns": [
             "310410"
           ],
           "gid1_prefixes": [
@@ -584,6 +592,18 @@
           ],
           "gid1_prefixes": [
             "42"
+          ]
+        },
+        {
+          "home_plmns": [
+            "310170",
+            "310410",
+            "310280"
+          ],
+          "spns": [
+            "Red Pocket",
+            "RedPocket",
+            "Red Pocket Mobile"
           ]
         }
       ],

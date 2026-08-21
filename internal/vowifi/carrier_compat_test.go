@@ -55,6 +55,16 @@ func TestResolveCarrierProfileATT(t *testing.T) {
 	}
 }
 
+func TestResolveCarrierProfileRedPocketOutranksBroadATTICCID(t *testing.T) {
+	profile := ResolveCarrierProfile(SIMIdentity{
+		ICCID: "8901410000000000001", IMSI: "310170000000001",
+		HomeMCC: "310", HomeMNC: "170", SPN: "Red Pocket", GID1: "42FFFF",
+	})
+	if profile.ID != "ipcc-redpocket-310170" || profile.MatchSource != "hplmn+gid1" {
+		t.Fatalf("RedPocket profile = %#v", profile)
+	}
+}
+
 func TestResolveCarrierProfileStandardHasNoRegisterOverrides(t *testing.T) {
 	profile := ResolveCarrierProfile(SIMIdentity{HomeMCC: "999", HomeMNC: "99"})
 	if profile.ID != CarrierProfileStandard {
