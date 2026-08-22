@@ -1226,4 +1226,29 @@ export const EN_DICT: Record<string, string> = {
     "The activation code has already been used, expired, or was rejected by SM-DP+. Please use a new Matching ID.",
   "已发现该模组，但未找到 AT 串口：通常是 option 驱动未认该 PID 或模组处于 MBIM/RNDIS 组态。可 ":
     "Modem detected, but no AT serial port found: option driver may not recognize this PID or modem is in MBIM/RNDIS mode. You can ",
+  "跟随 MBN / 运营商默认（推荐）": "Follow MBN / carrier default (recommended)",
+  "强制启用整个 IMS": "Force-enable all IMS",
+  "强制关闭整个 IMS": "Force-disable all IMS",
+  "读取蜂窝 IMS 模组配置失败": "Failed to read the modem IMS configuration",
+  "将清除 VoCat 的 IMS 强制覆盖，改由当前 MBN / 运营商配置决定是否启用 IMS。":
+    "Clear the VoCat IMS override and let the active MBN / carrier configuration decide whether IMS is enabled.",
+  "这会强制启用模组的整个蜂窝 IMS，而不只是 IMS 短信；VoLTE 等语音功能也会受到影响。":
+    "This force-enables all cellular IMS services, not only IMS SMS; voice services such as VoLTE are also affected.",
+  "这会强制关闭整个蜂窝 IMS，可能导致 VoLTE、IMS 短信及 IMS 语音不可用。":
+    "This force-disables all cellular IMS and may make VoLTE, IMS SMS, and IMS voice unavailable.",
+  "配置变化后将完整重启模组，蜂窝数据、短信和通话会短暂中断。":
+    "Changing this setting fully restarts the modem and briefly interrupts cellular data, SMS, and calls.",
+  "确认强制关闭整个 IMS": "Confirm force-disabling all IMS",
+  "确认修改蜂窝 IMS 配置": "Confirm cellular IMS change",
+  "强制关闭": "Force disable",
+  "应用并重启": "Apply and restart",
+  "IMS 配置已写入，模组正在重启": "IMS configuration saved; the modem is restarting",
+  "模组 IMS 配置已经一致": "The modem IMS configuration already matches",
+  "蜂窝 IMS 模组配置失败": "Failed to configure modem cellular IMS",
+  "蜂窝 IMS 模组配置": "Cellular IMS modem configuration",
+  "这是模组级持久配置，会影响 VoLTE、IMS 短信和 IMS 语音；切换 SIM/Profile 不会自动改写。":
+    "This persistent modem-wide setting affects VoLTE, IMS SMS, and IMS voice; switching SIMs or profiles does not rewrite it.",
+  "VoLTE 可用": "VoLTE available",
+  "VoLTE 未就绪": "VoLTE not ready",
+  "设备离线，无法读取或修改模组 IMS 配置。": "The device is offline; its modem IMS configuration cannot be read or changed.",
 };

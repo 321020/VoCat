@@ -2,7 +2,6 @@ import { useCallback, useEffect, useState } from "react";
 import { Button, Spinner } from "../ui";
 import { PolicySwitchCard } from "./PolicySwitchCard";
 import { CardPolicyAPN } from "./CardPolicyAPN";
-import { CellularIMSPolicyCard } from "./CellularIMSPolicyCard";
 import { useCardPolicyToggles } from "./useCardPolicyToggles";
 import { getCardPolicy, putCardPolicy, enableVoWiFi, disableVoWiFi, setFlightMode } from "./deviceActions";
 import type { CardPolicy } from "../../types";
@@ -69,7 +68,7 @@ export function EsimCardPolicyInline({ deviceId, iccid, isActiveCard, deviceOnli
       ) : (
         <>
           {noteText ? <div className="text-[11px] text-amber-600 dark:text-amber-400">{noteText}</div> : null}
-          <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
+          <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
             <PolicySwitchCard
               compact
               title="VoWiFi"
@@ -87,18 +86,6 @@ export function EsimCardPolicyInline({ deviceId, iccid, isActiveCard, deviceOnli
               pending={toggles.airplanePending}
               failed={toggles.airplaneFailed}
               onToggle={toggles.onAirplaneToggle}
-            />
-            <CellularIMSPolicyCard
-              compact
-              deviceId={deviceId}
-              iccid={iccid}
-              enabled={policy?.cellularImsEnabled ?? false}
-              managed={policy?.cellularImsManaged ?? false}
-              live={mode === "live"}
-              deviceOnline={deviceOnline}
-              vowifiEnabled={local.vowifiEnabled}
-              airplaneEnabled={local.airplaneEnabled}
-              onChanged={() => { void load(); onPolicyChanged(); }}
             />
           </div>
           <CardPolicyAPN

@@ -58,7 +58,7 @@ type DeviceController interface {
 
 type cellularIMSController interface {
 	CellularIMS(context.Context, string) (device.CellularIMSStatus, error)
-	SetCellularIMS(context.Context, string, bool) (device.CellularIMSStatus, error)
+	SetCellularIMS(context.Context, string, device.CellularIMSMode) (device.CellularIMSStatus, error)
 }
 
 type deviceConfigPayload struct {
@@ -287,7 +287,7 @@ func (s *Server) handleDevices(w http.ResponseWriter, r *http.Request) bool {
 				if errors.Is(policyErr, store.ErrNotFound) {
 					policyErr = s.store.UpsertCardPolicy(r.Context(), store.CardPolicy{
 						ICCID: iccid, VoWiFiEnabled: true, AirplaneEnabled: true,
-						IPVersion: "IPV4V6", Source: "default", CellularIMSManaged: true,
+						IPVersion: "IPV4V6", Source: "default",
 					})
 				}
 				if policyErr != nil {
@@ -1410,22 +1410,10 @@ func (s *Server) handleCellularIMS(
 		writeError(w, http.StatusNotImplemented, "cellular_ims_unsupported", "cellular IMS control is unavailable")
 		return true
 	}
-	entry, err := s.devices.Get(physicalID)
-	if err != nil || entry.Snapshot == nil || !entry.Snapshot.SIMReady {
-		writeError(w, http.StatusConflict, "sim_not_ready", "a ready SIM is required to configure cellular IMS")
-		return true
-	}
-	iccid := strings.TrimSpace(entry.Snapshot.ICCID)
-	if !validICCID(iccid) {
-		writeError(w, http.StatusConflict, "iccid_unavailable", "the active SIM ICCID is unavailable")
-		return true
-	}
-	policy, policyErr := s.store.CardPolicy(r.Context(), iccid)
-	if errors.Is(policyErr, store.ErrNotFound) {
-		policy = defaultCardPolicy(iccid)
-	} else if policyErr != nil {
-		s.writeStoreError(w, policyErr)
-		return true
+	entry, _ := s.devices.Get(physicalID)
+	iccid := ""
+	if entry.Snapshot != nil {
+		iccid = strings.TrimSpace(entry.Snapshot.ICCID)
 	}
 	switch r.Method {
 	case http.MethodGet:
@@ -1434,42 +1422,46 @@ func (s *Server) handleCellularIMS(
 			writeError(w, http.StatusUnprocessableEntity, "cellular_ims_unsupported", statusErr.Error())
 			return true
 		}
-		writeJSON(w, http.StatusOK, map[string]any{"data": cellularIMSResponse(iccid, policy.CellularIMSEnabled, status)})
+		writeJSON(w, http.StatusOK, map[string]any{"data": cellularIMSResponse(iccid, status)})
 	case http.MethodPatch:
 		var request struct {
-			Enabled *bool `json:"enabled"`
+			Mode    *string `json:"mode"`
+			Enabled *bool   `json:"enabled"`
 		}
 		if err := s.decodeJSON(w, r, &request); err != nil {
 			writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
 			return true
 		}
-		if request.Enabled == nil {
-			writeError(w, http.StatusBadRequest, "invalid_cellular_ims", "enabled is required")
+		if request.Mode == nil && request.Enabled == nil {
+			writeError(w, http.StatusBadRequest, "invalid_cellular_ims", "mode is required")
 			return true
 		}
-		policy.CellularIMSEnabled = *request.Enabled
-		policy.CellularIMSManaged = true
-		policy.Source = "manual"
-		if policy.IPVersion == "" {
-			policy.IPVersion = "IPV4V6"
+		mode := device.CellularIMSModeMBNDefault
+		if request.Mode != nil {
+			mode = device.CellularIMSMode(strings.ToLower(strings.TrimSpace(*request.Mode)))
+		} else if *request.Enabled {
+			// Backward compatibility with PR #77: false meant restoring the MBN
+			// default (QCFG ims=0), never force-disabling IMS.
+			mode = device.CellularIMSModeForceEnabled
 		}
-		if err := s.store.UpsertCardPolicy(r.Context(), policy); err != nil {
-			s.writeStoreError(w, err)
+		if mode != device.CellularIMSModeMBNDefault && mode != device.CellularIMSModeForceEnabled &&
+			mode != device.CellularIMSModeForceDisabled {
+			writeError(w, http.StatusBadRequest, "invalid_cellular_ims", "mode must be mbn_default, force_enabled, or force_disabled")
 			return true
 		}
-		status, applyErr := controller.SetCellularIMS(r.Context(), physicalID, *request.Enabled)
+		status, applyErr := controller.SetCellularIMS(r.Context(), physicalID, mode)
 		if applyErr != nil {
-			writeError(w, http.StatusBadGateway, "cellular_ims_apply_failed", "IMS policy was saved but could not be applied: "+applyErr.Error())
+			writeError(w, http.StatusBadGateway, "cellular_ims_apply_failed", "IMS configuration could not be applied: "+applyErr.Error())
 			return true
 		}
-		if status.Rebooting && config.NetworkEnabled && !config.VoWiFiEnabled {
+		if status.Rebooting && config.NetworkEnabled && !config.VoWiFiEnabled && iccid != "" {
 			s.restoreCellularDataAfterIMSReboot(config.ID, physicalID, iccid)
 		}
 		statusCode := http.StatusOK
 		if status.Rebooting {
 			statusCode = http.StatusAccepted
 		}
-		writeJSON(w, statusCode, map[string]any{"data": cellularIMSResponse(iccid, *request.Enabled, status)})
+		writeJSON(w, statusCode, map[string]any{"data": cellularIMSResponse(iccid, status)})
 	default:
 		w.Header().Set("Allow", "GET, PATCH")
 		writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed")
@@ -1548,11 +1540,14 @@ func (s *Server) cellularNetworkRequest(ctx context.Context, config store.Device
 	return request
 }
 
-func cellularIMSResponse(iccid string, desired bool, status device.CellularIMSStatus) map[string]any {
+func cellularIMSResponse(iccid string, status device.CellularIMSStatus) map[string]any {
 	return map[string]any{
-		"iccid": iccid, "desired_enabled": desired, "supported": status.Supported,
-		"configured": status.Configured, "registered": status.Registered,
-		"cs_known": status.CSKnown, "cs_registered": status.CSRegistered,
+		"iccid": iccid, "mode": status.Mode,
+		"desired_enabled": status.Mode == device.CellularIMSModeForceEnabled,
+		"supported":       status.Supported,
+		"configured":      status.Configured, "registered": status.Registered,
+		"volte_capable": status.VoLTECapable,
+		"cs_known":      status.CSKnown, "cs_registered": status.CSRegistered,
 		"changed": status.Changed, "rebooting": status.Rebooting,
 	}
 }

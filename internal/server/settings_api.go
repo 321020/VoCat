@@ -1405,20 +1405,18 @@ func (s *Server) handleCardPolicy(w http.ResponseWriter, r *http.Request, iccid 
 		writeJSON(w, http.StatusOK, map[string]any{"data": cardPolicyResponse(policy)})
 	case http.MethodPut:
 		var request struct {
-			VoWiFiEnabled      *bool   `json:"vowifi_enabled"`
-			AirplaneEnabled    *bool   `json:"airplane_enabled"`
-			APN                *string `json:"apn"`
-			IPVersion          *string `json:"ip_version"`
-			CustomPhoneNumber  *string `json:"custom_phone_number"`
-			CellularIMSEnabled *bool   `json:"cellular_ims_enabled"`
+			VoWiFiEnabled     *bool   `json:"vowifi_enabled"`
+			AirplaneEnabled   *bool   `json:"airplane_enabled"`
+			APN               *string `json:"apn"`
+			IPVersion         *string `json:"ip_version"`
+			CustomPhoneNumber *string `json:"custom_phone_number"`
 		}
 		if err := s.decodeJSON(w, r, &request); err != nil {
 			writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
 			return
 		}
 		if request.VoWiFiEnabled == nil && request.AirplaneEnabled == nil &&
-			request.APN == nil && request.IPVersion == nil && request.CustomPhoneNumber == nil &&
-			request.CellularIMSEnabled == nil {
+			request.APN == nil && request.IPVersion == nil && request.CustomPhoneNumber == nil {
 			writeError(
 				w,
 				http.StatusBadRequest,
@@ -1466,10 +1464,6 @@ func (s *Server) handleCardPolicy(w http.ResponseWriter, r *http.Request, iccid 
 			}
 			policy.CustomPhoneNumber = phoneNumber
 		}
-		if request.CellularIMSEnabled != nil {
-			policy.CellularIMSEnabled = *request.CellularIMSEnabled
-			policy.CellularIMSManaged = true
-		}
 		if request.VoWiFiEnabled != nil {
 			policy.VoWiFiEnabled = *request.VoWiFiEnabled
 		}
@@ -1505,12 +1499,11 @@ func (s *Server) handleCardPolicy(w http.ResponseWriter, r *http.Request, iccid 
 
 func defaultCardPolicy(iccid string) store.CardPolicy {
 	return store.CardPolicy{
-		ICCID:              strings.TrimSpace(iccid),
-		VoWiFiEnabled:      true,
-		AirplaneEnabled:    true,
-		IPVersion:          "IPV4V6",
-		Source:             "default",
-		CellularIMSManaged: true,
+		ICCID:           strings.TrimSpace(iccid),
+		VoWiFiEnabled:   true,
+		AirplaneEnabled: true,
+		IPVersion:       "IPV4V6",
+		Source:          "default",
 	}
 }
 
@@ -1797,16 +1790,14 @@ func normalizeCustomPhoneNumber(value string) (string, error) {
 
 func cardPolicyResponse(policy store.CardPolicy) map[string]any {
 	response := map[string]any{
-		"iccid":                policy.ICCID,
-		"network_enabled":      false,
-		"vowifi_enabled":       policy.VoWiFiEnabled,
-		"airplane_enabled":     policy.AirplaneEnabled,
-		"apn":                  policy.APN,
-		"ip_version":           policy.IPVersion,
-		"custom_phone_number":  policy.CustomPhoneNumber,
-		"cellular_ims_enabled": policy.CellularIMSEnabled,
-		"cellular_ims_managed": policy.CellularIMSManaged,
-		"source":               policy.Source,
+		"iccid":               policy.ICCID,
+		"network_enabled":     false,
+		"vowifi_enabled":      policy.VoWiFiEnabled,
+		"airplane_enabled":    policy.AirplaneEnabled,
+		"apn":                 policy.APN,
+		"ip_version":          policy.IPVersion,
+		"custom_phone_number": policy.CustomPhoneNumber,
+		"source":              policy.Source,
 	}
 	if !policy.CreatedAt.IsZero() {
 		response["created_at"] = policy.CreatedAt

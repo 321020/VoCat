@@ -10,15 +10,17 @@ import (
 func TestParseCellularIMSStatus(t *testing.T) {
 	for _, test := range []struct {
 		line               string
+		mode               CellularIMSMode
 		configured, active bool
 	}{
-		{`+QCFG: "ims",0,0`, false, false},
-		{`+QCFG: "ims",1,0`, true, false},
-		{`+QCFG: "ims", 1, 1`, true, true},
-		{`+QCFG: "ims",1`, true, false},
+		{`+QCFG: "ims",0,0`, CellularIMSModeMBNDefault, false, false},
+		{`+QCFG: "ims",1,0`, CellularIMSModeForceEnabled, true, false},
+		{`+QCFG: "ims", 1, 1`, CellularIMSModeForceEnabled, true, true},
+		{`+QCFG: "ims",1`, CellularIMSModeForceEnabled, true, false},
+		{`+QCFG: "ims",2,0`, CellularIMSModeForceDisabled, false, false},
 	} {
 		status, err := parseCellularIMSStatus([]string{test.line})
-		if err != nil || !status.Supported || status.Configured != test.configured || status.Registered != test.active {
+		if err != nil || !status.Supported || status.Mode != test.mode || status.Configured != test.configured || status.Registered != test.active {
 			t.Errorf("parseCellularIMSStatus(%q) = %+v, %v", test.line, status, err)
 		}
 	}
@@ -54,7 +56,7 @@ func TestSetCellularIMSEnablesAndRebootsOnlyOnce(t *testing.T) {
 		{command: "AT+CFUN=1,1", response: modem.Response{Final: "OK"}},
 	}}
 	manager, id := newStartedTestManager(t, client)
-	status, err := manager.SetCellularIMS(context.Background(), id, true)
+	status, err := manager.SetCellularIMS(context.Background(), id, CellularIMSModeForceEnabled)
 	if err != nil || !status.Configured || !status.Changed || !status.Rebooting {
 		t.Fatalf("SetCellularIMS = %+v, %v", status, err)
 	}
@@ -69,12 +71,27 @@ func TestSetCellularIMSNoopDoesNotReboot(t *testing.T) {
 		{command: `AT+QCFG="ims"`, response: modem.Response{Lines: []string{`+QCFG: "ims",1,1`}, Final: "OK"}},
 	}}
 	manager, id := newStartedTestManager(t, client)
-	status, err := manager.SetCellularIMS(context.Background(), id, true)
+	status, err := manager.SetCellularIMS(context.Background(), id, CellularIMSModeForceEnabled)
 	if err != nil || status.Changed || status.Rebooting || !status.Registered {
 		t.Fatalf("SetCellularIMS = %+v, %v", status, err)
 	}
 	if client.closeCount != 0 {
 		t.Fatalf("close count = %d, want 0", client.closeCount)
+	}
+	client.assertDone(t)
+}
+
+func TestSetCellularIMSForceDisablesWithQCFGValueTwo(t *testing.T) {
+	client := &transcriptClient{steps: []clientStep{
+		{command: `AT+QCFG="ims"`, response: modem.Response{Lines: []string{`+QCFG: "ims",1,1`}, Final: "OK"}},
+		{command: `AT+QCFG="ims",2`, response: modem.Response{Final: "OK"}},
+		{command: `AT+QCFG="ims"`, response: modem.Response{Lines: []string{`+QCFG: "ims",2,0`}, Final: "OK"}},
+		{command: "AT+CFUN=1,1", response: modem.Response{Final: "OK"}},
+	}}
+	manager, id := newStartedTestManager(t, client)
+	status, err := manager.SetCellularIMS(context.Background(), id, CellularIMSModeForceDisabled)
+	if err != nil || status.Mode != CellularIMSModeForceDisabled || !status.Changed || !status.Rebooting {
+		t.Fatalf("SetCellularIMS = %+v, %v", status, err)
 	}
 	client.assertDone(t)
 }
